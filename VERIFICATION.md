@@ -384,12 +384,20 @@ Relocation`). Re-running the packaging command outside that sandbox with
 process-mitigation issue rather than a missing or corrupted NSIS download; the
 installer has not been tested on a normal user account.
 
-The generated x64 installer is
-`DaemonCore-Data-Recovery-Windows-0.1.0-x64-setup-unsigned.exe`, 4,369,900 bytes,
-SHA-256
-`718e43e58bac0790ad260a22a0aba0f87fef4666606b49bbcd82aad8570ac880`.
-Authenticode reports `NotSigned`. The installer was not launched or installed, so
-this confirms only bundle generation, not install, upgrade, uninstall, or packaged
-runtime behavior. The bundler also warned that `__TAURI_BUNDLE_TYPE` was not found
-in the executable; updater/package metadata remains unverified. Signing, installer
+The configured NSIS bundle was then changed to embed WebView2 using Tauri's
+`offlineInstaller` mode, so installation does not need to download that runtime.
+The generated x64 offline setup is
+`DaemonCore-Data-Recovery-Windows-0.1.0-x64-offline-setup-unsigned.exe`,
+222,179,634 bytes (211.89 MiB), SHA-256
+`9cfad6c1ae96f50b60cb4ed5e23306a5272083b606fe5eb08e6e86b5840801e4`.
+The matching rebuilt executable is
+`DaemonCore-Data-Recovery-Windows-0.1.0-offline-webview-unsigned.exe`,
+12,867,072 bytes, SHA-256
+`4983a36ace80ad7abda3067c9cc8622bcd1b2c9772ee6bf4f4b1b19ee008bcf7`.
+Both files are unsigned. The bundle was generated successfully, but the installer
+was not launched or installed. A requested native startup smoke was stopped by
+the physical Escape key before the app could be inspected. Therefore install,
+upgrade, uninstall, packaged runtime behavior, and this build's UI remain
+unverified. The bundler warned that `__TAURI_BUNDLE_TYPE` was not found in the
+executable; updater/package metadata remains unverified. Signing, installer
 smoke tests, MSIX/Store review, and other release gates remain open.

@@ -23,8 +23,10 @@ npm run tauri build
 `npm run validate` runs the TypeScript/Vite build, Rust formatting check, offline
 Rust test suite and Clippy with warnings denied as one repeatable local gate.
 `npm run tauri build -- --no-bundle` produces the standalone executable;
-`npm run tauri build` also produces the configured Windows NSIS installer. The
-current setup package is unsigned and is not a production release artifact.
+`npm run tauri build` also produces the configured Windows NSIS installer with
+the WebView2 runtime embedded for offline installation. The offline runtime
+adds roughly 127 MB to the setup package; the current package is about 212 MiB.
+It is unsigned and is not a production release artifact.
 
 `npm run dev` is a browser preview. Evidence operations require the native app.
 No sample scan records are inserted into the application.

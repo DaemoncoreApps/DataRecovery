@@ -28,6 +28,12 @@
     "targets": ["nsis"],
     "icon": ["icons/icon.ico"],
     "publisher": "DaemonCore Enterprises",
-    "shortDescription": "Read-only evidence image analysis"
+    "shortDescription": "Read-only evidence image analysis",
+    "windows": {
+      "webviewInstallMode": {
+        "type": "offlineInstaller",
+        "silent": true
+      }
+    }
   }
 }
