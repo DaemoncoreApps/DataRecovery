@@ -375,11 +375,21 @@ Signing, packaging, forensic fixtures, and the other release gates remain open.
 
 ### Windows installer bundle attempt
 
-On 2026-10-31, `npm run tauri build` completed the production frontend build and
-optimized Windows executable build. The configured NSIS bundler downloaded and
-validated the official NSIS 3.13 archive, but `makensis.exe` could not start; the
-Windows error was 623 (`Illegal System DLL Relocation`). No installer was
-produced. The bundler also reported that it could not add
-`__TAURI_BUNDLE_TYPE` to the executable, so updater/package metadata remains
-unverified. This environment-specific bundle attempt does not qualify as installer
-validation; the executable remains unsigned and the packaging gate is open.
+On 2026-10-31, `npm run tauri build` completed the production frontend and
+optimized Windows executable builds. The first NSIS attempt downloaded and
+validated the official NSIS 3.13 archive but could not start `makensis.exe` inside
+the restricted process sandbox (Windows error 623, `Illegal System DLL
+Relocation`). Re-running the packaging command outside that sandbox with
+`bundle.useLocalToolsDir` enabled succeeded. This points to a build-environment
+process-mitigation issue rather than a missing or corrupted NSIS download; the
+installer has not been tested on a normal user account.
+
+The generated x64 installer is
+`DaemonCore-Data-Recovery-Windows-0.1.0-x64-setup-unsigned.exe`, 4,369,900 bytes,
+SHA-256
+`718e43e58bac0790ad260a22a0aba0f87fef4666606b49bbcd82aad8570ac880`.
+Authenticode reports `NotSigned`. The installer was not launched or installed, so
+this confirms only bundle generation, not install, upgrade, uninstall, or packaged
+runtime behavior. The bundler also warned that `__TAURI_BUNDLE_TYPE` was not found
+in the executable; updater/package metadata remains unverified. Signing, installer
+smoke tests, MSIX/Store review, and other release gates remain open.

@@ -15,7 +15,7 @@
 | Cases | Persistent title/examiner register, creation-event reconciliation for audited cases, legacy rows explicitly marked unverified, active-case pointer reconciliation and audited correction path, evidence-open gate, evidence-source and completed-scan inventory visible in case management, archived candidate review | Full case lifecycle, import/export integrity, notes, timelines, scan reactivation, and external integrity anchors |
 | Reports | Recovery manifest and JSONL inventory | Forensic HTML/PDF/CSV/JSON reports |
 | Settings | Actual fixed engine defaults displayed | Persisted, validated editable profiles |
-| Distribution | Buildable Windows executable; NSIS target configured | NSIS packaging currently fails when Windows starts `makensis.exe`; release performance validation, signing, MSIX/Store policy, packaged tests |
+| Distribution | Buildable Windows executable and unsigned x64 NSIS installer | Installer launch/install verification, signing, MSIX/Store policy, packaged tests, release performance validation |
 
 A feature is supported only to the scope in the Working now column. No product
 release should describe this matrix as complete. The original production brief
