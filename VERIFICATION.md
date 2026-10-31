@@ -6,7 +6,7 @@
 - Latest `npm run validate` on 2026-10-31 passed: TypeScript/Vite production build, Rust format check, 73 Rust tests passed, 0 failed, 2 ignored, and Clippy with warnings denied.
 - Cargo reported that incremental-cache hard links were unavailable and copied cache files instead; the validation command still exited successfully.
 - The Rust suite previously had 72 passing tests; the latest count is 73.
-- Windows same-physical-disk rejection test: run explicitly and passed.
+- Windows same-physical-disk rejection test: explicitly rerun on 2026-10-31 and passed (1 passed, 0 failed); its temporary source file was confined to ignored `src-tauri/target/test-temp`.
 - Controlled fixture writer: run explicitly with a task-owned output file and passed.
 - Clippy with warnings denied: passed.
 - TypeScript/Vite production build: passed.
