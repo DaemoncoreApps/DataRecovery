@@ -388,16 +388,19 @@ The configured NSIS bundle was then changed to embed WebView2 using Tauri's
 `offlineInstaller` mode, so installation does not need to download that runtime.
 The generated x64 offline setup is
 `DaemonCore-Data-Recovery-Windows-0.1.0-x64-offline-setup-unsigned.exe`,
-222,179,634 bytes (211.89 MiB), SHA-256
-`9cfad6c1ae96f50b60cb4ed5e23306a5272083b606fe5eb08e6e86b5840801e4`.
+222,179,555 bytes (211.89 MiB), SHA-256
+`e033b0b586037d931c274313f313c8f5dda0e7ca76db648a2c0b565770f89b72`.
 The matching rebuilt executable is
 `DaemonCore-Data-Recovery-Windows-0.1.0-offline-webview-unsigned.exe`,
 12,867,072 bytes, SHA-256
-`4983a36ace80ad7abda3067c9cc8622bcd1b2c9772ee6bf4f4b1b19ee008bcf7`.
+`8031e590b5755af4784608fd786eead9a992c15ecf1b1d6d412c0bbce5d32aa0`.
 Both files are unsigned. The bundle was generated successfully, but the installer
 was not launched or installed. A requested native startup smoke was stopped by
 the physical Escape key before the app could be inspected. Therefore install,
 upgrade, uninstall, packaged runtime behavior, and this build's UI remain
-unverified. The bundler warned that `__TAURI_BUNDLE_TYPE` was not found in the
-executable; updater/package metadata remains unverified. Signing, installer
-smoke tests, MSIX/Store review, and other release gates remain open.
+unverified. A clean `npm run tauri build -- --no-bundle` left the binary's
+bundle marker in its expected unbundled state; the following NSIS build patched
+it without warning and restored the standalone binary. The app does not currently
+include the Tauri updater plugin, so updater installation is not implemented.
+Signing, installer smoke tests, MSIX/Store review, and other release gates remain
+open.
