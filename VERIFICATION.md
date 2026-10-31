@@ -452,6 +452,11 @@ or attribute ID differs, while still rejecting an exact duplicate reference.
 Fixtures assign nonzero IDs to the base `$ATTRIBUTE_LIST` and `$DATA` attributes,
 and verify that a wrong `$DATA` ID makes the candidate non-exportable. The
 continued-list fixture also exercises the attribute ID on the extension record.
-`npm run validate` passed with 78 tests, 0 failures, and 2 ignored. This improves
-attribute identity validation; hard-link-heavy Windows volumes still need an
-independently generated fixture before claiming broad hard-link coverage.
+`npm run validate` passed with 79 tests, 0 failures, and 2 ignored. A parser-level
+regression also confirms that references with the same type, name, and VCN are
+accepted when record/attribute identity differs, and exact duplicate references
+are rejected. This case is based on the hard-link reproduction documented in
+[analyzeMFT issue 56](https://github.com/rowingdude/analyzeMFT/issues/56), which
+describes `$FILE_NAME` attributes in `$ATTRIBUTE_LIST` across several MFT records.
+The regression is not a full-volume fixture; hard-link-heavy Windows volumes
+still need an independently generated image before claiming broad coverage.

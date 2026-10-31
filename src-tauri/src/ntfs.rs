@@ -1408,6 +1408,29 @@ pub fn scan(
 mod path_tests {
     use super::*;
 
+    #[test]
+    fn attribute_list_allows_repeated_type_name_and_vcn_for_distinct_references() {
+        fn entry(record: u64, sequence: u16, attribute_id: u16) -> Vec<u8> {
+            let mut bytes = vec![0; 32];
+            bytes[0..4].copy_from_slice(&0x30u32.to_le_bytes());
+            bytes[4..6].copy_from_slice(&32u16.to_le_bytes());
+            let reference = record | (u64::from(sequence) << 48);
+            bytes[16..24].copy_from_slice(&reference.to_le_bytes());
+            bytes[24..26].copy_from_slice(&attribute_id.to_le_bytes());
+            bytes
+        }
+
+        let mut data = entry(40, 3, 2);
+        data.extend(entry(41, 7, 5));
+        let parsed = parse_attribute_list(&data).unwrap();
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].attribute_id, 2);
+        assert_eq!(parsed[1].attribute_id, 5);
+
+        data.extend(entry(41, 7, 5));
+        assert!(parse_attribute_list(&data).is_err());
+    }
+
     fn directory(
         sequence: u16,
         name: &str,
