@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ShieldCheck, ShieldAlert } from "lucide-react";
+import { Shield, ShieldCheck, ShieldAlert } from "lucide-react";
 import {
   command,
   type AuditVerification,
@@ -25,7 +25,7 @@ export function AuditPanel({
   return (
     <section className="panel">
       <div className="panelTitle">
-        <h2>Tamper evident activity log</h2>
+        <h2>Activity audit verification</h2>
         <span className="tag">LOCAL SQLITE</span>
       </div>
       <div className="empty">
@@ -34,7 +34,7 @@ export function AuditPanel({
         ) : result ? (
           <ShieldAlert size={34} />
         ) : (
-          <ShieldCheck size={34} />
+          <Shield size={34} />
         )}
         {result ? (
           <>
@@ -59,8 +59,12 @@ export function AuditPanel({
           </>
         ) : (
           <>
-            <h3>Verify the local event chain</h3>
-            <p>Checks each event digest and its link to the previous record.</p>
+            <h3>Verify the local audit chain</h3>
+            <p>
+              Checks each event digest and its link to the previous record.
+              Without a separately retained head hash, a complete database
+              rewrite cannot be detected.
+            </p>
           </>
         )}
         <div className="anchorComparison">

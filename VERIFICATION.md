@@ -388,17 +388,21 @@ The configured NSIS bundle was then changed to embed WebView2 using Tauri's
 `offlineInstaller` mode, so installation does not need to download that runtime.
 The generated x64 offline setup is
 `DaemonCore-Data-Recovery-Windows-0.1.0-x64-offline-setup-unsigned.exe`,
-222,179,555 bytes (211.89 MiB), SHA-256
-`e033b0b586037d931c274313f313c8f5dda0e7ca76db648a2c0b565770f89b72`.
+222,181,509 bytes (211.89 MiB), SHA-256
+`772f0651883661da898c55b319b0230a9d4a42dec9f83c228d4154798da5da31`.
 The matching rebuilt executable is
 `DaemonCore-Data-Recovery-Windows-0.1.0-offline-webview-unsigned.exe`,
 12,867,072 bytes, SHA-256
-`8031e590b5755af4784608fd786eead9a992c15ecf1b1d6d412c0bbce5d32aa0`.
+`d747d3f18a63b9c2db19dd2fc3f425abf5110969ecd47e83f82886889783e6af`.
 Both files are unsigned. The bundle was generated successfully, but the installer
 was not launched or installed. A requested native startup smoke was stopped by
 the physical Escape key before the app could be inspected. Therefore install,
 upgrade, uninstall, packaged runtime behavior, and this build's UI remain
-unverified. A clean `npm run tauri build -- --no-bundle` left the binary's
+unverified. The audit panel now uses a neutral idle shield, labels the task
+"Verify the local audit chain," and explains that internal consistency without
+an independently retained head hash cannot detect a complete database rewrite.
+The production frontend build passed after this change; the refreshed Windows
+installer includes it. A clean `npm run tauri build -- --no-bundle` left the binary's
 bundle marker in its expected unbundled state; the following NSIS build patched
 it without warning and restored the standalone binary. The app does not currently
 include the Tauri updater plugin, so updater installation is not implemented.
