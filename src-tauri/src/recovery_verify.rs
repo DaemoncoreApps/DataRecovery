@@ -112,7 +112,12 @@ struct InventoryRecord {
     content_validation: String,
 }
 
-fn read_bounded(directory: &Path, name: &str, maximum: u64) -> Result<Vec<u8>> {
+fn read_bounded(
+    directory: &Path,
+    name: &str,
+    maximum: u64,
+    locks: &mut crate::safe_file::ReadLocks,
+) -> Result<Vec<u8>> {
     let path = directory.join(name);
     let before = fs::symlink_metadata(&path).map_err(err)?;
     if !before.is_file() || before.file_type().is_symlink() || before.len() > maximum {
@@ -144,10 +149,14 @@ fn read_bounded(directory: &Path, name: &str, maximum: u64) -> Result<Vec<u8>> {
             "Recovery package entry {name} changed while being read."
         ));
     }
+    locks.retain_file(file);
     Ok(bytes)
 }
 
-fn hash_regular_file(path: &Path) -> Result<(String, u64)> {
+fn hash_regular_file(
+    path: &Path,
+    locks: &mut crate::safe_file::ReadLocks,
+) -> Result<(String, u64)> {
     let before = fs::symlink_metadata(path).map_err(err)?;
     if !before.is_file() || before.file_type().is_symlink() {
         return Err(format!(
@@ -183,6 +192,7 @@ fn hash_regular_file(path: &Path) -> Result<(String, u64)> {
             path.display()
         ));
     }
+    locks.retain_file(file);
     Ok((format!("{:x}", digest.finalize()), count))
 }
 
@@ -333,12 +343,24 @@ fn enumerate_entries(directory: &Path) -> Result<(BTreeSet<String>, BTreeSet<Str
 
 pub(crate) fn verify_package(directory: &Path) -> Result<RecoveryExportVerification> {
     crate::safe_file::require_plain_directory(directory).map_err(err)?;
+    let mut locks = crate::safe_file::ReadLocks::default();
     let (entries, directories) = enumerate_entries(directory)?;
-    let checksums_bytes = read_bounded(directory, "checksums.sha256", MAX_CHECKSUMS_BYTES)?;
-    let completion_bytes = read_bounded(directory, "completion.json", MAX_METADATA_BYTES)?;
-    let summary_bytes = read_bounded(directory, "summary.json", MAX_METADATA_BYTES)?;
-    let manifest_bytes = read_bounded(directory, "manifest.json", MAX_METADATA_BYTES)?;
-    let inventory_bytes = read_bounded(directory, "inventory.jsonl", MAX_INVENTORY_BYTES)?;
+    let checksums_bytes = read_bounded(
+        directory,
+        "checksums.sha256",
+        MAX_CHECKSUMS_BYTES,
+        &mut locks,
+    )?;
+    let completion_bytes =
+        read_bounded(directory, "completion.json", MAX_METADATA_BYTES, &mut locks)?;
+    let summary_bytes = read_bounded(directory, "summary.json", MAX_METADATA_BYTES, &mut locks)?;
+    let manifest_bytes = read_bounded(directory, "manifest.json", MAX_METADATA_BYTES, &mut locks)?;
+    let inventory_bytes = read_bounded(
+        directory,
+        "inventory.jsonl",
+        MAX_INVENTORY_BYTES,
+        &mut locks,
+    )?;
 
     let completion: CompletionMarker = serde_json::from_slice(&completion_bytes)
         .map_err(|e| format!("Invalid recovery completion marker: {e}"))?;
@@ -558,7 +580,7 @@ pub(crate) fn verify_package(directory: &Path) -> Result<RecoveryExportVerificat
     }
 
     for (name, expected_hash) in &checksums {
-        let (actual_hash, size) = hash_regular_file(&directory.join(name))?;
+        let (actual_hash, size) = hash_regular_file(&directory.join(name), &mut locks)?;
         if &actual_hash != expected_hash {
             return Err(format!("Recovery file checksum mismatch: {name}"));
         }
@@ -573,6 +595,11 @@ pub(crate) fn verify_package(directory: &Path) -> Result<RecoveryExportVerificat
                 ));
             }
         }
+    }
+
+    crate::safe_file::require_plain_directory(directory).map_err(err)?;
+    if enumerate_entries(directory)? != (entries, directories) {
+        return Err("Recovery folder contents changed during verification.".into());
     }
 
     Ok(RecoveryExportVerification {

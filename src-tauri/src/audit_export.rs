@@ -184,13 +184,18 @@ impl Drop for StagedDirectory {
     }
 }
 
-fn read_bundle_file(directory: &Path, name: &str, maximum_bytes: u64) -> Result<Vec<u8>> {
+fn read_bundle_file(
+    directory: &Path,
+    name: &str,
+    maximum_bytes: u64,
+    locks: &mut crate::safe_file::ReadLocks,
+) -> Result<Vec<u8>> {
     let path = directory.join(name);
     let metadata = fs::symlink_metadata(&path).map_err(err)?;
     if !metadata.is_file() || metadata.file_type().is_symlink() {
         return Err(format!("Checkpoint entry {name} is not a regular file."));
     }
-    let file = crate::safe_file::open_regular_file(&path).map_err(err)?;
+    let mut file = crate::safe_file::open_regular_file(&path).map_err(err)?;
     let opened_metadata = file.metadata().map_err(err)?;
     if !opened_metadata.is_file() || opened_metadata.len() > maximum_bytes {
         return Err(format!(
@@ -198,19 +203,23 @@ fn read_bundle_file(directory: &Path, name: &str, maximum_bytes: u64) -> Result<
         ));
     }
     let initial_length = opened_metadata.len();
-    let mut limited = file.take(maximum_bytes.saturating_add(1));
-    let mut bytes = Vec::new();
-    limited.read_to_end(&mut bytes).map_err(err)?;
-    if bytes.len() as u64 > maximum_bytes {
-        return Err(format!(
-            "Checkpoint entry {name} exceeds the {maximum_bytes}-byte verification limit."
-        ));
-    }
-    if limited.get_ref().metadata().map_err(err)?.len() != initial_length
-        || bytes.len() as u64 != initial_length
-    {
-        return Err(format!("Checkpoint entry {name} changed while being read."));
-    }
+    let bytes = {
+        let mut limited = Read::by_ref(&mut file).take(maximum_bytes.saturating_add(1));
+        let mut bytes = Vec::new();
+        limited.read_to_end(&mut bytes).map_err(err)?;
+        if bytes.len() as u64 > maximum_bytes {
+            return Err(format!(
+                "Checkpoint entry {name} exceeds the {maximum_bytes}-byte verification limit."
+            ));
+        }
+        if limited.get_ref().metadata().map_err(err)?.len() != initial_length
+            || bytes.len() as u64 != initial_length
+        {
+            return Err(format!("Checkpoint entry {name} changed while being read."));
+        }
+        bytes
+    };
+    locks.retain_file(file);
     Ok(bytes)
 }
 
@@ -243,6 +252,7 @@ fn verify_bundle(
     expected_head_sha256: Option<&str>,
 ) -> Result<CheckpointVerification> {
     crate::safe_file::require_plain_directory(directory).map_err(err)?;
+    let mut locks = crate::safe_file::ReadLocks::default();
     if let Some(expected) = expected_head_sha256 {
         if expected.len() != 64 || !expected.bytes().all(|byte| byte.is_ascii_hexdigit()) {
             return Err(
@@ -251,10 +261,22 @@ fn verify_bundle(
         }
     }
     validate_bundle_entries(directory)?;
-    let event_bytes = read_bundle_file(directory, "events.jsonl", MAX_EVENT_STREAM_BYTES)?;
-    let checkpoint_bytes = read_bundle_file(directory, "checkpoint.json", MAX_METADATA_BYTES)?;
-    let checksums_bytes = read_bundle_file(directory, "checksums.sha256", MAX_METADATA_BYTES)?;
-    let completion_bytes = read_bundle_file(directory, "completion.json", MAX_METADATA_BYTES)?;
+    let event_bytes = read_bundle_file(
+        directory,
+        "events.jsonl",
+        MAX_EVENT_STREAM_BYTES,
+        &mut locks,
+    )?;
+    let checkpoint_bytes =
+        read_bundle_file(directory, "checkpoint.json", MAX_METADATA_BYTES, &mut locks)?;
+    let checksums_bytes = read_bundle_file(
+        directory,
+        "checksums.sha256",
+        MAX_METADATA_BYTES,
+        &mut locks,
+    )?;
+    let completion_bytes =
+        read_bundle_file(directory, "completion.json", MAX_METADATA_BYTES, &mut locks)?;
 
     let checkpoint: CheckpointMetadata = serde_json::from_slice(&checkpoint_bytes)
         .map_err(|e| format!("Invalid checkpoint metadata: {e}"))?;
@@ -362,6 +384,9 @@ fn verify_bundle(
             "Audit event stream does not match the checkpoint head or record count.".into(),
         );
     }
+
+    crate::safe_file::require_plain_directory(directory).map_err(err)?;
+    validate_bundle_entries(directory)?;
 
     let anchor_match = if let Some(expected) = expected_head_sha256 {
         if expected_previous.is_empty() {
@@ -801,7 +826,13 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("oversized.bin"), b"1234").unwrap();
 
-        let error = read_bundle_file(&root, "oversized.bin", 3).unwrap_err();
+        let error = read_bundle_file(
+            &root,
+            "oversized.bin",
+            3,
+            &mut crate::safe_file::ReadLocks::default(),
+        )
+        .unwrap_err();
         assert!(error.contains("verification limit"));
         fs::remove_dir_all(root).unwrap();
     }

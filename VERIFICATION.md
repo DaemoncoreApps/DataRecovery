@@ -3,10 +3,10 @@
 ## Automated checks
 
 - Unified `npm run validate` gate: passed (TypeScript/Vite, Rust format, tests, Clippy).
-- Latest `npm run validate` on 2026-10-31 passed: TypeScript/Vite production build, Rust format check, 75 Rust tests passed, 0 failed, 2 ignored, and Clippy with warnings denied.
+- Latest `npm run validate` on 2026-10-31 passed: TypeScript/Vite production build, Rust format check, 76 Rust tests passed, 0 failed, 2 ignored, and Clippy with warnings denied.
 - Cargo reported that incremental-cache hard links were unavailable and copied cache files instead; the validation command still exited successfully.
-- Checkpoint and recovery verifiers open leaf files without following a final-component Windows reparse point and reject reparse-point package roots; Windows symlink regression cases are included. Path-based recursive enumeration does not hold directory handles against an intermediate-directory swap race.
-- Latest full `npm run validate` after reparse-point hardening: 75 Rust tests passed, 0 failed, 2 ignored; frontend build, Rust format, and Clippy with warnings denied passed.
+- Checkpoint and recovery verifiers reject symlink entries and reparse-point package roots, retain Windows share-read handles for each opened file through verification, and rescan package entries before success. Windows tests cover reparse rejection and confirm concurrent writes and renames fail while a file handle is retained. A directory-handle share restriction did not prevent child creation, so path-based traversal still cannot exclude a transient intermediate-directory swap-and-restore race.
+- Latest full `npm run validate` after retained-file verification: 76 Rust tests passed, 0 failed, 2 ignored; frontend build, Rust format, and Clippy with warnings denied passed.
 - Windows same-physical-disk rejection test: explicitly rerun on 2026-10-31 and passed (1 passed, 0 failed); its temporary source file was confined to ignored `src-tauri/target/test-temp`.
 - Controlled fixture writer: run explicitly with a task-owned output file and passed.
 - Clippy with warnings denied: passed.
@@ -391,12 +391,12 @@ The configured NSIS bundle was then changed to embed WebView2 using Tauri's
 `offlineInstaller` mode, so installation does not need to download that runtime.
 The generated x64 offline setup is
 `DaemonCore-Data-Recovery-Windows-0.1.0-x64-offline-setup-unsigned.exe`,
-222,181,083 bytes (211.89 MiB), SHA-256
-`8368c5f93e888210914260f032c4a897f208a1bc2e439ec0ae430b181033debe`.
+222,183,617 bytes (211.89 MiB), SHA-256
+`bdb39591c6badf0b24c9303f09d92a4d49bc32160f86b5309cb5400258b7ca83`.
 The matching rebuilt executable is
 `DaemonCore-Data-Recovery-Windows-0.1.0-offline-webview-unsigned.exe`,
-12,866,048 bytes, SHA-256
-`29251c683f25efafb3f41ca5d46ffc35ea42b137fd2b96b5dba966e80e95e81f`.
+12,878,848 bytes, SHA-256
+`05f454fd727871f040a3d8c548b293c87e2dbf71f669692abe4a8412bf25abf1`.
 Both files are unsigned. The bundle was generated successfully, but the installer
 was not launched or installed. A requested native startup smoke was stopped by
 the physical Escape key before the app could be inspected. Therefore install,
@@ -409,7 +409,7 @@ installer includes it. A clean `npm run tauri build -- --no-bundle` left the bin
 bundle marker in its expected unbundled state; the following NSIS build patched
 it without warning and restored the standalone binary. The app does not currently
 include the Tauri updater plugin, so updater installation is not implemented.
-The latest release binary and installer also include the no-follow file-opening
-and reparse-point root checks described in the automated validation results above.
+The latest release binary and installer also include the no-follow file-opening,
+retained file handles, and package rescan described above.
 Signing, installer smoke tests, MSIX/Store review, and other release gates remain
 open.

@@ -9,6 +9,7 @@ pub(crate) fn open_regular_file(path: &Path) -> io::Result<File> {
         const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
         fs::OpenOptions::new()
             .read(true)
+            .share_mode(1)
             .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
             .open(path)?
     };
@@ -34,6 +35,17 @@ pub(crate) fn require_plain_directory(path: &Path) -> io::Result<()> {
         ));
     }
     Ok(())
+}
+
+#[derive(Default)]
+pub(crate) struct ReadLocks {
+    handles: Vec<File>,
+}
+
+impl ReadLocks {
+    pub(crate) fn retain_file(&mut self, file: File) {
+        self.handles.push(file);
+    }
 }
 
 fn is_reparse_point(metadata: &fs::Metadata) -> bool {
@@ -103,6 +115,25 @@ mod tests {
         let directory_link = root.join("directory-link");
         symlink_dir(&target_dir, &directory_link).unwrap();
         assert!(require_plain_directory(&directory_link).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn read_locks_block_file_mutations_until_released() {
+        let root = test_root();
+        let path = root.join("source.txt");
+        fs::write(&path, b"controlled").unwrap();
+
+        let mut locks = ReadLocks::default();
+        let file = open_regular_file(&path).unwrap();
+        locks.retain_file(file);
+
+        assert!(fs::OpenOptions::new().write(true).open(&path).is_err());
+        assert!(fs::rename(&path, root.join("renamed.txt")).is_err());
+
+        drop(locks);
+        fs::write(&path, b"updated").unwrap();
         fs::remove_dir_all(root).unwrap();
     }
 }
