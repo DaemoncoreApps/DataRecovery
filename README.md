@@ -104,7 +104,9 @@ export is not digitally signed or externally anchored.
 - Recovery export folders can be checked for the exact package contents, file hashes,
   inventory-to-manifest consistency, and complete/partial state. Results and failures
   are added to the local audit chain. Hashing large exports has no progress or cancel
-  control yet; the verifier does not provide an external signature or trust anchor.
+  control yet; the verifier holds read-only file handles and no-delete-share directory
+  handles (up to 4,096 directories) during verification, but cannot take an atomic
+  filesystem snapshot. It does not provide an external signature or trust anchor.
 
 ## Current limits
 

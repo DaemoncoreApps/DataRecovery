@@ -1,4 +1,11 @@
-use std::{fs, fs::File, io, path::Path};
+use std::{
+    collections::BTreeSet,
+    fs::{self, File},
+    io,
+    path::{Path, PathBuf},
+};
+
+const MAX_DIRECTORY_HANDLES: usize = 4096;
 
 pub(crate) fn open_regular_file(path: &Path) -> io::Result<File> {
     #[cfg(windows)]
@@ -37,14 +44,57 @@ pub(crate) fn require_plain_directory(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
+pub(crate) fn open_plain_directory(path: &Path) -> io::Result<File> {
+    #[cfg(windows)]
+    let directory = {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+        fs::OpenOptions::new()
+            .read(true)
+            .share_mode(1)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
+            .open(path)?
+    };
+    #[cfg(not(windows))]
+    let directory = File::open(path)?;
+
+    let metadata = directory.metadata()?;
+    if !metadata.is_dir() || is_reparse_point(&metadata) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Path is not a plain directory.",
+        ));
+    }
+    Ok(directory)
+}
+
 #[derive(Default)]
 pub(crate) struct ReadLocks {
     handles: Vec<File>,
+    directories: BTreeSet<PathBuf>,
 }
 
 impl ReadLocks {
     pub(crate) fn retain_file(&mut self, file: File) {
         self.handles.push(file);
+    }
+
+    pub(crate) fn retain_directory(&mut self, path: &Path) -> io::Result<()> {
+        if self.directories.contains(path) {
+            return Ok(());
+        }
+        if self.directories.len() >= MAX_DIRECTORY_HANDLES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Package contains too many directories to verify safely.",
+            ));
+        }
+        let directory = open_plain_directory(path)?;
+        self.directories.insert(path.to_path_buf());
+        self.handles.push(directory);
+        Ok(())
     }
 }
 
@@ -134,6 +184,26 @@ mod tests {
 
         drop(locks);
         fs::write(&path, b"updated").unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn retained_directory_handle_blocks_rename_but_allows_enumeration() {
+        let root = test_root();
+        let directory = root.join("package");
+        fs::create_dir(&directory).unwrap();
+        fs::write(directory.join("entry.txt"), b"controlled").unwrap();
+
+        let mut locks = ReadLocks::default();
+        locks.retain_file(open_plain_directory(&directory).unwrap());
+
+        assert!(fs::read_dir(&directory).is_ok());
+        assert!(fs::rename(&directory, root.join("renamed")).is_err());
+        fs::create_dir(directory.join("new-entry")).unwrap();
+
+        drop(locks);
+        fs::rename(&directory, root.join("renamed")).unwrap();
         fs::remove_dir_all(root).unwrap();
     }
 }

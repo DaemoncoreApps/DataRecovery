@@ -298,11 +298,17 @@ fn parse_checksums(bytes: &[u8]) -> Result<BTreeMap<String, String>> {
     Ok(checksums)
 }
 
-fn enumerate_entries(directory: &Path) -> Result<(BTreeSet<String>, BTreeSet<String>)> {
+fn enumerate_entries(
+    directory: &Path,
+    locks: &mut crate::safe_file::ReadLocks,
+) -> Result<(BTreeSet<String>, BTreeSet<String>)> {
     let mut files = BTreeSet::new();
     let mut directories = BTreeSet::new();
     let mut pending = vec![(directory.to_path_buf(), String::new())];
     while let Some((folder, relative)) = pending.pop() {
+        locks
+            .retain_directory(&folder)
+            .map_err(|error| format!("Unable to lock recovery package directory: {error}"))?;
         for entry in fs::read_dir(folder).map_err(err)? {
             let entry = entry.map_err(err)?;
             let file_type = entry.file_type().map_err(err)?;
@@ -342,9 +348,8 @@ fn enumerate_entries(directory: &Path) -> Result<(BTreeSet<String>, BTreeSet<Str
 }
 
 pub(crate) fn verify_package(directory: &Path) -> Result<RecoveryExportVerification> {
-    crate::safe_file::require_plain_directory(directory).map_err(err)?;
     let mut locks = crate::safe_file::ReadLocks::default();
-    let (entries, directories) = enumerate_entries(directory)?;
+    let (entries, directories) = enumerate_entries(directory, &mut locks)?;
     let checksums_bytes = read_bounded(
         directory,
         "checksums.sha256",
@@ -598,7 +603,7 @@ pub(crate) fn verify_package(directory: &Path) -> Result<RecoveryExportVerificat
     }
 
     crate::safe_file::require_plain_directory(directory).map_err(err)?;
-    if enumerate_entries(directory)? != (entries, directories) {
+    if enumerate_entries(directory, &mut locks)? != (entries, directories) {
         return Err("Recovery folder contents changed during verification.".into());
     }
 

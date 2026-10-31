@@ -251,8 +251,10 @@ fn verify_bundle(
     directory: &Path,
     expected_head_sha256: Option<&str>,
 ) -> Result<CheckpointVerification> {
-    crate::safe_file::require_plain_directory(directory).map_err(err)?;
     let mut locks = crate::safe_file::ReadLocks::default();
+    locks
+        .retain_directory(directory)
+        .map_err(|error| format!("Unable to lock audit checkpoint directory: {error}"))?;
     if let Some(expected) = expected_head_sha256 {
         if expected.len() != 64 || !expected.bytes().all(|byte| byte.is_ascii_hexdigit()) {
             return Err(
