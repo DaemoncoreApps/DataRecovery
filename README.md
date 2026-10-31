@@ -17,10 +17,14 @@ npm run build
 cargo test --manifest-path src-tauri/Cargo.toml
 cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
 npm run tauri build -- --no-bundle
+npm run tauri build
 ```
 
 `npm run validate` runs the TypeScript/Vite build, Rust formatting check, offline
 Rust test suite and Clippy with warnings denied as one repeatable local gate.
+`npm run tauri build -- --no-bundle` produces the standalone executable;
+`npm run tauri build` also produces the configured Windows NSIS installer. The
+current setup package is unsigned and is not a production release artifact.
 
 `npm run dev` is a browser preview. Evidence operations require the native app.
 No sample scan records are inserted into the application.
