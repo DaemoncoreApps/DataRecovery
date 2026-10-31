@@ -460,3 +460,8 @@ are rejected. This case is based on the hard-link reproduction documented in
 describes `$FILE_NAME` attributes in `$ATTRIBUTE_LIST` across several MFT records.
 The regression is not a full-volume fixture; hard-link-heavy Windows volumes
 still need an independently generated image before claiming broad coverage.
+Path restoration now also falls back to a flat generated name when the base MFT
+record contains distinct same-namespace `$FILE_NAME` values even when they share
+the same parent directory. The test covers that case alongside conflicting
+parent references; it does not recover or report every alias stored in extension
+records.

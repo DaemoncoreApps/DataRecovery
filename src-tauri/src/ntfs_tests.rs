@@ -87,6 +87,18 @@ fn conflicting_file_name_parents_are_not_treated_as_a_verified_path() {
     assert!(parsed.parent_ambiguous);
     assert_eq!(parsed.parent, 5);
     assert_eq!(parsed.parent_sequence, 1);
+
+    let same_directory_links = record(
+        31,
+        3,
+        &[
+            filename_ref("first-link", 5, 1),
+            filename_ref("second-link", 5, 1),
+        ],
+    );
+    let parsed = ntfs::parse_record(&same_directory_links, 31, &boot).unwrap();
+    assert!(parsed.parent_ambiguous);
+    assert_eq!(parsed.name, "first-link");
 }
 
 fn nonresident(runs: &[u8], clusters: u64, size: u64, initialized: u64, flags: u16) -> Vec<u8> {

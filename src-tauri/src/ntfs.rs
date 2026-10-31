@@ -936,6 +936,11 @@ pub fn parse_record(raw: &[u8], number: u64, boot: &Boot) -> Result<Record> {
                     {
                         record.parent_ambiguous = true;
                     }
+                    if has_name && namespace == ns && record.name != text {
+                        // Multiple same-namespace names are separate links; a single restored path
+                        // would hide that the record had more than one directory entry.
+                        record.parent_ambiguous = true;
+                    }
                     if !has_name || (namespace == 2 && ns != 2) {
                         record.name = text;
                         record.parent = parent;
@@ -1392,7 +1397,7 @@ pub fn scan(
         };
         if candidate.parent_path.is_none() {
             candidate.notes.push(
-                "Original directory path could not be verified from matching NTFS parent sequence references; export will use a flat generated name.".into(),
+                "A unique original recovery path could not be verified from NTFS filename and parent references; export will use a flat generated name.".into(),
             );
         }
     }
