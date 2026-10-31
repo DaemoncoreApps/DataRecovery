@@ -441,3 +441,17 @@ The latest release binary and installer also include the no-follow file-opening,
 retained file handles, and package rescan described above.
 Signing, installer smoke tests, MSIX/Store review, and other release gates remain
 open.
+
+### Attribute-list attribute-instance identity
+
+The parser reads the 16-bit attribute ID from each `$ATTRIBUTE_LIST` entry and
+matches it against the referenced attribute header, in addition to record
+number, sequence, name, and lowest VCN. Duplicate-key detection now permits
+separate references that share type, name, and VCN when their referenced record
+or attribute ID differs, while still rejecting an exact duplicate reference.
+Fixtures assign nonzero IDs to the base `$ATTRIBUTE_LIST` and `$DATA` attributes,
+and verify that a wrong `$DATA` ID makes the candidate non-exportable. The
+continued-list fixture also exercises the attribute ID on the extension record.
+`npm run validate` passed with 78 tests, 0 failures, and 2 ignored. This improves
+attribute identity validation; hard-link-heavy Windows volumes still need an
+independently generated fixture before claiming broad hard-link coverage.

@@ -151,6 +151,15 @@ fn attribute_list_entry(
     record: u64,
     sequence: u16,
 ) -> Vec<u8> {
+    attribute_list_entry_with_id(attribute_type, lowest_vcn, record, sequence, 0)
+}
+fn attribute_list_entry_with_id(
+    attribute_type: u32,
+    lowest_vcn: u64,
+    record: u64,
+    sequence: u16,
+    attribute_id: u16,
+) -> Vec<u8> {
     let length = 32;
     let mut entry = vec![0; length];
     entry[..4].copy_from_slice(&attribute_type.to_le_bytes());
@@ -158,6 +167,7 @@ fn attribute_list_entry(
     entry[8..16].copy_from_slice(&lowest_vcn.to_le_bytes());
     let reference = record | (u64::from(sequence) << 48);
     entry[16..24].copy_from_slice(&reference.to_le_bytes());
+    entry[24..26].copy_from_slice(&attribute_id.to_le_bytes());
     entry
 }
 fn record(index: u32, flags: u16, attributes: &[Vec<u8>]) -> Vec<u8> {
@@ -171,8 +181,9 @@ fn record(index: u32, flags: u16, attributes: &[Vec<u8>]) -> Vec<u8> {
     r[28..32].copy_from_slice(&1024u32.to_le_bytes());
     r[44..48].copy_from_slice(&index.to_le_bytes());
     let mut pos = 56;
-    for a in attributes {
+    for (attribute_id, a) in attributes.iter().enumerate() {
         r[pos..pos + a.len()].copy_from_slice(a);
+        r[pos + 14..pos + 16].copy_from_slice(&(attribute_id as u16).to_le_bytes());
         pos += a.len();
     }
     r[pos..pos + 4].copy_from_slice(&u32::MAX.to_le_bytes());
@@ -246,12 +257,12 @@ fn image_with_attribute_list_layout(nonresident_list: bool, continued_list: bool
                 resident(0x80, b"not a complete continued stream"),
             ],
             22 => {
-                let mut list = attribute_list_entry(0x20, 0, 22, 1);
+                let mut list = attribute_list_entry_with_id(0x20, 0, 22, 1, 1);
                 if continued_list {
-                    list.extend(attribute_list_entry(0x20, 1, 23, 1));
+                    list.extend(attribute_list_entry_with_id(0x20, 1, 23, 1, 1));
                 }
                 list.extend(attribute_list_entry(0x30, 0, 22, 1));
-                list.extend(attribute_list_entry(0x80, 0, 22, 1));
+                list.extend(attribute_list_entry_with_id(0x80, 0, 22, 1, 2));
                 list.extend(attribute_list_entry(0x80, 1, 23, 1));
                 let list_attribute = if nonresident_list {
                     b[117 * 512..117 * 512 + list.len()].copy_from_slice(&list);
@@ -672,6 +683,20 @@ fn attribute_list_extents_are_sequence_checked_and_exported_as_one_stream() {
             .iter()
             .any(|candidate| candidate.id == 22 && candidate.exportable)
     );
+}
+
+#[test]
+fn attribute_list_data_reference_must_match_attribute_instance_id() {
+    let mut source = image();
+    let record_offset = 4 * 512 + 22 * 1024;
+    let list_offset = record_offset + 56 + filename_ref("continued-extents.bin", 30, 1).len();
+    // Resident list entries: $ATTRIBUTE_LIST, $FILE_NAME, then unnamed $DATA.
+    source.0[list_offset + 64 + 24..list_offset + 64 + 26].copy_from_slice(&3u16.to_le_bytes());
+    let scan = ntfs::scan(&source, 0, &AtomicBool::new(false), |_, _, _| {}).unwrap();
+    assert!(!scan
+        .candidates
+        .iter()
+        .any(|candidate| candidate.id == 22 && candidate.exportable));
 }
 
 #[test]

@@ -270,6 +270,7 @@ pub struct Record {
     pub number: u64,
     pub sequence: u16,
     base_reference: Option<(u64, u16)>,
+    attribute_list_id: Option<u16>,
     pub name: String,
     pub parent: u64,
     pub parent_sequence: u16,
@@ -288,6 +289,7 @@ pub struct Record {
 
 #[derive(Clone, Debug)]
 struct DataAttribute {
+    attribute_id: u16,
     name: String,
     lowest_vcn: u64,
     highest_vcn: u64,
@@ -309,6 +311,7 @@ struct AttributeListEntry {
     lowest_vcn: u64,
     record: u64,
     sequence: u16,
+    attribute_id: u16,
 }
 
 const MAX_ATTRIBUTE_LIST_ENTRIES: usize = 4096;
@@ -351,6 +354,7 @@ fn parse_nonresident_attribute(
         None
     };
     Ok(DataAttribute {
+        attribute_id: u16le(a, 14)?,
         name,
         lowest_vcn,
         highest_vcn,
@@ -409,6 +413,7 @@ fn read_nonresident_attribute_list(
                 && entry.lowest_vcn == 0
                 && entry.record == base.number
                 && entry.sequence == base.sequence
+                && Some(entry.attribute_id) == base.attribute_list_id
         }) {
             return Err("Nonresident attribute list does not reference its base extent".into());
         }
@@ -451,6 +456,7 @@ fn read_nonresident_attribute_list(
             return Err("Nonresident attribute-list continuation has no mapping".into());
         };
         if !segment.name.is_empty()
+            || segment.attribute_id != entry.attribute_id
             || segment.lowest_vcn != expected_vcn
             || segment.highest_vcn < segment.lowest_vcn
             || segment.flags != 0
@@ -493,7 +499,7 @@ fn read_nonresident_attribute_list(
         .iter()
         .map(|segment| {
             if segment.lowest_vcn == 0 {
-                Ok((segment.lowest_vcn, base.number, base.sequence))
+                Ok((segment.lowest_vcn, base.number, base.sequence, segment.attribute_id))
             } else {
                 extension_records
                     .iter()
@@ -501,7 +507,7 @@ fn read_nonresident_attribute_list(
                         matches!(record.attribute_list.as_ref(), Some(AttributeList::NonResident(candidate)) if candidate.lowest_vcn == segment.lowest_vcn)
                     })
                     .map(|(record_number, record)| {
-                        (segment.lowest_vcn, *record_number, record.sequence)
+                        (segment.lowest_vcn, *record_number, record.sequence, segment.attribute_id)
                     })
                     .ok_or_else(|| "Attribute-list continuation identity is unavailable".to_string())
             }
@@ -514,7 +520,12 @@ fn read_nonresident_attribute_list(
             if !entry.name.is_empty() {
                 return Err("Named attribute-list streams are unsupported".into());
             }
-            Ok((entry.lowest_vcn, entry.record, entry.sequence))
+            Ok((
+                entry.lowest_vcn,
+                entry.record,
+                entry.sequence,
+                entry.attribute_id,
+            ))
         })
         .collect::<Result<std::collections::BTreeSet<_>>>()?;
     if actual_refs != expected_refs {
@@ -620,12 +631,17 @@ fn parse_attribute_list_prefix(
         };
         let lowest_vcn = u64le(entry, 8)?;
         let reference = u64le(entry, 16)?;
-        if u16le(entry, 24)? != 0 {
-            return Err("Attribute-list reserved field is not zero".into());
-        }
+        let attribute_id = u16le(entry, 24)?;
         let record = reference & 0x0000_ffff_ffff_ffff;
         let sequence = (reference >> 48) as u16;
-        if !seen.insert((attribute_type, name.clone(), lowest_vcn)) {
+        if !seen.insert((
+            attribute_type,
+            name.clone(),
+            lowest_vcn,
+            record,
+            sequence,
+            attribute_id,
+        )) {
             return Err("Attribute list contains an invalid or duplicate reference".into());
         }
         entries.push(AttributeListEntry {
@@ -634,6 +650,7 @@ fn parse_attribute_list_prefix(
             lowest_vcn,
             record,
             sequence,
+            attribute_id,
         });
         position += length;
     }
@@ -657,13 +674,13 @@ fn assemble_unnamed_data(
     let base_data_refs = data_entries
         .iter()
         .filter(|entry| entry.record == base.number && entry.sequence == base.sequence)
-        .map(|entry| entry.lowest_vcn)
+        .map(|entry| (entry.lowest_vcn, entry.attribute_id))
         .collect::<std::collections::BTreeSet<_>>();
     let base_data_attributes = base
         .data_attributes
         .iter()
         .filter(|attribute| attribute.name.is_empty())
-        .map(|attribute| attribute.lowest_vcn)
+        .map(|attribute| (attribute.lowest_vcn, attribute.attribute_id))
         .collect::<std::collections::BTreeSet<_>>();
     if base_data_refs != base_data_attributes {
         return Err("Attribute list does not exactly reference base-record data extents".into());
@@ -698,7 +715,9 @@ fn assemble_unnamed_data(
             extension
         };
         let mut matches = record.data_attributes.iter().filter(|attribute| {
-            attribute.name.is_empty() && attribute.lowest_vcn == entry.lowest_vcn
+            attribute.name.is_empty()
+                && attribute.lowest_vcn == entry.lowest_vcn
+                && attribute.attribute_id == entry.attribute_id
         });
         let attribute = matches
             .next()
@@ -819,6 +838,7 @@ pub fn parse_record(raw: &[u8], number: u64, boot: &Boot) -> Result<Record> {
         number,
         sequence: u16le(&b, 16)?,
         base_reference,
+        attribute_list_id: None,
         name: format!("record_{number}"),
         parent: 0,
         parent_sequence: 0,
@@ -891,6 +911,7 @@ pub fn parse_record(raw: &[u8], number: u64, boot: &Boot) -> Result<Record> {
                 if !attribute_name.is_empty() || record.attribute_list.is_some() {
                     return Err("Named or duplicate attribute lists are unsupported".into());
                 }
+                record.attribute_list_id = Some(u16le(a, 14)?);
                 record.attribute_list = Some(match resident {
                     Some(value) => AttributeList::Resident(value.to_vec()),
                     None => AttributeList::NonResident(parse_nonresident_attribute(
@@ -945,6 +966,7 @@ pub fn parse_record(raw: &[u8], number: u64, boot: &Boot) -> Result<Record> {
                             blocked: None,
                         };
                         DataAttribute {
+                            attribute_id: u16le(a, 14)?,
                             name: attribute_name,
                             lowest_vcn: 0,
                             highest_vcn: 0,
