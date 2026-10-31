@@ -5,7 +5,7 @@
 - Unified `npm run validate` gate: passed (TypeScript/Vite, Rust format, tests, Clippy).
 - Latest `npm run validate` on 2026-10-31 passed: TypeScript/Vite production build, Rust format check, 75 Rust tests passed, 0 failed, 2 ignored, and Clippy with warnings denied.
 - Cargo reported that incremental-cache hard links were unavailable and copied cache files instead; the validation command still exited successfully.
-- Checkpoint and recovery verifiers open leaf files without following a final-component Windows reparse point and reject reparse-point package roots; Windows symlink regression cases are included.
+- Checkpoint and recovery verifiers open leaf files without following a final-component Windows reparse point and reject reparse-point package roots; Windows symlink regression cases are included. Path-based recursive enumeration does not hold directory handles against an intermediate-directory swap race.
 - Latest full `npm run validate` after reparse-point hardening: 75 Rust tests passed, 0 failed, 2 ignored; frontend build, Rust format, and Clippy with warnings denied passed.
 - Windows same-physical-disk rejection test: explicitly rerun on 2026-10-31 and passed (1 passed, 0 failed); its temporary source file was confined to ignored `src-tauri/target/test-temp`.
 - Controlled fixture writer: run explicitly with a task-owned output file and passed.
