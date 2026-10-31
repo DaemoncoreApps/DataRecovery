@@ -1,9 +1,11 @@
-# Recovery validation — 2026-10-30
+# Recovery validation — 2026-10-31
 
 ## Automated checks
 
 - Unified `npm run validate` gate: passed (TypeScript/Vite, Rust format, tests, Clippy).
-- Rust suite: 72 passed, 0 failed; 2 environment/manual fixture tasks ignored by default (latest parser coverage).
+- Latest `npm run validate` on 2026-10-31 passed: TypeScript/Vite production build, Rust format check, 73 Rust tests passed, 0 failed, 2 ignored, and Clippy with warnings denied.
+- Cargo reported that incremental-cache hard links were unavailable and copied cache files instead; the validation command still exited successfully.
+- The Rust suite previously had 72 passing tests; the latest count is 73.
 - Windows same-physical-disk rejection test: run explicitly and passed.
 - Controlled fixture writer: run explicitly with a task-owned output file and passed.
 - Clippy with warnings denied: passed.
