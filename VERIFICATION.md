@@ -259,6 +259,31 @@ The configured NSIS installer was also attempted with `npm exec -- tauri build
 3.13 tool because DNS/network access was unavailable; no installer was generated.
 Installer packaging, signing, and install/uninstall testing remain release gates.
 
+### Current offline Windows package and native audit smoke check
+
+The offline NSIS build completed on 2026-10-31 with WebView2 embedded. The staged
+standalone executable is 12,878,848 bytes with SHA-256
+`05f454fd727871f040a3d8c548b293c87e2dbf71f669692abe4a8412bf25abf1`. The offline
+setup is 222,183,617 bytes with SHA-256
+`bdb39591c6badf0b24c9303f09d92a4d49bc32160f86b5309cb5400258b7ca83`. Both report
+`NotSigned` under Windows Authenticode inspection.
+
+With explicit approval, the optimized executable was launched once for a native
+smoke check. The workspace opened, Evidence Vault loaded, and **Verify audit log**
+reported 27 records internally consistent. No independently retained head hash
+was entered; the UI correctly warned that a complete database rewrite cannot be
+detected without one. This checked startup and the read-only audit screen only; it
+did not test the installer, evidence acquisition, or recovery export in this run.
+
+For Microsoft Store planning, current Tauri v2 guidance says the Store flow uses a
+signed EXE or MSI installer linked from an unpackaged app listing, and requires an
+offline WebView2 installer. It does not generate an MSIX package. This project has
+the offline WebView2 and distinct publisher settings, but lacks trusted signing,
+updater configuration, and Store submission. See the [Tauri Microsoft Store
+guide](https://v2.tauri.app/distribute/microsoft-store/) and [Windows code signing
+guide](https://v2.tauri.app/distribute/sign/windows/). The current unsigned NSIS
+artifact is not a production release.
+
 ## Not yet verified for release
 
 The extraction/output implementation itself is exercised against actual temporary

@@ -15,7 +15,7 @@
 | Cases | Persistent title/examiner register, creation-event reconciliation for audited cases, legacy rows explicitly marked unverified, active-case pointer reconciliation and audited correction path, evidence-open gate, evidence-source and completed-scan inventory visible in case management, archived candidate review | Full case lifecycle, import/export integrity, notes, timelines, scan reactivation, and external integrity anchors |
 | Reports | Recovery manifest and JSONL inventory | Forensic HTML/PDF/CSV/JSON reports |
 | Settings | Actual fixed engine defaults displayed | Persisted, validated editable profiles |
-| Distribution | Buildable Windows executable and unsigned x64 NSIS installer with embedded offline WebView2 runtime | Installer launch/install verification, signing, MSIX/Store policy, packaged tests, release performance validation |
+| Distribution | Buildable Windows executable and unsigned x64 NSIS installer with embedded offline WebView2 runtime | Installer launch/install/uninstall verification, trusted code signing, Store updater policy and submission, packaged tests, accessibility and release performance validation; current Tauri Store flow uses EXE/MSI installers linked to an unpackaged app, not an MSIX build |
 
 A feature is supported only to the scope in the Working now column. No product
 release should describe this matrix as complete. The original production brief
@@ -28,5 +28,7 @@ remains the target.
 - Real damaged images, overwrite/TRIM cases, Unicode/deep paths, large images.
 - Restricted-account tests, representative large-image exports, and failure/crash recovery.
 - Source-protection, failure recovery and crash/resume verification.
-- Device/helper and Microsoft Store/MSIX deployment-policy review.
+- Device/helper and Microsoft Store deployment-policy review. Current Tauri Store
+  guidance uses a signed EXE or MSI installer linked to an unpackaged app; do not
+  treat the NSIS bundle as an MSIX package.
 - Installer/package testing, signing, accessibility and performance benchmarks.

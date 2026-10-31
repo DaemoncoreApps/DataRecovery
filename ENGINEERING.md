@@ -53,7 +53,9 @@ from a native scan. Windows pickers authorize source/destination paths.
    integrating any physical disk helper.
 6. Add tested RAID 0/1 read mappings and advanced hex inspection.
 7. Complete reports, settings, accessibility and large-dataset performance.
-8. Resolve Store/helper/MSIX policy, signing and packaged restricted-account tests.
+8. Resolve Store/helper policy, updater configuration, trusted signing and packaged
+   restricted-account tests. The current Tauri Store route uses signed EXE/MSI
+   installers linked to an unpackaged app; this project does not build MSIX.
 
 CAPABILITIES.md is the current support matrix. Passing current tests does not make
 unfinished modules operational or establish production readiness.

@@ -131,8 +131,11 @@ they remain read-only snapshots and cannot be exported until the source is reope
 and a fresh scan is completed.
 
 FAT32/exFAT recovery, carving, physical-device acquisition, RAID, report generation,
-editable persistent settings, advanced hex analysis and Store/MSIX signing remain
-pending. See CAPABILITIES.md and ENGINEERING.md for release gates.
+editable persistent settings, advanced hex analysis and Microsoft Store release
+remain pending. The current Tauri Store route uses a signed EXE or MSI installer
+linked from an unpackaged app listing; this project currently builds an unsigned
+NSIS EXE and does not produce MSIX. Store signing, updater policy and submission
+are not configured. See CAPABILITIES.md and ENGINEERING.md for release gates.
 
 The application cannot provide hardware write protection. Use validated working
 copies and a hardware write blocker where appropriate. Windows disk identities
