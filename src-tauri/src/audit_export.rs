@@ -190,7 +190,7 @@ fn read_bundle_file(directory: &Path, name: &str, maximum_bytes: u64) -> Result<
     if !metadata.is_file() || metadata.file_type().is_symlink() {
         return Err(format!("Checkpoint entry {name} is not a regular file."));
     }
-    let file = fs::File::open(path).map_err(err)?;
+    let file = crate::safe_file::open_regular_file(&path).map_err(err)?;
     let opened_metadata = file.metadata().map_err(err)?;
     if !opened_metadata.is_file() || opened_metadata.len() > maximum_bytes {
         return Err(format!(
@@ -242,6 +242,7 @@ fn verify_bundle(
     directory: &Path,
     expected_head_sha256: Option<&str>,
 ) -> Result<CheckpointVerification> {
+    crate::safe_file::require_plain_directory(directory).map_err(err)?;
     if let Some(expected) = expected_head_sha256 {
         if expected.len() != 64 || !expected.bytes().all(|byte| byte.is_ascii_hexdigit()) {
             return Err(

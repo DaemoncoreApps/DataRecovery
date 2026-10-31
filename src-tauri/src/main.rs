@@ -19,6 +19,7 @@ mod partition;
 mod recovery;
 mod recovery_commands;
 mod recovery_verify;
+mod safe_file;
 mod storage;
 
 #[derive(Serialize, Clone)]

@@ -120,7 +120,7 @@ fn read_bounded(directory: &Path, name: &str, maximum: u64) -> Result<Vec<u8>> {
             "Recovery package entry {name} is not a bounded regular file."
         ));
     }
-    let mut file = fs::File::open(path).map_err(err)?;
+    let mut file = crate::safe_file::open_regular_file(&path).map_err(err)?;
     let opened = file.metadata().map_err(err)?;
     if !opened.is_file() || opened.len() != before.len() {
         return Err(format!(
@@ -155,7 +155,7 @@ fn hash_regular_file(path: &Path) -> Result<(String, u64)> {
             path.display()
         ));
     }
-    let mut file = fs::File::open(path).map_err(err)?;
+    let mut file = crate::safe_file::open_regular_file(path).map_err(err)?;
     let opened = file.metadata().map_err(err)?;
     if !opened.is_file() || opened.len() != before.len() {
         return Err(format!(
@@ -332,6 +332,7 @@ fn enumerate_entries(directory: &Path) -> Result<(BTreeSet<String>, BTreeSet<Str
 }
 
 pub(crate) fn verify_package(directory: &Path) -> Result<RecoveryExportVerification> {
+    crate::safe_file::require_plain_directory(directory).map_err(err)?;
     let (entries, directories) = enumerate_entries(directory)?;
     let checksums_bytes = read_bounded(directory, "checksums.sha256", MAX_CHECKSUMS_BYTES)?;
     let completion_bytes = read_bounded(directory, "completion.json", MAX_METADATA_BYTES)?;

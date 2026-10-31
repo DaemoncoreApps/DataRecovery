@@ -3,9 +3,10 @@
 ## Automated checks
 
 - Unified `npm run validate` gate: passed (TypeScript/Vite, Rust format, tests, Clippy).
-- Latest `npm run validate` on 2026-10-31 passed: TypeScript/Vite production build, Rust format check, 73 Rust tests passed, 0 failed, 2 ignored, and Clippy with warnings denied.
+- Latest `npm run validate` on 2026-10-31 passed: TypeScript/Vite production build, Rust format check, 75 Rust tests passed, 0 failed, 2 ignored, and Clippy with warnings denied.
 - Cargo reported that incremental-cache hard links were unavailable and copied cache files instead; the validation command still exited successfully.
-- The Rust suite previously had 72 passing tests; the latest count is 73.
+- Checkpoint and recovery verifiers open leaf files without following a final-component Windows reparse point and reject reparse-point package roots; Windows symlink regression cases are included.
+- Latest full `npm run validate` after reparse-point hardening: 75 Rust tests passed, 0 failed, 2 ignored; frontend build, Rust format, and Clippy with warnings denied passed.
 - Windows same-physical-disk rejection test: explicitly rerun on 2026-10-31 and passed (1 passed, 0 failed); its temporary source file was confined to ignored `src-tauri/target/test-temp`.
 - Controlled fixture writer: run explicitly with a task-owned output file and passed.
 - Clippy with warnings denied: passed.
@@ -390,12 +391,12 @@ The configured NSIS bundle was then changed to embed WebView2 using Tauri's
 `offlineInstaller` mode, so installation does not need to download that runtime.
 The generated x64 offline setup is
 `DaemonCore-Data-Recovery-Windows-0.1.0-x64-offline-setup-unsigned.exe`,
-222,181,509 bytes (211.89 MiB), SHA-256
-`772f0651883661da898c55b319b0230a9d4a42dec9f83c228d4154798da5da31`.
+222,181,083 bytes (211.89 MiB), SHA-256
+`8368c5f93e888210914260f032c4a897f208a1bc2e439ec0ae430b181033debe`.
 The matching rebuilt executable is
 `DaemonCore-Data-Recovery-Windows-0.1.0-offline-webview-unsigned.exe`,
-12,867,072 bytes, SHA-256
-`d747d3f18a63b9c2db19dd2fc3f425abf5110969ecd47e83f82886889783e6af`.
+12,866,048 bytes, SHA-256
+`29251c683f25efafb3f41ca5d46ffc35ea42b137fd2b96b5dba966e80e95e81f`.
 Both files are unsigned. The bundle was generated successfully, but the installer
 was not launched or installed. A requested native startup smoke was stopped by
 the physical Escape key before the app could be inspected. Therefore install,
@@ -408,5 +409,7 @@ installer includes it. A clean `npm run tauri build -- --no-bundle` left the bin
 bundle marker in its expected unbundled state; the following NSIS build patched
 it without warning and restored the standalone binary. The app does not currently
 include the Tauri updater plugin, so updater installation is not implemented.
+The latest release binary and installer also include the no-follow file-opening
+and reparse-point root checks described in the automated validation results above.
 Signing, installer smoke tests, MSIX/Store review, and other release gates remain
 open.
