@@ -75,16 +75,12 @@ export function JobPanel({ job, cancel }: Props) {
           <strong>{job.total ? `${percent.toFixed(1)}%` : "—"}</strong>
         </div>
       </div>
-      <div
+      <progress
         className="progress"
-        role="progressbar"
         aria-label={`${operation} progress`}
-        aria-valuenow={percent}
-        aria-valuemin={0}
-        aria-valuemax={100}
-      >
-        <div style={{ width: `${percent}%` }} />
-      </div>
+        max={100}
+        value={Math.min(percent, 100)}
+      />
       <div className="jobFoot">
         <span>
           {job.kind === "ntfs_scan"

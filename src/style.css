@@ -754,6 +754,9 @@ h3 {
   letter-spacing: 0.6px;
   color: #68778e;
 }
+.caseEmpty {
+  padding: 0 24px 18px;
+}
 .statusPill {
   display: inline-flex;
   align-items: center;
@@ -838,16 +841,26 @@ h3 {
   font-weight: 400;
 }
 .progress {
+  appearance: none;
+  display: block;
+  width: calc(100% - 44px);
   height: 3px;
   background: #ffffff06;
   margin: 0 22px 14px;
   border-radius: 3px;
   overflow: hidden;
+  border: 0;
 }
-.progress > div {
-  height: 100%;
+.progress::-webkit-progress-bar {
+  background: #ffffff06;
+  border-radius: 3px;
+}
+.progress::-webkit-progress-value {
   background: #cf5064;
   transition: width 0.25s ease;
+}
+.progress::-moz-progress-bar {
+  background: #cf5064;
 }
 .jobFoot {
   display: flex;

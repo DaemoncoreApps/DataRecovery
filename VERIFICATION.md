@@ -465,3 +465,16 @@ record contains distinct same-namespace `$FILE_NAME` values even when they share
 the same parent directory. The test covers that case alongside conflicting
 parent references; it does not recover or report every alias stored in extension
 records.
+
+### Packaged webview CSP tightening
+
+The production CSP now denies embedded objects and framing, restricts base URLs
+to the app origin, and limits form submission to the app origin. Its `style-src`
+allows only packaged local styles; the frontend's inline style attributes were
+removed by moving the operation meter to a native `<progress>` element and the
+case empty-state spacing to CSS. `devCsp` separately permits inline styles for
+Vite hot reload. The policy retains only local image sources and Tauri IPC for
+connectivity. `npm run validate` passed, and `npm run tauri build -- --no-bundle`
+accepted the production configuration and built the optimized Windows target.
+The actual WebView response headers and full native screen behavior remain
+unverified until the app can be launched for a smoke check.

@@ -443,7 +443,7 @@ function App() {
                     </div>
                   ))
                 ) : (
-                  <p className="muted" style={{ padding: "0 24px 18px" }}>
+                  <p className="muted caseEmpty">
                     No source images recorded in this case.
                   </p>
                 )}
@@ -472,7 +472,7 @@ function App() {
                     </div>
                   ))
                 ) : (
-                  <p className="muted" style={{ padding: "0 24px 18px" }}>
+                  <p className="muted caseEmpty">
                     No completed scans recorded in this case.
                   </p>
                 )}
