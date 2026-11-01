@@ -1,3 +1,4 @@
+pub mod fat32;
 pub mod ntfs;
 pub mod partition;
 

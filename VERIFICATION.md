@@ -1024,4 +1024,24 @@ The parser now rejects a primary GPT header whose last usable LBA lies outside
 the image. A CRC-valid malformed-header regression confirms rejection while
 retaining valid backup fallback. The local `npm run validate` passed with 39
 core tests, 75 desktop tests (3 ignored), formatting, and Clippy with warnings
-denied. Hosted validation for this follow-up is pending.
+denied. Hosted CI run
+[41360879156](https://github.com/DaemoncoreApps/DataRecovery/actions/runs/41360879156)
+for commit `43bec04506a3f688068cc93fea2a2345ad9c3251` passed Windows validation
+(39 core tests, 75 desktop tests with 3 ignored, production build, formatting,
+and Clippy with warnings denied) and all three bounded fuzz campaigns. Its
+retained fuzz archive is
+[13104879644](https://github.com/DaemoncoreApps/DataRecovery/actions/runs/41360879156/artifacts/13104879644),
+538,886 bytes, SHA-256
+`ee93626cc5c10b90e20bab929e206d1eee0fc77ef3e87b1b5f7180a6d843e098`,
+expiring 2026-11-15.
+
+The NTFS core crate now also contains an unexposed FAT32 volume mapper. It
+validates partition bounds and FAT32 geometry, resolves bounded fragmented
+cluster chains, rejects cycles, free/reserved/bad clusters, insufficient chains,
+and disagreement between mirrored FAT copies, and can read requested file
+ranges without buffering whole files. A synthetic 65,525-cluster image verifies
+fragmented reads and failure cases. This is parser-layer groundwork only: it is
+not wired into directory traversal, the application scan/persistence/export
+path, or deleted-file recovery. `npm run validate` passed locally with 40 core
+tests, 75 desktop tests (3 ignored), frontend build, formatting, and Clippy with
+warnings denied. Hosted validation for this addition is pending.
