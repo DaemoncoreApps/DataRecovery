@@ -49,6 +49,148 @@ struct ExfatBootMetadata {
     volume_serial: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Fat32BootMetadata {
+    bytes_per_sector: u16,
+    sectors_per_cluster: u8,
+    reserved_sectors: u16,
+    fat_count: u8,
+    total_sectors: u32,
+    sectors_per_fat: u32,
+    root_cluster: u32,
+    fsinfo_sector: u16,
+    backup_boot_sector: u16,
+    volume_serial: u32,
+}
+
+fn parse_fat32_boot_sector(
+    boot: &[u8],
+    expected_sector_size: u32,
+    partition_sectors: u64,
+) -> Option<Fat32BootMetadata> {
+    if boot.len() < 512
+        || !matches!(boot.get(..3)?, [0xeb, _, 0x90] | [0xe9, _, _])
+        || boot.get(510..512)? != [0x55, 0xaa]
+    {
+        return None;
+    }
+
+    let bytes_per_sector = u16::from_le_bytes(boot.get(11..13)?.try_into().ok()?);
+    let sectors_per_cluster = *boot.get(13)?;
+    let reserved_sectors = u16::from_le_bytes(boot.get(14..16)?.try_into().ok()?);
+    let fat_count = *boot.get(16)?;
+    let root_entry_count = u16::from_le_bytes(boot.get(17..19)?.try_into().ok()?);
+    let total_sectors_16 = u16::from_le_bytes(boot.get(19..21)?.try_into().ok()?);
+    let fat_size_16 = u16::from_le_bytes(boot.get(22..24)?.try_into().ok()?);
+    let total_sectors = u32_at(boot, 32)?;
+    let sectors_per_fat = u32_at(boot, 36)?;
+    let extended_flags = u16::from_le_bytes(boot.get(40..42)?.try_into().ok()?);
+    let filesystem_version = u16::from_le_bytes(boot.get(42..44)?.try_into().ok()?);
+    let root_cluster = u32_at(boot, 44)?;
+    let fsinfo_sector = u16::from_le_bytes(boot.get(48..50)?.try_into().ok()?);
+    let backup_boot_sector = u16::from_le_bytes(boot.get(50..52)?.try_into().ok()?);
+    let volume_serial = u32_at(boot, 67)?;
+
+    if u32::from(bytes_per_sector) != expected_sector_size
+        || !(512..=4096).contains(&bytes_per_sector)
+        || !bytes_per_sector.is_power_of_two()
+        || !sectors_per_cluster.is_power_of_two()
+        || sectors_per_cluster > 128
+        || reserved_sectors == 0
+        || !matches!(fat_count, 1 | 2)
+        || root_entry_count != 0
+        || total_sectors_16 != 0
+        || fat_size_16 != 0
+        || total_sectors == 0
+        || u64::from(total_sectors) > partition_sectors
+        || sectors_per_fat == 0
+        || extended_flags & !0x008f != 0
+        || (extended_flags & 0x0080 != 0
+            && u8::try_from(extended_flags & 0x000f)
+                .ok()
+                .is_none_or(|active_fat| active_fat >= fat_count))
+        || filesystem_version != 0
+        || !(2..=0x0fff_fff6).contains(&root_cluster)
+        || (fsinfo_sector != u16::MAX && (fsinfo_sector == 0 || fsinfo_sector >= reserved_sectors))
+        || !matches!(backup_boot_sector, 0 | 6)
+        || (backup_boot_sector == 6
+            && (backup_boot_sector >= reserved_sectors || backup_boot_sector == fsinfo_sector))
+        || boot.get(52..64)?.iter().any(|byte| *byte != 0)
+    {
+        return None;
+    }
+
+    let fat_area_sectors = u64::from(fat_count).checked_mul(u64::from(sectors_per_fat))?;
+    let data_start = u64::from(reserved_sectors).checked_add(fat_area_sectors)?;
+    if data_start >= u64::from(total_sectors) {
+        return None;
+    }
+    let data_sectors = u64::from(total_sectors).checked_sub(data_start)?;
+    let cluster_count = data_sectors.checked_div(u64::from(sectors_per_cluster))?;
+    let fat_capacity_entries = u64::from(sectors_per_fat)
+        .checked_mul(u64::from(bytes_per_sector))?
+        .checked_div(4)?;
+    if !(65_525..=0x0fff_fff5).contains(&cluster_count)
+        || u64::from(root_cluster) > cluster_count.checked_add(1)?
+        || fat_capacity_entries < cluster_count.checked_add(2)?
+    {
+        return None;
+    }
+
+    Some(Fat32BootMetadata {
+        bytes_per_sector,
+        sectors_per_cluster,
+        reserved_sectors,
+        fat_count,
+        total_sectors,
+        sectors_per_fat,
+        root_cluster,
+        fsinfo_sector,
+        backup_boot_sector,
+        volume_serial,
+    })
+}
+
+fn fat32_geometry_hint<R: Read + Seek>(
+    r: &mut R,
+    volume_offset: u64,
+    partition_sectors: u64,
+    sector_size: u32,
+    image_size: u64,
+    primary_boot: &[u8],
+) -> Option<String> {
+    let primary = parse_fat32_boot_sector(primary_boot, sector_size, partition_sectors)?;
+    if primary.backup_boot_sector == 0 {
+        return Some(
+            "FAT32 main boot geometry validated (backup boot sector not declared; file parser unavailable)"
+                .into(),
+        );
+    }
+    let backup_offset = volume_offset
+        .checked_add(u64::from(primary.backup_boot_sector).checked_mul(u64::from(sector_size))?)?;
+    let backup_boot = read_at(
+        r,
+        backup_offset,
+        usize::try_from(sector_size).ok()?,
+        image_size,
+    )
+    .ok()?;
+    let backup = parse_fat32_boot_sector(&backup_boot, sector_size, partition_sectors);
+    match backup {
+        Some(backup) if backup == primary => Some(
+            "FAT32 main and backup boot geometry validated (file parser unavailable)".into(),
+        ),
+        Some(_) => Some(
+            "FAT32 main boot geometry validated; backup boot metadata differs (file parser unavailable)"
+                .into(),
+        ),
+        None => Some(
+            "FAT32 main boot geometry validated; backup boot sector invalid (file parser unavailable)"
+                .into(),
+        ),
+    }
+}
+
 fn exfat_boot_checksum(region: &[u8], bytes_per_sector: usize) -> Option<u32> {
     if !(512..=4096).contains(&bytes_per_sector) || !bytes_per_sector.is_power_of_two() {
         return None;
@@ -272,13 +414,8 @@ fn filesystem_hint<R: Read + Seek>(
         if total > 0 && total <= partition_sectors {
             return Some("NTFS boot signature (basic geometry checked; parser unavailable)".into());
         }
-    } else if b.get(82..90) == Some(b"FAT32   ") {
-        let total = u32_at(&b, 32)? as u64;
-        if total > 0 && total <= partition_sectors {
-            return Some(
-                "FAT32 boot signature (basic geometry checked; parser unavailable)".into(),
-            );
-        }
+    } else {
+        return fat32_geometry_hint(r, offset, partition_sectors, sector_size, image_size, &b);
     }
     None
 }
@@ -721,6 +858,135 @@ mod tests {
         let backup_start = sector_size + 12 * sector_size;
         image[backup_start..backup_start + backup_region.len()].copy_from_slice(backup_region);
         image
+    }
+
+    fn fat32_boot_sector() -> Vec<u8> {
+        let mut boot = vec![0; 512];
+        boot[..3].copy_from_slice(&[0xeb, 0x58, 0x90]);
+        boot[11..13].copy_from_slice(&512_u16.to_le_bytes());
+        boot[13] = 1;
+        boot[14..16].copy_from_slice(&32_u16.to_le_bytes());
+        boot[16] = 2;
+        boot[21] = 0xf8;
+        boot[32..36].copy_from_slice(&66_581_u32.to_le_bytes());
+        boot[36..40].copy_from_slice(&512_u32.to_le_bytes());
+        boot[44..48].copy_from_slice(&2_u32.to_le_bytes());
+        boot[48..50].copy_from_slice(&1_u16.to_le_bytes());
+        boot[50..52].copy_from_slice(&6_u16.to_le_bytes());
+        boot[66] = 0x29;
+        boot[67..71].copy_from_slice(&0x1234_5678_u32.to_le_bytes());
+        boot[82..90].copy_from_slice(b"FAT32   ");
+        boot[510..512].copy_from_slice(&[0x55, 0xaa]);
+        boot
+    }
+
+    fn mbr_with_fat32(boot: &[u8], backup_boot: &[u8]) -> Vec<u8> {
+        let sector_size = 512_usize;
+        let total_sectors = 66_581_usize;
+        let mut image = vec![0; (total_sectors + 1) * sector_size];
+        image[510..512].copy_from_slice(&[0x55, 0xaa]);
+        image[446 + 4] = 0x0b;
+        image[446 + 8..446 + 12].copy_from_slice(&1_u32.to_le_bytes());
+        image[446 + 12..446 + 16].copy_from_slice(&(total_sectors as u32).to_le_bytes());
+        image[sector_size..sector_size + boot.len()].copy_from_slice(boot);
+        let backup_start = sector_size + 6 * sector_size;
+        image[backup_start..backup_start + backup_boot.len()].copy_from_slice(backup_boot);
+        image
+    }
+
+    #[test]
+    fn validates_fat32_primary_and_backup_boot_geometry() {
+        let boot = fat32_boot_sector();
+        let metadata = parse_fat32_boot_sector(&boot, 512, 66_581).unwrap();
+        assert_eq!(metadata.bytes_per_sector, 512);
+        assert_eq!(metadata.sectors_per_cluster, 1);
+        assert_eq!(metadata.reserved_sectors, 32);
+        assert_eq!(metadata.fat_count, 2);
+        assert_eq!(metadata.total_sectors, 66_581);
+        assert_eq!(metadata.sectors_per_fat, 512);
+        assert_eq!(metadata.root_cluster, 2);
+        assert_eq!(metadata.fsinfo_sector, 1);
+        assert_eq!(metadata.backup_boot_sector, 6);
+        assert_eq!(metadata.volume_serial, 0x1234_5678);
+
+        let image = mbr_with_fat32(&boot, &boot);
+        let report = analyze(&mut Cursor::new(image.clone()), image.len() as u64).unwrap();
+        assert!(report.partitions[0]
+            .filesystem_hint
+            .as_deref()
+            .unwrap()
+            .contains("main and backup boot geometry validated"));
+    }
+
+    #[test]
+    fn reports_invalid_fat32_backup_without_trusting_it() {
+        let boot = fat32_boot_sector();
+        let mut backup = boot.clone();
+        backup[510] ^= 1;
+        let image = mbr_with_fat32(&boot, &backup);
+        let report = analyze(&mut Cursor::new(image.clone()), image.len() as u64).unwrap();
+        assert!(report.partitions[0]
+            .filesystem_hint
+            .as_deref()
+            .unwrap()
+            .contains("backup boot sector invalid"));
+    }
+
+    #[test]
+    fn accepts_fat32_without_a_declared_backup_or_fsinfo_sector() {
+        let mut boot = fat32_boot_sector();
+        boot[48..50].copy_from_slice(&u16::MAX.to_le_bytes());
+        boot[50..52].copy_from_slice(&0_u16.to_le_bytes());
+        let image = mbr_with_fat32(&boot, &[]);
+        let report = analyze(&mut Cursor::new(image.clone()), image.len() as u64).unwrap();
+        assert!(report.partitions[0]
+            .filesystem_hint
+            .as_deref()
+            .unwrap()
+            .contains("backup boot sector not declared"));
+    }
+
+    #[test]
+    fn rejects_fat32_boot_geometry_with_inconsistent_bounds() {
+        let valid = fat32_boot_sector();
+        assert!(parse_fat32_boot_sector(&valid, 512, 66_581).is_some());
+
+        let mut uninformative_label = valid.clone();
+        uninformative_label[82..90].copy_from_slice(b"NO NAME ");
+        assert!(parse_fat32_boot_sector(&uninformative_label, 512, 66_581).is_some());
+
+        let mut undersized_volume = valid.clone();
+        undersized_volume[32..36].copy_from_slice(&66_580_u32.to_le_bytes());
+        assert_eq!(
+            parse_fat32_boot_sector(&undersized_volume, 512, 66_581),
+            None
+        );
+
+        let mut undersized_fat = valid.clone();
+        undersized_fat[36..40].copy_from_slice(&511_u32.to_le_bytes());
+        assert_eq!(parse_fat32_boot_sector(&undersized_fat, 512, 66_581), None);
+
+        let mut invalid_root = valid.clone();
+        invalid_root[44..48].copy_from_slice(&65_527_u32.to_le_bytes());
+        assert_eq!(parse_fat32_boot_sector(&invalid_root, 512, 66_581), None);
+
+        let mut invalid_backup = valid;
+        invalid_backup[50..52].copy_from_slice(&32_u16.to_le_bytes());
+        assert_eq!(parse_fat32_boot_sector(&invalid_backup, 512, 66_581), None);
+
+        let mut backup_outside_reserved = fat32_boot_sector();
+        backup_outside_reserved[14..16].copy_from_slice(&6_u16.to_le_bytes());
+        assert_eq!(
+            parse_fat32_boot_sector(&backup_outside_reserved, 512, 66_581),
+            None
+        );
+
+        let mut fsinfo_overlaps_backup = fat32_boot_sector();
+        fsinfo_overlaps_backup[48..50].copy_from_slice(&6_u16.to_le_bytes());
+        assert_eq!(
+            parse_fat32_boot_sector(&fsinfo_overlaps_backup, 512, 66_581),
+            None
+        );
     }
 
     #[test]

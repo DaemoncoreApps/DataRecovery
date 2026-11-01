@@ -100,11 +100,12 @@ export function PartitionPanel({ source, busy, analyze }: Props) {
                 </div>
               )}
               <p className="panelFootnote">
-                exFAT boot-region checksums and geometry are validated. NTFS
-                and FAT32 identification uses boot signatures and basic
-                geometry only. These checks do not validate filesystem
-                directories or file contents. File recovery and partition-table
-                repair are not provided here.
+                exFAT boot-region checksums and geometry are validated.
+                FAT32 identification checks BPB geometry, FAT capacity, cluster
+                bounds, and the declared backup boot sector. NTFS checks only
+                its boot signature and basic geometry. These checks do not
+                validate directories or file contents. File recovery and
+                partition-table repair are not provided here.
               </p>
             </>
           )}

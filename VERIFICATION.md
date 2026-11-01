@@ -848,3 +848,26 @@ ignored), Rust format checks, and Clippy with warnings denied. These are
 specification-derived synthetic fixtures; an independently formatted exFAT
 volume fixture has not yet been verified, and exFAT recovery remains
 unimplemented.
+
+### FAT32 boot-sector geometry
+
+FAT32 partition hints now derive the FAT type from BPB geometry instead of
+trusting the informational `FAT32` label. Validation checks the sector and
+cluster sizes, FAT32-required BPB fields, cluster-count range, FAT capacity,
+root-cluster bounds, FSInfo pointer, and the specified backup-sector pointer.
+When sector 6 is declared, its BPB geometry is compared with the primary
+sector; a damaged or inconsistent backup is reported while the valid primary
+remains identified. This does not recover from a damaged primary boot sector,
+validate the complete three-sector backup boot record, inspect FSInfo contents,
+read FAT allocation tables, or parse directories and files.
+
+The BPB field rules and cluster-count type determination follow the
+[Microsoft FAT Specification](https://www.scs.stanford.edu/~zyedidia/docs/_other/fat.pdf).
+Synthetic regressions cover matching and invalid backup sectors, absent backup
+and FSInfo pointers, informational volume labels, under-sized FAT capacity,
+volume bounds, invalid root clusters, and overlapping/out-of-bounds reserved
+sector pointers. `npm run validate` passed: frontend build, 4 NTFS-core tests,
+95 desktop tests (3 ignored), Rust format checks, and Clippy with warnings
+denied. These fixtures are constructed from specification fields; no
+independently formatted FAT32 volume has yet been verified, and FAT32 file
+recovery remains unimplemented.
