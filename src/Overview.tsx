@@ -140,7 +140,7 @@ export function Overview({
               </button>
               <button
                 className="workflowStep"
-                onClick={() => setPage("Device Explorer")}
+                onClick={() => setPage("Image Workspace")}
               >
                 <span className="stepNumber">03</span>
                 <div>

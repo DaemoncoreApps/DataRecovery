@@ -200,7 +200,7 @@ export function RecoveryPanel({ source, job, busy, run, onJob }: Props) {
             </div>
             {!source?.sha256 && (
               <p className="muted recoveryHashNotice">
-                Calculate and record the source SHA-256 in Device Explorer before scanning.
+                Calculate and record the source SHA-256 in Image Workspace before scanning.
               </p>
             )}
             {partitions && (

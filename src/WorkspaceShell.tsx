@@ -25,7 +25,7 @@ const groups = [
     label: "Workspace",
     items: [
       ["Dashboard", Activity],
-      ["Device Explorer", HardDrive],
+      ["Image Workspace", HardDrive],
       ["Case Management", FolderOpen],
     ],
   },

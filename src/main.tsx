@@ -148,7 +148,7 @@ function App() {
         setSource(s);
         setData([]);
         setJob(emptyJob);
-        setPage("Device Explorer");
+        setPage("Image Workspace");
       }
     });
   const hash = () =>
@@ -250,7 +250,7 @@ function App() {
           setPage={setPage}
           busy={busy}
         />
-      ) : page === "Device Explorer" ? (
+      ) : page === "Image Workspace" ? (
         <>
           {sourcePanel}
           {jobPanel}
@@ -572,7 +572,7 @@ function App() {
               No recovery or validation results are generated for unsupported
               operations.
             </p>
-            <button onClick={() => setPage("Device Explorer")}>
+            <button onClick={() => setPage("Image Workspace")}>
               Open evidence workspace <ChevronRight size={14} />
             </button>
           </div>
