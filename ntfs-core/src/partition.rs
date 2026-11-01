@@ -506,6 +506,11 @@ fn gpt_header_layout_valid(
         entries_start_lba <= header.last_usable_lba && entries_end_lba >= header.first_usable_lba;
     let overlaps_header = (entries_start_lba..=entries_end_lba).contains(&header.current_lba)
         || (entries_start_lba..=entries_end_lba).contains(&header.backup_lba);
+    let entries_on_expected_side = if observed_lba == 1 {
+        entries_start_lba > header.current_lba && entries_end_lba < header.first_usable_lba
+    } else {
+        entries_start_lba > header.last_usable_lba && entries_end_lba < header.current_lba
+    };
 
     header.current_lba == observed_lba
         && backup_reference_valid
@@ -515,6 +520,7 @@ fn gpt_header_layout_valid(
         && entries_end <= image_end
         && !overlaps_usable
         && !overlaps_header
+        && entries_on_expected_side
 }
 
 struct GptHeader {
@@ -1396,6 +1402,34 @@ mod tests {
 
         assert_eq!(report.primary_gpt_valid, Some(false));
         assert_eq!(report.backup_gpt_valid, Some(true));
+        assert_eq!(report.partitions.len(), 1);
+    }
+
+    #[test]
+    fn rejects_primary_gpt_entry_array_after_usable_space() {
+        let mut image = valid_gpt_image();
+        image.copy_within(2 * 512..3 * 512, 91 * 512);
+        image[512 + 72..512 + 80].copy_from_slice(&91_u64.to_le_bytes());
+        update_gpt_header_crc(&mut image, 1);
+
+        let report = analyze(&mut Cursor::new(image.clone()), image.len() as u64).unwrap();
+
+        assert_eq!(report.primary_gpt_valid, Some(false));
+        assert_eq!(report.backup_gpt_valid, Some(true));
+        assert_eq!(report.partitions.len(), 1);
+    }
+
+    #[test]
+    fn rejects_backup_gpt_entry_array_before_usable_space() {
+        let mut image = valid_gpt_image();
+        image.copy_within(98 * 512..99 * 512, 2 * 512);
+        image[99 * 512 + 72..99 * 512 + 80].copy_from_slice(&2_u64.to_le_bytes());
+        update_gpt_header_crc(&mut image, 99);
+
+        let report = analyze(&mut Cursor::new(image.clone()), image.len() as u64).unwrap();
+
+        assert_eq!(report.primary_gpt_valid, Some(true));
+        assert_eq!(report.backup_gpt_valid, Some(false));
         assert_eq!(report.partitions.len(), 1);
     }
 

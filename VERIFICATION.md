@@ -933,3 +933,27 @@ is 526,637 bytes, SHA-256
 `7ae2ed26029dfa9aa6dc3d275cd952836217f5a13b28a21199abb7e8700343b3`,
 expiring 2026-11-15. These tests use synthetic images; independently formatted
 and damaged physical-media validation is still required.
+
+Follow-up commit `e295fbbab6a1df239b6053b10e1d4c4898783c76` added regressions
+for nonzero reserved header fields, zero disk GUIDs, and partition-entry arrays
+overlapping usable space. Hosted CI run
+[41276164859](https://github.com/DaemoncoreApps/DataRecovery/actions/runs/41276164859)
+passed Windows validation (frontend production build, 30 core tests, 75 desktop
+tests with 3 ignored, formatting, and Clippy with warnings denied) and all
+three bounded fuzz campaigns. The retained fuzz archive is
+[13071715421](https://github.com/DaemoncoreApps/DataRecovery/actions/runs/41276164859/artifacts/13071715421),
+503,301 bytes, SHA-256
+`39b65f0931f11ebffbde838ab5776399df9cf7a44bc7aeb77da9a48ceec0d672`,
+expiring 2026-11-15. These results apply to `e295fbb`; the role-specific
+partition-array placement checks described below are a subsequent local change
+and still require hosted validation.
+
+The primary partition-entry array must follow the primary header and end before
+the first usable LBA; the backup array must follow the last usable LBA and end
+before the backup header, as required by the
+[UEFI GPT disk layout](https://uefi.org/specs/UEFI/2.9_A/05_GUID_Partition_Table_Format.html).
+The parser now enforces those role-specific boundaries. Two regressions move a
+CRC-valid primary or backup array to the wrong side of the usable range and
+verify fallback to the correctly placed copy. `npm run validate` passed locally
+with 32 core tests, 75 desktop tests (3 ignored), formatting, and Clippy with
+warnings denied. Hosted validation for this follow-up is pending.
