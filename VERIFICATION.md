@@ -731,3 +731,21 @@ Authenticode `NotSigned`). After approval, that exact build launched in the
 native UI, rendered the dashboard and Reports screen, and displayed the
 unsigned/unanchored disclosure. No case was selected; report export itself was
 not exercised in the UI. The executable remains staged and was not installed.
+
+The report now includes `evidence_hash_matches_current_record` on each scan.
+It is false if the scan's source digest differs from the current case evidence
+digest or the evidence record is not currently hashed. A focused regression
+simulates a later rehash and confirms the discrepancy is disclosed in the
+report while the audit-linked evidence register remains internally valid.
+`npm run validate` passed after this change: 4 NTFS-core tests and 84 desktop
+tests (3 ignored), frontend build, format checks, and Clippy with warnings
+denied.
+
+The optimized r50 Windows x64 executable was built with
+`npm exec -- tauri build --no-bundle` and staged as
+`src-tauri/target/release/DaemonCore-Data-Recovery-Windows-0.1.0-case-report-r50-unsigned.exe`
+(13,327,360 bytes, SHA-256
+`0a2eafba1ab7832b44cee845a6d9f86268e90810f1a3d6f3fc2ef75310d44231`,
+Authenticode `NotSigned`). The requested native launch was interrupted by the
+physical Escape key before startup could be verified; the file remains staged
+and was not installed.

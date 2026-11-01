@@ -31,6 +31,7 @@ struct ReportAudit {
 struct ReportScan {
     id: i64,
     evidence_id: i64,
+    evidence_hash_matches_current_record: bool,
     volume_offset: String,
     source_sha256: String,
     completed_at: String,
@@ -91,6 +92,15 @@ fn case_report_from(db: &rusqlite::Connection, case_id: i64) -> Result<CaseRepor
     }
     let mut scans = Vec::with_capacity(sessions.len());
     for session in sessions {
+        let evidence_record = evidence
+            .iter()
+            .find(|record| record.id == session.evidence_id)
+            .ok_or_else(|| {
+                format!(
+                    "Scan {} refers to evidence record {} outside this case report.",
+                    session.id, session.evidence_id
+                )
+            })?;
         let (boot_json, candidates_json, snapshot_sha256): (String, String, String) = db
             .query_row(
                 "SELECT boot_json,candidates_json,snapshot_sha256 FROM scan_sessions WHERE id=?1 AND case_id=?2",
@@ -107,6 +117,8 @@ fn case_report_from(db: &rusqlite::Connection, case_id: i64) -> Result<CaseRepor
         scans.push(ReportScan {
             id: session.id,
             evidence_id: session.evidence_id,
+            evidence_hash_matches_current_record: evidence_record.status == "hashed"
+                && evidence_record.sha256.as_deref() == Some(session.source_sha256.as_str()),
             volume_offset: session.volume_offset,
             source_sha256: session.source_sha256,
             completed_at: session.completed_at,
@@ -505,6 +517,7 @@ mod tests {
         assert_eq!(report.scans[0].candidates.len(), 1);
         assert_eq!(report.scans[0].candidates[0].name, "recovered.bin");
         assert_eq!(report.scans[0].source_sha256, source_sha256);
+        assert!(report.scans[0].evidence_hash_matches_current_record);
 
         let root = std::env::current_dir()
             .unwrap()
@@ -556,5 +569,30 @@ mod tests {
         assert_eq!(completed_count, 1);
         assert!(crate::verify_audit_chain(&db).unwrap().valid);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn report_discloses_when_current_evidence_hash_differs_from_scan_source() {
+        let db = populated_case();
+        let changed_sha256 = "c".repeat(64);
+        db.execute(
+            "UPDATE evidence_sources SET sha256=?1,status='hashed' WHERE id=2 AND case_id=1",
+            [&changed_sha256],
+        )
+        .unwrap();
+        audit(
+            &db,
+            "hash_finished",
+            &serde_json::json!({"case_id":1,"evidence_record_id":2,"source_id":9,"evidence_status":"hashed","persisted_sha256":changed_sha256,"job":{"state":"completed"}}).to_string(),
+        )
+        .unwrap();
+
+        let report = case_report_from(&db, 1).unwrap();
+        assert_eq!(
+            report.evidence[0].sha256.as_deref(),
+            Some(changed_sha256.as_str())
+        );
+        assert_eq!(report.scans[0].source_sha256, "b".repeat(64));
+        assert!(!report.scans[0].evidence_hash_matches_current_record);
     }
 }
