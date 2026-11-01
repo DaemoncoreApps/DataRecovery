@@ -814,6 +814,19 @@ installed locally, so its inner installer hash and signature state have not
 been independently verified here. The staging workflow records installer
 provenance, but packaging lifecycle and signature gates remain open.
 
+The checksum known-answer regression in commit
+`5a0b8223987423a7d08c795b076d1f8773151be8` passed hosted validation (run
+[41271680894](https://github.com/DaemoncoreApps/DataRecovery/actions/runs/41271680894)).
+The Windows job completed `npm run validate`: frontend build, 4 NTFS-core
+tests, 91 desktop tests (3 ignored), Rust format checks, and Clippy with
+warnings denied. Both hosted NTFS fuzz campaigns also succeeded. Their
+retained corpus/results are artifact
+[13069596823](https://github.com/DaemoncoreApps/DataRecovery/actions/runs/41271680894/artifacts/13069596823),
+552,828 bytes, archive SHA-256
+`6a814fb529afafce2e5ba2e7ff89dfe741ae7d2bdb6b50bbd8e08852de6a2e5b`,
+expiring 2026-11-15. This validates the code commit; subsequent commits only
+updated verification and acceptance-ledger documentation.
+
 ### exFAT boot-region validation
 
 Partition analysis now validates the exFAT main and backup boot regions before
