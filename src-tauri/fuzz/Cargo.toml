@@ -8,6 +8,7 @@ edition = "2021"
 cargo-fuzz = true
 
 [dependencies]
+crc32fast = "1"
 daemoncore-ntfs-core = { path = "../../ntfs-core" }
 libfuzzer-sys = "0.4"
 

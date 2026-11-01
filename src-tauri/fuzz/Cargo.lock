@@ -67,6 +67,7 @@ dependencies = [
 name = "daemoncore-fuzz"
 version = "0.0.0"
 dependencies = [
+ "crc32fast",
  "daemoncore-ntfs-core",
  "libfuzzer-sys",
 ]
