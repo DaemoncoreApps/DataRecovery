@@ -703,3 +703,14 @@ rejection, staging, and no-replace publication. The report export has not yet
 been exercised in the packaged native UI. This does not close production gate
 13; signed/external anchoring, acquisition/device logging, and PDF/HTML/CSV
 reports remain absent.
+
+The r48 optimized Windows x64 executable was built with
+`npm exec -- tauri build --no-bundle` and staged as
+`src-tauri/target/release/DaemonCore-Data-Recovery-Windows-0.1.0-case-report-r48-unsigned.exe`
+(13,282,816 bytes, SHA-256
+`364111b990f1f0235f8710e7ea59370874ac8506c42e6ca3ca97fbd9a3b5da63`,
+Authenticode `NotSigned`). After approval, that exact executable launched in
+the native Windows UI, rendered the dashboard and Reports screen, and showed
+the report's unsigned/unanchored disclosure. No case was selected, so the
+report stayed disabled; this did not exercise report generation or file
+publication. The package remains staged and was not installed.
