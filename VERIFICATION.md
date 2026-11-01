@@ -749,3 +749,10 @@ The optimized r50 Windows x64 executable was built with
 Authenticode `NotSigned`). The requested native launch was interrupted by the
 physical Escape key before startup could be verified; the file remains staged
 and was not installed.
+
+The report's generation timestamp field is named `generated_at_unix_ms` to
+match the millisecond precision returned by the audit timestamp helper. A
+regression checks it parses as milliseconds and is within ten seconds of the
+current clock. `npm run validate` passed after this schema correction: 4
+NTFS-core tests and 84 desktop tests (3 ignored), frontend build, formatting,
+and Clippy with warnings denied.

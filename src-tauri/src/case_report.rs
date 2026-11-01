@@ -47,7 +47,7 @@ struct ReportScan {
 #[derive(Serialize)]
 struct CaseReport {
     format: &'static str,
-    generated_at_unix_ns: String,
+    generated_at_unix_ms: String,
     hash_algorithm: &'static str,
     case: Case,
     evidence: Vec<EvidenceRecord>,
@@ -138,10 +138,10 @@ fn case_report_from(db: &rusqlite::Connection, case_id: i64) -> Result<CaseRepor
             audit.first_invalid_record.unwrap_or_default()
         ));
     }
-    let generated_at_unix_ns = audit_timestamp(SystemTime::now())?;
+    let generated_at_unix_ms = audit_timestamp(SystemTime::now())?;
     let report = CaseReport {
         format: "daemoncore-case-report-v1",
-        generated_at_unix_ns,
+        generated_at_unix_ms,
         hash_algorithm: "SHA-256",
         case,
         evidence,
@@ -489,6 +489,13 @@ mod tests {
         .unwrap();
         let report = case_report_from(&db, 1).unwrap();
         assert_eq!(report.case.id, 1);
+        let generated_at = report.generated_at_unix_ms.parse::<u128>().unwrap();
+        let current_time = audit_timestamp(SystemTime::now())
+            .unwrap()
+            .parse::<u128>()
+            .unwrap();
+        assert!(generated_at <= current_time);
+        assert!(current_time - generated_at < 10_000);
         assert!(report.evidence.is_empty());
         assert!(report.scans.is_empty());
         assert!(report.audit.chain_valid);
