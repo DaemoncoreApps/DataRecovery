@@ -746,9 +746,11 @@ The optimized r50 Windows x64 executable was built with
 `src-tauri/target/release/DaemonCore-Data-Recovery-Windows-0.1.0-case-report-r50-unsigned.exe`
 (13,327,360 bytes, SHA-256
 `0a2eafba1ab7832b44cee845a6d9f86268e90810f1a3d6f3fc2ef75310d44231`,
-Authenticode `NotSigned`). The requested native launch was interrupted by the
-physical Escape key before startup could be verified; the file remains staged
-and was not installed.
+Authenticode `NotSigned`). With approval, the executable was launched once on
+2026-10-31. The dashboard and Reports page rendered in the packaged WebView;
+with no case selected, report export was correctly disabled and explained.
+This did not exercise report generation, evidence operations, or the installer.
+The executable was closed and was not installed.
 
 The report's generation timestamp field is named `generated_at_unix_ms` to
 match the millisecond precision returned by the audit timestamp helper. A
