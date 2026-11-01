@@ -1048,5 +1048,7 @@ files, or integrate with Tauri scan persistence, UI, or export. Synthetic
 records, valid LFN reconstruction, and checksum fallback. `npm run validate`
 passed locally with 42 core
 tests, 75 desktop tests (3 ignored), frontend build, formatting, and Clippy with
-warnings denied. This local result applies to the uncommitted directory-reader
-change; hosted validation is pending.
+warnings denied. The directory-reader and verified LFN changes are committed as
+`21ebd02d6f4789912d6316642438212ef12d99cf`; hosted CI run
+[41362294476](https://github.com/DaemoncoreApps/DataRecovery/actions/runs/41362294476)
+is pending for that exact commit.
