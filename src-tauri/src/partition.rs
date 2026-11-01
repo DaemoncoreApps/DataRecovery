@@ -933,6 +933,35 @@ mod tests {
     }
 
     #[test]
+    fn reports_when_valid_fat32_boot_copies_have_different_metadata() {
+        let primary = fat32_boot_sector();
+        let mut backup = fat32_boot_sector();
+        backup[67..71].copy_from_slice(&0x8765_4321_u32.to_le_bytes());
+        let image = mbr_with_fat32(&primary, &backup);
+        let report = analyze(&mut Cursor::new(image.clone()), image.len() as u64).unwrap();
+        assert!(report.partitions[0]
+            .filesystem_hint
+            .as_deref()
+            .unwrap()
+            .contains("backup boot metadata differs"));
+    }
+
+    #[test]
+    fn recognizes_fat32_geometry_without_the_informational_type_label() {
+        let mut primary = fat32_boot_sector();
+        let mut backup = fat32_boot_sector();
+        primary[82..90].copy_from_slice(b"NO NAME ");
+        backup[82..90].copy_from_slice(b"NO NAME ");
+        let image = mbr_with_fat32(&primary, &backup);
+        let report = analyze(&mut Cursor::new(image.clone()), image.len() as u64).unwrap();
+        assert!(report.partitions[0]
+            .filesystem_hint
+            .as_deref()
+            .unwrap()
+            .contains("main and backup boot geometry validated"));
+    }
+
+    #[test]
     fn accepts_fat32_without_a_declared_backup_or_fsinfo_sector() {
         let mut boot = fat32_boot_sector();
         boot[48..50].copy_from_slice(&u16::MAX.to_le_bytes());

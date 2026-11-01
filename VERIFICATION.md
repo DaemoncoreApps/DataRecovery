@@ -863,11 +863,11 @@ read FAT allocation tables, or parse directories and files.
 
 The BPB field rules and cluster-count type determination follow the
 [Microsoft FAT Specification](https://www.scs.stanford.edu/~zyedidia/docs/_other/fat.pdf).
-Synthetic regressions cover matching and invalid backup sectors, absent backup
-and FSInfo pointers, informational volume labels, under-sized FAT capacity,
-volume bounds, invalid root clusters, and overlapping/out-of-bounds reserved
-sector pointers. `npm run validate` passed: frontend build, 4 NTFS-core tests,
-95 desktop tests (3 ignored), Rust format checks, and Clippy with warnings
-denied. These fixtures are constructed from specification fields; no
+Synthetic regressions cover matching, invalid, and disagreeing backup sectors,
+absent backup and FSInfo pointers, informational volume labels, under-sized
+FAT capacity, volume bounds, invalid root clusters, and reserved-sector pointer
+overlaps and bounds. `npm run validate` passed: frontend build, 4 NTFS-core
+tests, 97 desktop tests (3 ignored), Rust format checks, and Clippy with
+warnings denied. These fixtures are constructed from specification fields; no
 independently formatted FAT32 volume has yet been verified, and FAT32 file
 recovery remains unimplemented.
