@@ -8,6 +8,7 @@ const FAT32_BAD: u32 = 0x0fff_fff7;
 const FAT32_RESERVED_START: u32 = 0x0fff_fff0;
 const MAX_CHAIN_CLUSTERS: usize = 1_000_000;
 const MAX_DIRECTORY_ENTRIES: usize = 1_000_000;
+const MAX_DIRECTORY_DEPTH: usize = 256;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Volume {
@@ -44,6 +45,12 @@ pub struct DirectoryEntry {
     pub attributes: u8,
     pub first_cluster: u32,
     pub size: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TreeEntry {
+    pub path: Vec<String>,
+    pub entry: DirectoryEntry,
 }
 
 impl DirectoryEntry {
@@ -233,9 +240,8 @@ impl Volume {
         u64::from(self.bytes_per_sector) * u64::from(self.sectors_per_cluster)
     }
 
-    /// Enumerate live short-name entries in a directory cluster chain.
-    /// Deleted entries and long-file-name decoration are intentionally not
-    /// inferred here; callers can preserve the raw directory bytes separately.
+    /// Enumerate live short-name entries and validated long-name records in a
+    /// directory cluster chain. Deleted entries are not inferred here.
     pub fn read_directory(
         &self,
         source: &dyn BlockSource,
@@ -271,6 +277,12 @@ impl Volume {
                 if record[0] == 0 {
                     ended = true;
                     break;
+                }
+                if record[0] == 0xe5 {
+                    lfn_parts = None;
+                    lfn_expected = None;
+                    lfn_checksum = None;
+                    continue;
                 }
                 if record[11] == 0x0f {
                     let ordinal = record[0] & 0x1f;
@@ -310,12 +322,6 @@ impl Volume {
                     }
                     continue;
                 }
-                if record[0] == 0xe5 {
-                    lfn_parts = None;
-                    lfn_expected = None;
-                    lfn_checksum = None;
-                    continue;
-                }
                 if entries.len() >= MAX_DIRECTORY_ENTRIES {
                     return Err("FAT32 directory exceeds the entry safety bound".into());
                 }
@@ -353,6 +359,48 @@ impl Volume {
                 None => return Ok(entries),
             }
         }
+    }
+
+    /// Enumerate live entries below the FAT32 root with explicit depth,
+    /// entry-count, and directory-cluster cycle bounds.
+    pub fn read_tree(&self, source: &dyn BlockSource) -> Result<Vec<TreeEntry>> {
+        let mut output = Vec::new();
+        let mut visited_directories = HashSet::new();
+        let mut pending = vec![(self.root_cluster, Vec::<String>::new(), 0_usize)];
+        visited_directories.insert(self.root_cluster);
+
+        while let Some((cluster, parent_path, depth)) = pending.pop() {
+            let entries = self.read_directory(source, cluster)?;
+            let mut child_directories = Vec::new();
+            for entry in entries {
+                if entry.short_name == *b".          " || entry.short_name == *b"..         " {
+                    continue;
+                }
+                if output.len() >= MAX_DIRECTORY_ENTRIES {
+                    return Err("FAT32 tree exceeds the entry safety bound".into());
+                }
+                let mut path = parent_path.clone();
+                path.push(entry.display_name());
+                if entry.is_directory() && !entry.is_volume_label() {
+                    if depth >= MAX_DIRECTORY_DEPTH {
+                        return Err("FAT32 directory tree exceeds the depth safety bound".into());
+                    }
+                    if entry.first_cluster < 2 {
+                        return Err("FAT32 subdirectory has an invalid starting cluster".into());
+                    }
+                    if !visited_directories.insert(entry.first_cluster) {
+                        return Err(
+                            "FAT32 directory tree contains a cycle or cross-linked directory"
+                                .into(),
+                        );
+                    }
+                    child_directories.push((entry.first_cluster, path.clone(), depth + 1));
+                }
+                output.push(TreeEntry { path, entry });
+            }
+            pending.extend(child_directories.into_iter().rev());
+        }
+        Ok(output)
     }
 
     fn cluster_offset(&self, cluster: u32) -> Result<u64> {
@@ -606,7 +654,27 @@ mod tests {
         first_cluster: u32,
         size: u32,
     ) {
-        let offset = 1056 * 512 + index * 32;
+        set_directory_entry_in_cluster(
+            image,
+            2,
+            index,
+            short_name,
+            attributes,
+            first_cluster,
+            size,
+        );
+    }
+
+    fn set_directory_entry_in_cluster(
+        image: &mut [u8],
+        cluster: u32,
+        index: usize,
+        short_name: &[u8; 11],
+        attributes: u8,
+        first_cluster: u32,
+        size: u32,
+    ) {
+        let offset = 1056 * 512 + (cluster as usize - 2) * 512 + index * 32;
         image[offset..offset + 11].copy_from_slice(short_name);
         image[offset + 11] = attributes;
         image[offset + 20..offset + 22]
@@ -699,6 +767,47 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].long_name, None);
         assert_eq!(entries[0].display_name(), "RECOVE~1.TXT");
+    }
+
+    #[test]
+    fn deleted_lfn_records_never_attach_to_a_live_short_entry() {
+        let mut image = fixture();
+        let short_name = b"RECOVE~1TXT";
+        set_lfn_entries(&mut image, 0, "Recovered evidence.txt", short_name);
+        image[1056 * 512] = 0xe5;
+        set_directory_entry(&mut image, 2, short_name, 0x20, 3, 700);
+        let source = SliceSource(&image);
+        let volume = Volume::open(&source, 0, source.len()).unwrap();
+        let entries = volume
+            .read_directory(&source, volume.root_cluster())
+            .unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].long_name, None);
+        assert_eq!(entries[0].display_name(), "RECOVE~1.TXT");
+    }
+
+    #[test]
+    fn reads_nested_fat32_entries_and_rejects_directory_cross_links() {
+        let mut image = fixture();
+        set_directory_entry(&mut image, 0, b"SUBDIR     ", 0x10, 5, 0);
+        set_directory_entry_in_cluster(&mut image, 5, 0, b"NOTE    TXT", 0x20, 3, 12);
+        image[1056 * 512 + 3 * 512 + 32] = 0;
+        let source = SliceSource(&image);
+        let volume = Volume::open(&source, 0, source.len()).unwrap();
+        let tree = volume.read_tree(&source).unwrap();
+        assert_eq!(tree.len(), 2);
+        assert_eq!(tree[0].path, ["SUBDIR"]);
+        assert_eq!(tree[1].path, ["SUBDIR", "NOTE.TXT"]);
+        drop(source);
+
+        set_directory_entry_in_cluster(&mut image, 5, 0, b"BACK       ", 0x10, 2, 0);
+        image[1056 * 512 + 3 * 512 + 32] = 0;
+        let source = SliceSource(&image);
+        let volume = Volume::open(&source, 0, source.len()).unwrap();
+        assert!(volume
+            .read_tree(&source)
+            .unwrap_err()
+            .contains("cross-linked directory"));
     }
 
     #[test]

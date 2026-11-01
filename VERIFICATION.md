@@ -1043,15 +1043,13 @@ and reads requested file ranges without buffering whole files. Directory
 enumeration retains each raw short-name record and its source offset, and
 reconstructs an LFN only when its sequence, checksum, and UTF-16 contents
 validate. `Volume::open` now uses the same FAT32 BPB checks as partition analysis
-and rejects an invalid or metadata-conflicting declared backup boot sector. It
-skips deleted entries and does not yet recurse, recover deleted files, or
-integrate with Tauri scan persistence, UI, or export. Synthetic 65,525-cluster
-images verify fragmented reads, malformed chains, live directory records, valid
-LFN reconstruction, checksum fallback, and invalid/conflicting backup sectors.
-`npm run validate` passed locally with 43 core
-tests, 75 desktop tests (3 ignored), frontend build, formatting, and Clippy with
-warnings denied. Hosted Windows and fuzz validation for this backup-sector
-hardening is pending on commit
-`faf6a4741a70b525fd7ddc02cb41cb09f69e5780`; run
-[41362548805](https://github.com/DaemoncoreApps/DataRecovery/actions/runs/41362548805)
-is queued for that exact revision.
+and rejects an invalid or metadata-conflicting declared backup boot sector.
+Bounded live tree traversal reconstructs validated long names and rejects
+directory cross-links; deleted entries remain skipped. FAT32 is still not
+integrated with Tauri scan persistence, UI, or export. Synthetic 65,525-cluster
+images verify fragmented reads, malformed chains, live nested entries, LFN
+checksum/order fallback, deleted-LFN isolation, and invalid/conflicting backup
+sectors. `npm run validate` passed locally with 45 core tests, 75 desktop tests
+(3 ignored), frontend build, formatting, and Clippy with warnings denied.
+Hosted Windows and fuzz validation for the latest local traversal and deleted
+LFN changes is pending.
