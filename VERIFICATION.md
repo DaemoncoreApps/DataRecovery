@@ -756,3 +756,10 @@ regression checks it parses as milliseconds and is within ten seconds of the
 current clock. `npm run validate` passed after this schema correction: 4
 NTFS-core tests and 84 desktop tests (3 ignored), frontend build, formatting,
 and Clippy with warnings denied.
+
+The optimized r51 Windows x64 executable was rebuilt from the timestamp-corrected
+source and staged as
+`src-tauri/target/release/DaemonCore-Data-Recovery-Windows-0.1.0-case-report-r51-unsigned.exe`
+(13,327,360 bytes, SHA-256
+`35879811d945e8d2501d5d9a45373b33f56cf8e2b3f28382c6611609c204d041`,
+Authenticode `NotSigned`). It has not been launched or installed.
