@@ -721,3 +721,13 @@ the native Windows UI, rendered the dashboard and Reports screen, and showed
 the report's unsigned/unanchored disclosure. No case was selected, so the
 report stayed disabled; this did not exercise report generation or file
 publication. The package remains staged and was not installed.
+
+The r49 optimized Windows x64 executable includes the populated-case report
+export integrity test and was staged as
+`src-tauri/target/release/DaemonCore-Data-Recovery-Windows-0.1.0-case-report-r49-unsigned.exe`
+(13,327,360 bytes, SHA-256
+`6189c39d3b5d881bd9fcd37a6ff6acb4e4084de2c1d99256515b1cf5a5ad3b9f`,
+Authenticode `NotSigned`). After approval, that exact build launched in the
+native UI, rendered the dashboard and Reports screen, and displayed the
+unsigned/unanchored disclosure. No case was selected; report export itself was
+not exercised in the UI. The executable remains staged and was not installed.
