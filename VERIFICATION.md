@@ -909,3 +909,27 @@ binary could not complete because the bundled `libfuzzer-sys` MSVC archive
 build failed with `LNK1114`; the hosted Linux campaign compiled and executed
 the changed target successfully. This validation covers the tested code and
 fuzz harness, not independent media correctness or production-scale use.
+
+### GPT header structure validation
+
+Commit `b3693c6a1701ac20dacfe0034d01c7c607567172` tightens GPT header acceptance:
+it requires revision 1.0, a zero reserved field, a nonzero disk GUID, current
+LBA matching the physical header location, ordered usable bounds, and an entry
+array that fits in the image without overlapping GPT headers or usable
+partitions. Invalid primary headers fall back to a valid backup; a primary
+whose alternate-header reference points outside a truncated image may still be
+used when its current location and table are valid, while the missing backup
+remains disclosed. Regression tests cover unsupported revision and physical
+LBA mismatch with valid-backup fallback.
+
+Hosted CI run
+[41275565896](https://github.com/DaemoncoreApps/DataRecovery/actions/runs/41275565896)
+passed Windows validation (frontend production build, 28 core tests, 75 desktop
+tests with 3 ignored, formatting, and Clippy with warnings denied) and all
+three bounded fuzz campaigns. The partition fuzz target completed with the
+GPT fixture assertions enabled. Result artifact
+[13070864041](https://github.com/DaemoncoreApps/DataRecovery/actions/runs/41275565896/artifacts/13070864041)
+is 526,637 bytes, SHA-256
+`7ae2ed26029dfa9aa6dc3d275cd952836217f5a13b28a21199abb7e8700343b3`,
+expiring 2026-11-15. These tests use synthetic images; independently formatted
+and damaged physical-media validation is still required.

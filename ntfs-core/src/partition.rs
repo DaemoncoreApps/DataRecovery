@@ -1368,6 +1368,38 @@ mod tests {
     }
 
     #[test]
+    fn rejects_gpt_header_with_reserved_bits_or_zero_disk_guid() {
+        for (field_offset, field_length) in [(20, 4), (56, 16)] {
+            let mut image = valid_gpt_image();
+            image[512 + field_offset..512 + field_offset + field_length].fill(0);
+            if field_offset == 20 {
+                image[512 + field_offset] = 1;
+            }
+            update_gpt_header_crc(&mut image, 1);
+
+            let report = analyze(&mut Cursor::new(image.clone()), image.len() as u64).unwrap();
+
+            assert_eq!(report.primary_gpt_valid, Some(false));
+            assert_eq!(report.backup_gpt_valid, Some(true));
+            assert_eq!(report.partitions.len(), 1);
+        }
+    }
+
+    #[test]
+    fn rejects_gpt_entry_array_overlapping_usable_partition_space() {
+        let mut image = valid_gpt_image();
+        image.copy_within(2 * 512..3 * 512, 34 * 512);
+        image[512 + 72..512 + 80].copy_from_slice(&34_u64.to_le_bytes());
+        update_gpt_header_crc(&mut image, 1);
+
+        let report = analyze(&mut Cursor::new(image.clone()), image.len() as u64).unwrap();
+
+        assert_eq!(report.primary_gpt_valid, Some(false));
+        assert_eq!(report.backup_gpt_valid, Some(true));
+        assert_eq!(report.partitions.len(), 1);
+    }
+
+    #[test]
     fn rejects_gpt_header_whose_current_lba_disagrees_with_its_location() {
         let mut image = valid_gpt_image();
         image[512 + 24..512 + 32].copy_from_slice(&3_u64.to_le_bytes());
