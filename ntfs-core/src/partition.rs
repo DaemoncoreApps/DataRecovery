@@ -678,7 +678,7 @@ fn find_overlaps(partitions: &[Partition], warnings: &mut Vec<String>) {
     for pair in sorted.windows(2) {
         if pair[1].start_lba <= pair[0].end_lba {
             warnings.push(format!(
-                "GPT partitions {} and {} overlap.",
+                "Partitions {} and {} overlap.",
                 pair[0].index, pair[1].index
             ));
         }
@@ -1215,6 +1215,30 @@ mod tests {
         assert_eq!(report.partitions[0].start_lba, 1);
         assert!(report.partitions[0].bootable);
         assert!(report.warnings.is_empty());
+    }
+
+    #[test]
+    fn labels_mbr_partition_overlap_without_claiming_gpt() {
+        let mut image = vec![0; 100 * 512];
+        image[510..512].copy_from_slice(&[0x55, 0xaa]);
+        for (index, start) in [(0, 1_u32), (1, 10_u32)] {
+            let entry = 446 + index * 16;
+            image[entry + 4] = 0x07;
+            image[entry + 8..entry + 12].copy_from_slice(&start.to_le_bytes());
+            image[entry + 12..entry + 16].copy_from_slice(&20_u32.to_le_bytes());
+        }
+
+        let report = analyze(&mut Cursor::new(image.clone()), image.len() as u64).unwrap();
+
+        assert_eq!(report.scheme, "MBR");
+        assert!(report
+            .warnings
+            .iter()
+            .any(|warning| warning == "Partitions 1 and 2 overlap."));
+        assert!(report
+            .warnings
+            .iter()
+            .all(|warning| !warning.contains("GPT")));
     }
 
     #[test]

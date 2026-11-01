@@ -985,3 +985,9 @@ valid backup table remains usable. This rule follows the
 `npm run validate` passed locally with 35 core tests, 75 desktop tests (3
 ignored), formatting, and Clippy with warnings denied. Hosted validation for
 this additional change is pending.
+
+Partition overlap warnings now identify only the affected partition indexes;
+they no longer claim an MBR overlap is a GPT finding. A synthetic MBR regression
+confirms the warning text. `npm run validate` passed locally with 36 core tests,
+75 desktop tests (3 ignored), formatting, and Clippy with warnings denied.
+Hosted validation for this follow-up is pending.
