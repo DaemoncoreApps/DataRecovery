@@ -886,20 +886,26 @@ expiring 2026-11-15.
 ### Shared partition parser and fuzz coverage
 
 Commit `8d3ab98b20751a931d5a934b9145fc51491fdcc` moves partition analysis into
-the reusable `ntfs-core` crate and adds a cargo-fuzz target for MBR/GPT and
-filesystem boot metadata. Hosted CI run
-[41273761530](https://github.com/DaemoncoreApps/DataRecovery/actions/runs/41273761530)
+the reusable `ntfs-core` crate and adds a cargo-fuzz target for partition and
+filesystem boot metadata. Follow-up commit `9b9a3f4df89e5ade8b248073bd99754b0cb6d907`
+adds valid GPT fixtures with mutation-safe CRC recomputation. Hosted CI run
+[41274697718](https://github.com/DaemoncoreApps/DataRecovery/actions/runs/41274697718)
 passed all three bounded fuzz campaigns: MFT records, whole-image NTFS scans,
-and partition/boot-sector analysis. The retained result archive is
-[13070139807](https://github.com/DaemoncoreApps/DataRecovery/actions/runs/41273761530/artifacts/13070139807),
-491,666 bytes, SHA-256
-`ad6270d77f41f848a6e0a1688ce069507ef37fe440cb7155a279a40027be54dd`,
-expiring 2026-11-15. The partition target covers raw inputs up to 4 MiB and a
-synthetic MBR/exFAT scaffold whose boot geometry fields are mutated with
-checksums recomputed; it does not establish correctness against independently
-formatted or damaged real-world volumes. The same run's hosted Windows job
-passed `npm run validate`: frontend production build, 26 core tests, 75 desktop
-tests (3 ignored), Rust formatting, and Clippy with warnings denied. This
-confirms the shared parser move compiles and passes its current regression
-suite; it does not close the independent-media and production-scale validation
-gates above.
+and partition/boot-sector analysis. The partition target exercises raw inputs
+up to 4 MiB, a synthetic MBR/exFAT scaffold whose boot geometry fields mutate
+with checksums recomputed, and a valid GPT image whose partition-entry fields
+mutate while both entry arrays and headers receive recomputed CRCs. Assertions
+require the constructed GPT headers and entry arrays to remain valid during the
+campaign. The retained result archive is
+[13070364762](https://github.com/DaemoncoreApps/DataRecovery/actions/runs/41274697718/artifacts/13070364762),
+499,432 bytes, SHA-256
+`6fdb4b2deeed6377527c413ed1b65370360d6d107db4b1e6487e37dce558ff33`,
+expiring 2026-11-15. These bounded synthetic campaigns do not establish
+correctness against independently formatted or damaged real-world volumes.
+The same run's hosted Windows job passed `npm run validate`: frontend
+production build, 26 core tests, 75 desktop tests (3 ignored), Rust formatting,
+and Clippy with warnings denied. A local Windows `cargo check` of the fuzz
+binary could not complete because the bundled `libfuzzer-sys` MSVC archive
+build failed with `LNK1114`; the hosted Linux campaign compiled and executed
+the changed target successfully. This validation covers the tested code and
+fuzz harness, not independent media correctness or production-scale use.
