@@ -195,6 +195,15 @@ function App() {
       setArchivedPage(null);
       setPage("Image Workspace");
     });
+  const selectedArchivedScan = caseScans.find(
+    (scan) => scan.id === archivedScanId,
+  );
+  const selectedArchivedEvidence = caseEvidence.find(
+    (record) => record.id === selectedArchivedScan?.evidence_id,
+  );
+  const archivedSourceMatchesScan =
+    selectedArchivedEvidence?.status === "hashed" &&
+    selectedArchivedEvidence.sha256 === selectedArchivedScan?.source_sha256;
   const heading = (
     <div className="heading">
       <div className="headingCopy">
@@ -467,25 +476,35 @@ function App() {
                   <span className="muted">{caseScans.length} SESSIONS</span>
                 </div>
                 {caseScans.length ? (
-                  caseScans.map((scan) => (
-                    <div className="case" key={scan.id}>
-                      <code>SC-{String(scan.id).padStart(6, "0")}</code>
-                      <h3 title={`Evidence record ${scan.evidence_id}`}>
-                        {scan.found} candidates
-                      </h3>
-                      <span title={`SHA-256 ${scan.source_sha256}`}>
-                        {scan.records} records · {scan.skipped} skipped
-                        {scan.limited ? " · partial" : ""}
-                      </span>
-                      <button
-                        type="button"
-                        disabled={busy}
-                        onClick={() => showArchivedResults(scan.id, 0)}
-                      >
-                        Review saved results
-                      </button>
-                    </div>
-                  ))
+                  caseScans.map((scan) => {
+                    const evidence = caseEvidence.find(
+                      (record) => record.id === scan.evidence_id,
+                    );
+                    return (
+                      <div className="case" key={scan.id}>
+                        <code>SC-{String(scan.id).padStart(6, "0")}</code>
+                        <h3
+                          title={
+                            evidence?.path ?? `Evidence record ${scan.evidence_id}`
+                          }
+                        >
+                          {scan.found} candidates
+                        </h3>
+                        <span title={`SHA-256 ${scan.source_sha256}`}>
+                          {evidence?.name ?? `Evidence ${scan.evidence_id}`} ·{" "}
+                          {scan.records} records · {scan.skipped} skipped
+                          {scan.limited ? " · partial" : ""}
+                        </span>
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => showArchivedResults(scan.id, 0)}
+                        >
+                          Review saved results
+                        </button>
+                      </div>
+                    );
+                  })
                 ) : (
                   <p className="muted caseEmpty">
                     No completed scans recorded in this case.
@@ -504,9 +523,33 @@ function App() {
                       This stored snapshot is review-only. Reopen its recorded evidence with
                       SHA-256 verification, then run a fresh scan before recovery.
                     </p>
+                    <div className="archivedSourceIdentity">
+                      <b>
+                        {selectedArchivedEvidence?.name ??
+                          `Evidence record ${selectedArchivedScan?.evidence_id ?? "unknown"}`}
+                      </b>
+                      <span>
+                        {selectedArchivedEvidence?.path ??
+                          "Recorded source path unavailable"}
+                      </span>
+                      <code
+                        title={`SHA-256 ${selectedArchivedScan?.source_sha256 ?? "unavailable"}`}
+                      >
+                        Expected SHA-256 · {selectedArchivedScan?.source_sha256 ?? "unavailable"}
+                      </code>
+                      {!archivedSourceMatchesScan && (
+                        <span className="archivedSourceWarning">
+                          Evidence record is unverified or no longer matches this scan.
+                        </span>
+                      )}
+                    </div>
                     <button
                       type="button"
-                      disabled={busy || job.state === "running"}
+                      disabled={
+                        busy ||
+                        job.state === "running" ||
+                        !archivedSourceMatchesScan
+                      }
                       onClick={() => reopenArchivedSource(archivedScanId)}
                     >
                       Verify and reopen source

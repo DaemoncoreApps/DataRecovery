@@ -1132,6 +1132,27 @@ form label {
   padding: 0 24px;
   line-height: 1.6;
 }
+.archivedSourceIdentity {
+  display: grid;
+  gap: 6px;
+  margin: 0 24px 16px;
+  padding: 13px 15px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #0b1119;
+}
+.archivedSourceIdentity span,
+.archivedSourceIdentity code {
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 11px;
+}
+.archivedSourceIdentity code {
+  color: #d7dce4;
+}
+.archivedSourceIdentity .archivedSourceWarning {
+  color: #ff9d9d;
+}
 .archivedPagination {
   justify-content: flex-end;
 }

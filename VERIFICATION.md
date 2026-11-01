@@ -11,6 +11,9 @@
   active scan cache; a fresh scan is required before recovery. The focused
   archived-source test checks acceptance of the matching record, rejection of
   compromised evidence, and atomic audit/status recording on a digest mismatch.
+  The review UI shows the recorded filename, path, and expected scan digest;
+  reopening is disabled unless the case evidence row is still hashed to that
+  same digest.
 - After this change, `npm run validate` passed: frontend TypeScript/Vite
   production build, Rust formatting, 4 NTFS core tests, 80 application tests
   passed, 0 failed, 3 ignored, and Clippy with warnings denied. Windows
