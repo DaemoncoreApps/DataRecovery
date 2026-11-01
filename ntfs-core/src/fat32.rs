@@ -33,8 +33,14 @@ pub struct FileMapping {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DirectoryEntry {
+    /// Absolute source offset of the short-name record.
+    pub source_offset: u64,
+    /// Exact 32-byte short-name record from the image.
+    pub raw_record: [u8; 32],
     /// The on-disk 8.3 name bytes, retained for exact identification.
     pub short_name: [u8; 11],
+    /// A checksum-verified long name, when its complete LFN sequence is valid.
+    pub long_name: Option<String>,
     pub attributes: u8,
     pub first_cluster: u32,
     pub size: u32,
@@ -52,6 +58,9 @@ impl DirectoryEntry {
     /// Render the short name without interpreting non-ASCII OEM bytes.
     /// The original bytes remain available in `short_name` for forensic use.
     pub fn display_name(&self) -> String {
+        if let Some(long_name) = &self.long_name {
+            return long_name.clone();
+        }
         let base = String::from_utf8_lossy(&self.short_name[..8])
             .trim_end()
             .to_owned();
@@ -210,6 +219,9 @@ impl Volume {
         let mut entries = Vec::new();
         let mut visited = HashSet::new();
         let mut cluster = first_cluster;
+        let mut lfn_parts: Option<Vec<Option<[u16; 13]>>> = None;
+        let mut lfn_expected = None;
+        let mut lfn_checksum = None;
         loop {
             if !visited.insert(cluster) {
                 return Err("FAT32 directory chain contains a cycle".into());
@@ -227,12 +239,53 @@ impl Volume {
             if !remainder.is_empty() {
                 return Err("FAT32 directory cluster has an invalid record boundary".into());
             }
-            for record in records {
+            for (record_index, record) in records.iter().enumerate() {
                 if record[0] == 0 {
                     ended = true;
                     break;
                 }
-                if record[0] == 0xe5 || record[11] == 0x0f {
+                if record[11] == 0x0f {
+                    let ordinal = record[0] & 0x1f;
+                    let is_last = record[0] & 0x40 != 0;
+                    if record[0] & 0xa0 != 0
+                        || ordinal == 0
+                        || ordinal > 20
+                        || record[12] != 0
+                        || record[26..28] != [0, 0]
+                    {
+                        lfn_parts = None;
+                        lfn_expected = None;
+                        lfn_checksum = None;
+                        continue;
+                    }
+                    if is_last {
+                        lfn_parts = Some(vec![None; ordinal as usize]);
+                        lfn_expected = Some(ordinal);
+                        lfn_checksum = Some(record[13]);
+                    }
+                    if lfn_expected != Some(ordinal) || lfn_checksum != Some(record[13]) {
+                        lfn_parts = None;
+                        lfn_expected = None;
+                        lfn_checksum = None;
+                        continue;
+                    }
+                    let mut units = [0; 13];
+                    for (slot, source) in [(0..5, 1..11), (5..11, 14..26), (11..13, 28..32)] {
+                        for (unit_index, byte_index) in slot.zip(source.step_by(2)) {
+                            units[unit_index] =
+                                u16::from_le_bytes([record[byte_index], record[byte_index + 1]]);
+                        }
+                    }
+                    if let Some(parts) = lfn_parts.as_mut() {
+                        parts[ordinal as usize - 1] = Some(units);
+                        lfn_expected = Some(ordinal - 1);
+                    }
+                    continue;
+                }
+                if record[0] == 0xe5 {
+                    lfn_parts = None;
+                    lfn_expected = None;
+                    lfn_checksum = None;
                     continue;
                 }
                 if entries.len() >= MAX_DIRECTORY_ENTRIES {
@@ -240,10 +293,25 @@ impl Volume {
                 }
                 let mut short_name = [0; 11];
                 short_name.copy_from_slice(&record[..11]);
+                let long_name = if lfn_expected == Some(0)
+                    && lfn_checksum == Some(lfn_short_name_checksum(&short_name))
+                {
+                    lfn_parts.as_ref().and_then(|parts| decode_lfn_parts(parts))
+                } else {
+                    None
+                };
+                lfn_parts = None;
+                lfn_expected = None;
+                lfn_checksum = None;
                 let high = u16::from_le_bytes([record[20], record[21]]) as u32;
                 let low = u16::from_le_bytes([record[26], record[27]]) as u32;
+                let mut raw_record = [0; 32];
+                raw_record.copy_from_slice(record);
                 entries.push(DirectoryEntry {
+                    source_offset: offset + (record_index * 32) as u64,
+                    raw_record,
                     short_name,
+                    long_name,
                     attributes: record[11],
                     first_cluster: (high << 16) | low,
                     size: u32::from_le_bytes(record[28..32].try_into().unwrap()),
@@ -403,6 +471,35 @@ impl Volume {
     }
 }
 
+fn lfn_short_name_checksum(short_name: &[u8; 11]) -> u8 {
+    short_name.iter().fold(0_u8, |checksum, byte| {
+        checksum.rotate_right(1).wrapping_add(*byte)
+    })
+}
+
+fn decode_lfn_parts(parts: &[Option<[u16; 13]>]) -> Option<String> {
+    if parts.is_empty() || parts.len() > 20 {
+        return None;
+    }
+    let mut units = Vec::with_capacity(parts.len() * 13);
+    for part in parts {
+        units.extend_from_slice(part.as_ref()?);
+    }
+    let end = units
+        .iter()
+        .position(|unit| *unit == 0)
+        .unwrap_or(units.len());
+    if units[end..]
+        .iter()
+        .any(|unit| *unit != 0 && *unit != 0xffff)
+        || units[..end].contains(&0xffff)
+        || end == 0
+    {
+        return None;
+    }
+    String::from_utf16(&units[..end]).ok()
+}
+
 impl FileMapping {
     pub fn size(&self) -> u64 {
         self.size
@@ -488,6 +585,32 @@ mod tests {
         image[offset + 28..offset + 32].copy_from_slice(&size.to_le_bytes());
     }
 
+    fn set_lfn_entries(image: &mut [u8], start: usize, name: &str, short_name: &[u8; 11]) {
+        let mut units: Vec<u16> = name.encode_utf16().collect();
+        units.push(0);
+        let count = units.len().div_ceil(13);
+        units.resize(count * 13, 0xffff);
+        let checksum = lfn_short_name_checksum(short_name);
+        for ordinal in (1..=count).rev() {
+            let image_index = start + count - ordinal;
+            let offset = 1056 * 512 + image_index * 32;
+            let record = &mut image[offset..offset + 32];
+            record.fill(0);
+            record[0] = ordinal as u8 | if ordinal == count { 0x40 } else { 0 };
+            record[11] = 0x0f;
+            record[13] = checksum;
+            let chunk = &units[(ordinal - 1) * 13..ordinal * 13];
+            for (unit_index, byte_index) in (0..5)
+                .zip((1..11).step_by(2))
+                .chain((5..11).zip((14..26).step_by(2)))
+                .chain((11..13).zip((28..32).step_by(2)))
+            {
+                record[byte_index..byte_index + 2]
+                    .copy_from_slice(&chunk[unit_index].to_le_bytes());
+            }
+        }
+    }
+
     #[test]
     fn reads_live_fat32_directory_entries_and_preserves_raw_short_names() {
         let mut image = fixture();
@@ -505,6 +628,8 @@ mod tests {
             .read_directory(&source, volume.root_cluster())
             .unwrap();
         assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].source_offset, 1056 * 512);
+        assert_eq!(&entries[0].raw_record[..11], b"REPORT  TXT");
         assert_eq!(entries[0].short_name, *b"REPORT  TXT");
         assert_eq!(entries[0].display_name(), "REPORT.TXT");
         assert_eq!(entries[0].size, 700);
@@ -513,6 +638,37 @@ mod tests {
         assert_eq!(entries[1].first_cluster, 5);
         assert!(entries[2].is_volume_label());
         assert!(volume.read_directory(&source, 1).is_err());
+    }
+
+    #[test]
+    fn reconstructs_only_complete_checksum_valid_lfn_sequences() {
+        let mut image = fixture();
+        let short_name = b"RECOVE~1TXT";
+        set_lfn_entries(&mut image, 0, "Recovered evidence.txt", short_name);
+        set_directory_entry(&mut image, 2, short_name, 0x20, 3, 700);
+        let source = SliceSource(&image);
+        let volume = Volume::open(&source, 0, source.len()).unwrap();
+        let entries = volume
+            .read_directory(&source, volume.root_cluster())
+            .unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].source_offset, 1056 * 512 + 2 * 32);
+        assert_eq!(
+            entries[0].long_name.as_deref(),
+            Some("Recovered evidence.txt")
+        );
+        assert_eq!(entries[0].display_name(), "Recovered evidence.txt");
+        drop(source);
+
+        image[1056 * 512 + 13] ^= 0x80;
+        let source = SliceSource(&image);
+        let volume = Volume::open(&source, 0, source.len()).unwrap();
+        let entries = volume
+            .read_directory(&source, volume.root_cluster())
+            .unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].long_name, None);
+        assert_eq!(entries[0].display_name(), "RECOVE~1.TXT");
     }
 
     #[test]

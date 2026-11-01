@@ -1040,11 +1040,13 @@ bounded live-directory enumerator. It validates partition bounds and FAT32
 geometry, resolves fragmented cluster chains, rejects cycles, free/reserved/bad
 clusters, insufficient chains, and disagreement between mirrored FAT copies,
 and reads requested file ranges without buffering whole files. Directory
-enumeration retains raw 8.3 name bytes and skips deleted and LFN records; it
-does not yet reconstruct long names, recurse through directories, recover
-deleted entries, or integrate with Tauri scan persistence, UI, or export. A
-synthetic 65,525-cluster image verifies fragmented reads, malformed chains, and
-live directory record handling. `npm run validate` passed locally with 41 core
+enumeration retains each raw short-name record and its source offset, and
+reconstructs an LFN only when its sequence, checksum, and UTF-16 contents
+validate. It skips deleted entries and does not yet recurse, recover deleted
+files, or integrate with Tauri scan persistence, UI, or export. Synthetic
+65,525-cluster images verify fragmented reads, malformed chains, live directory
+records, valid LFN reconstruction, and checksum fallback. `npm run validate`
+passed locally with 42 core
 tests, 75 desktop tests (3 ignored), frontend build, formatting, and Clippy with
 warnings denied. This local result applies to the uncommitted directory-reader
 change; hosted validation is pending.
