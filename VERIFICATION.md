@@ -704,6 +704,13 @@ been exercised in the packaged native UI. This does not close production gate
 13; signed/external anchoring, acquisition/device logging, and PDF/HTML/CSV
 reports remain absent.
 
+The populated-case report test now creates audit-matched case and hashed
+evidence records, persists a validated NTFS scan snapshot with a candidate,
+publishes the JSON report, checks the exact file digest and scan/candidate
+counts, and verifies the prepared/completed audit entries. `npm run validate`
+passed again: 4 core tests, 83 desktop tests (3 ignored), frontend build,
+formatting, and Clippy with warnings denied.
+
 The r48 optimized Windows x64 executable was built with
 `npm exec -- tauri build --no-bundle` and staged as
 `src-tauri/target/release/DaemonCore-Data-Recovery-Windows-0.1.0-case-report-r48-unsigned.exe`

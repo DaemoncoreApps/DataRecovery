@@ -35,20 +35,20 @@ pub struct Page {
     rows: Vec<ntfs::Candidate>,
 }
 
-struct ScanSnapshot<'a> {
-    evidence_id: i64,
-    case_id: i64,
-    source_id: u64,
-    volume_offset: u64,
-    source_sha256: &'a str,
-    boot: &'a ntfs::Boot,
-    records: u64,
-    skipped: u64,
-    limited: bool,
-    candidates: &'a [ntfs::Candidate],
+pub(super) struct ScanSnapshot<'a> {
+    pub(super) evidence_id: i64,
+    pub(super) case_id: i64,
+    pub(super) source_id: u64,
+    pub(super) volume_offset: u64,
+    pub(super) source_sha256: &'a str,
+    pub(super) boot: &'a ntfs::Boot,
+    pub(super) records: u64,
+    pub(super) skipped: u64,
+    pub(super) limited: bool,
+    pub(super) candidates: &'a [ntfs::Candidate],
 }
 
-fn persist_scan_snapshot(
+pub(super) fn persist_scan_snapshot(
     db: &mut rusqlite::Connection,
     snapshot: &ScanSnapshot<'_>,
 ) -> Result<i64> {
@@ -71,7 +71,7 @@ fn persist_scan_snapshot(
     Ok(scan_session_id)
 }
 
-fn scan_snapshot_digest(boot_json: &str, candidates_json: &str) -> String {
+pub(super) fn scan_snapshot_digest(boot_json: &str, candidates_json: &str) -> String {
     let mut digest = Sha256::new();
     digest.update(b"DaemonCore NTFS scan snapshot v1\0");
     digest.update((boot_json.len() as u64).to_le_bytes());

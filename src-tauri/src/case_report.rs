@@ -186,6 +186,65 @@ fn stage_report(destination: &Path, bytes: &[u8]) -> Result<StagedFile> {
     Ok(staged)
 }
 
+fn publish_case_report(
+    db: &rusqlite::Connection,
+    case_id: i64,
+    report: &CaseReport,
+    bytes: &[u8],
+    path: &Path,
+) -> Result<CaseReportExport> {
+    let digest = format!("{:x}", Sha256::digest(bytes));
+    let staged = stage_report(path, bytes)?;
+    audit(
+        db,
+        "case_report_export_prepared",
+        &serde_json::json!({
+            "case_id": case_id,
+            "destination": path.to_string_lossy(),
+            "sha256": digest,
+            "bytes": bytes.len(),
+            "scans": report.scans.len(),
+            "candidates": report.scans.iter().map(|scan| scan.candidates.len()).sum::<usize>(),
+            "audit_head_in_report": report.audit.head_sha256,
+        })
+        .to_string(),
+    )?;
+    destination::publish_new(&staged.0, path).map_err(|error| {
+        format!(
+            "The report was staged and audited but could not be published to {}: {error}",
+            path.display()
+        )
+    })?;
+    let published = CaseReportExport {
+        path: path.to_string_lossy().into_owned(),
+        sha256: digest,
+        bytes: bytes.len() as u64,
+        scans: report.scans.len(),
+        candidates: report.scans.iter().map(|scan| scan.candidates.len()).sum(),
+    };
+    audit(
+        db,
+        "case_report_exported",
+        &serde_json::json!({
+            "case_id": case_id,
+            "destination": published.path,
+            "sha256": published.sha256,
+            "bytes": published.bytes,
+            "scans": published.scans,
+            "candidates": published.candidates,
+            "audit_head_in_report": report.audit.head_sha256,
+        })
+        .to_string(),
+    )
+    .map_err(|error| {
+        format!(
+            "The report was written to {} but its completion could not be recorded in the audit log: {error}",
+            published.path
+        )
+    })?;
+    Ok(published)
+}
+
 #[tauri::command]
 pub async fn export_case_report(
     case_id: i64,
@@ -231,64 +290,12 @@ pub async fn export_case_report(
                 report
             };
             let bytes = encode_report(&report)?;
-            let digest = format!("{:x}", Sha256::digest(&bytes));
             if let Ok(mut job) = state.job.lock() {
                 job.message = Some("Staging the report and recording its digest".into());
                 job.total = bytes.len() as u64;
             }
-            let staged = stage_report(&destination, &bytes)?;
-            {
-                let db = state.db.lock().map_err(err)?;
-                audit(
-                    &db,
-                    "case_report_export_prepared",
-                    &serde_json::json!({
-                        "case_id": case_id,
-                        "destination": destination.to_string_lossy(),
-                        "sha256": digest,
-                        "bytes": bytes.len(),
-                        "scans": report.scans.len(),
-                        "candidates": report.scans.iter().map(|scan| scan.candidates.len()).sum::<usize>(),
-                        "audit_head_in_report": report.audit.head_sha256,
-                    })
-                    .to_string(),
-                )?;
-            }
-            destination::publish_new(&staged.0, &destination).map_err(|error| {
-                format!(
-                    "The report was staged and audited but could not be published to {}: {error}",
-                    destination.display()
-                )
-            })?;
-            let published = CaseReportExport {
-                path: destination.to_string_lossy().into_owned(),
-                sha256: digest,
-                bytes: bytes.len() as u64,
-                scans: report.scans.len(),
-                candidates: report.scans.iter().map(|scan| scan.candidates.len()).sum(),
-            };
             let db = state.db.lock().map_err(err)?;
-            audit(
-                &db,
-                "case_report_exported",
-                &serde_json::json!({
-                    "case_id": case_id,
-                    "destination": published.path,
-                    "sha256": published.sha256,
-                    "bytes": published.bytes,
-                    "scans": published.scans,
-                    "candidates": published.candidates,
-                    "audit_head_in_report": report.audit.head_sha256,
-                })
-                .to_string(),
-            )
-            .map_err(|error| {
-                format!(
-                    "The report was written to {} but its completion could not be recorded in the audit log: {error}",
-                    published.path
-                )
-            })?;
-            Ok::<_, String>(published)
+            publish_case_report(&db, case_id, &report, &bytes, &destination)
         })
         .await
         .map_err(err)??;
@@ -327,6 +334,97 @@ pub async fn export_case_report(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn candidate() -> crate::ntfs::Candidate {
+        crate::ntfs::Candidate {
+            id: 41,
+            name: "recovered.bin".into(),
+            parent_record: 5,
+            parent_sequence: 1,
+            parent_ambiguous: false,
+            parent_path: None,
+            filename_references: Vec::new(),
+            size: 12,
+            deleted: true,
+            storage: "resident".into(),
+            allocation: "unallocated".into(),
+            exportable: true,
+            notes: vec![],
+            fingerprint: "a".repeat(64),
+            created_filetime: None,
+            modified_filetime: None,
+        }
+    }
+
+    fn boot() -> crate::ntfs::Boot {
+        crate::ntfs::Boot {
+            offset: 0,
+            sector_size: 512,
+            cluster_size: 4096,
+            record_size: 1024,
+            volume_size: 2 * 1024 * 1024,
+            mft_offset: 4096,
+            serial: "fixture".into(),
+        }
+    }
+
+    fn populated_case() -> rusqlite::Connection {
+        let mut db = crate::database(PathBuf::from(":memory:")).unwrap();
+        db.execute(
+            "INSERT INTO cases(id,title,examiner) VALUES (1,'Case 1','Examiner')",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO app_settings(key,value) VALUES ('active_case_id','1')",
+            [],
+        )
+        .unwrap();
+        audit(
+            &db,
+            "case_created",
+            &serde_json::json!({"id":1,"title":"Case 1","examiner":"Examiner","selected":true})
+                .to_string(),
+        )
+        .unwrap();
+        let source_sha256 = "b".repeat(64);
+        db.execute(
+            "INSERT INTO evidence_sources(id,case_id,original_path,name,size_bytes,filesystem,opened_at,sha256,status) VALUES (2,1,'evidence.img','evidence.img',4096,'NTFS','1',?1,'hashed')",
+            [&source_sha256],
+        )
+        .unwrap();
+        audit(
+            &db,
+            "image_opened",
+            &serde_json::json!({"case_id":1,"evidence_record_id":2,"source_id":9,"path":"evidence.img","name":"evidence.img","size":4096,"filesystem":"NTFS","opened_at":"1"}).to_string(),
+        )
+        .unwrap();
+        audit(
+            &db,
+            "hash_finished",
+            &serde_json::json!({"case_id":1,"evidence_record_id":2,"source_id":9,"evidence_status":"hashed","persisted_sha256":source_sha256,"job":{"state":"completed"}}).to_string(),
+        )
+        .unwrap();
+        let boot = boot();
+        let candidates = [candidate()];
+        crate::recovery_commands::persist_scan_snapshot(
+            &mut db,
+            &crate::recovery_commands::ScanSnapshot {
+                evidence_id: 2,
+                case_id: 1,
+                source_id: 9,
+                volume_offset: 0,
+                source_sha256: &source_sha256,
+                boot: &boot,
+                records: 100,
+                skipped: 3,
+                limited: false,
+                candidates: &candidates,
+            },
+        )
+        .unwrap();
+        db
+    }
 
     #[test]
     fn report_staging_is_no_replace_and_cleans_up() {
@@ -391,5 +489,72 @@ mod tests {
         db.execute("UPDATE audit SET payload='tampered' WHERE id=1", [])
             .unwrap();
         assert!(case_report_from(&db, 1).is_err());
+    }
+
+    #[test]
+    fn populated_case_report_exports_verified_scan_and_audits_published_hash() {
+        let db = populated_case();
+        let report = case_report_from(&db, 1).unwrap();
+        let source_sha256 = "b".repeat(64);
+        assert_eq!(report.evidence.len(), 1);
+        assert_eq!(
+            report.evidence[0].sha256.as_deref(),
+            Some(source_sha256.as_str())
+        );
+        assert_eq!(report.scans.len(), 1);
+        assert_eq!(report.scans[0].candidates.len(), 1);
+        assert_eq!(report.scans[0].candidates[0].name, "recovered.bin");
+        assert_eq!(report.scans[0].source_sha256, source_sha256);
+
+        let root = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join(format!(
+                "daemoncore-case-report-export-{}-{}",
+                std::process::id(),
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+        fs::create_dir(&root).unwrap();
+        let path = root.join("case-report.json");
+        let bytes = encode_report(&report).unwrap();
+        let expected_sha256 = format!("{:x}", Sha256::digest(&bytes));
+        let exported = publish_case_report(&db, 1, &report, &bytes, &path).unwrap();
+        assert_eq!(exported.sha256, expected_sha256);
+        assert_eq!(exported.scans, 1);
+        assert_eq!(exported.candidates, 1);
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        let (prepared, completed): (String, String) = db
+            .query_row(
+                "SELECT (SELECT payload FROM audit WHERE event='case_report_export_prepared'),(SELECT payload FROM audit WHERE event='case_report_exported')",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        let prepared: serde_json::Value = serde_json::from_str(&prepared).unwrap();
+        let completed: serde_json::Value = serde_json::from_str(&completed).unwrap();
+        assert_eq!(prepared["sha256"], expected_sha256);
+        assert_eq!(completed["sha256"], expected_sha256);
+        assert_eq!(completed["scans"], 1);
+        assert_eq!(completed["candidates"], 1);
+        let collision = match publish_case_report(&db, 1, &report, &bytes, &path) {
+            Ok(_) => panic!("existing report destination was replaced"),
+            Err(error) => error,
+        };
+        assert!(collision.contains("could not be published"));
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        let (prepared_count, completed_count): (i64, i64) = db
+            .query_row(
+                "SELECT COUNT(*) FILTER (WHERE event='case_report_export_prepared'),COUNT(*) FILTER (WHERE event='case_report_exported') FROM audit",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(prepared_count, 2);
+        assert_eq!(completed_count, 1);
+        assert!(crate::verify_audit_chain(&db).unwrap().valid);
+        fs::remove_dir_all(root).unwrap();
     }
 }
