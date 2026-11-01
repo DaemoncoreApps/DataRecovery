@@ -1051,4 +1051,7 @@ LFN reconstruction, checksum fallback, and invalid/conflicting backup sectors.
 `npm run validate` passed locally with 43 core
 tests, 75 desktop tests (3 ignored), frontend build, formatting, and Clippy with
 warnings denied. Hosted Windows and fuzz validation for this backup-sector
-hardening is pending.
+hardening is pending on commit
+`faf6a4741a70b525fd7ddc02cb41cb09f69e5780`; run
+[41362548805](https://github.com/DaemoncoreApps/DataRecovery/actions/runs/41362548805)
+is queued for that exact revision.
