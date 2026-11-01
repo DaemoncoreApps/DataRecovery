@@ -9,7 +9,7 @@ export interface Source {
   sha256: string | null;
 }
 export interface Job {
-  kind: "hash" | "ntfs_scan" | "recovery_export";
+  kind: "hash" | "ntfs_scan" | "recovery_export" | "evidence_reopen";
   discovered: number;
   message: string | null;
   output_directory: string | null;

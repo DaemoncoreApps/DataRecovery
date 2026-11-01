@@ -180,6 +180,21 @@ function App() {
       setArchivedPageIndex(pageIndex);
       setArchivedPage(result);
     });
+  const reopenArchivedSource = (scanSessionId: number) =>
+    run(async () => {
+      if (activeCaseId === null) throw new Error("Select the case first.");
+      const reopened = await command<Source>("reopen_archived_source", {
+        caseId: activeCaseId,
+        scanSessionId,
+      });
+      sourceGeneration.current += 1;
+      setSource(reopened);
+      setData([]);
+      setJob(emptyJob);
+      setArchivedScanId(null);
+      setArchivedPage(null);
+      setPage("Image Workspace");
+    });
   const heading = (
     <div className="heading">
       <div className="headingCopy">
@@ -486,9 +501,16 @@ function App() {
                       <span className="tag">ARCHIVE · READ ONLY</span>
                     </div>
                     <p className="muted archivedNotice">
-                      This is a stored scan snapshot. Reopen the source and perform a fresh
-                      scan before exporting; archived candidates cannot be recovered directly.
+                      This stored snapshot is review-only. Reopen its recorded evidence with
+                      SHA-256 verification, then run a fresh scan before recovery.
                     </p>
+                    <button
+                      type="button"
+                      disabled={busy || job.state === "running"}
+                      onClick={() => reopenArchivedSource(archivedScanId)}
+                    >
+                      Verify and reopen source
+                    </button>
                     {archivedPage.rows.map((candidate: RecoveryCandidate) => (
                       <div className="case" key={candidate.id}>
                         <code>MFT-{candidate.id}</code>

@@ -105,6 +105,163 @@ pub fn archived_scan_results(
     archived_scan_results_from(&db, case_id, scan_session_id, offset, limit)
 }
 
+#[tauri::command]
+pub async fn reopen_archived_source(
+    case_id: i64,
+    scan_session_id: i64,
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<crate::Source> {
+    let (path, name, expected_size, expected_sha256, evidence_id) = {
+        let db = state.db.lock().map_err(err)?;
+        if crate::require_audited_active_case(&db)? != case_id {
+            return Err("Select the archived scan's case before reopening its evidence.".into());
+        }
+        let session = list_case_scan_sessions_from(&db, case_id)?
+            .into_iter()
+            .find(|session| session.id == scan_session_id)
+            .ok_or("The archived scan does not belong to the selected case.")?;
+        let (path, name, size) = archived_source_record_from(&db, &session)?;
+        (path, name, size, session.source_sha256, session.evidence_id)
+    };
+    {
+        let mut job = state.job.lock().map_err(err)?;
+        if job.state == "running" {
+            return Err("Wait for the active operation before reopening archived evidence.".into());
+        }
+        state.cancel.store(false, Ordering::SeqCst);
+        *job = Job {
+            state: "running".into(),
+            kind: "evidence_reopen".into(),
+            message: Some("Reopening archived evidence and verifying its full SHA-256".into()),
+            ..Job::default()
+        };
+    }
+    let start_audit = state.db.lock().map_err(err).and_then(|db| {
+        audit(
+            &db,
+            "archived_evidence_reopen_started",
+            &serde_json::json!({
+                "case_id": case_id,
+                "evidence_record_id": evidence_id,
+                "scan_session_id": scan_session_id,
+                "expected_size": expected_size,
+                "expected_sha256": expected_sha256,
+            })
+            .to_string(),
+        )
+    });
+    if let Err(error) = start_audit {
+        if let Ok(mut job) = state.job.lock() {
+            job.state = "failed".into();
+            job.error = Some(error.clone());
+        }
+        return Err(error);
+    }
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let result = (|| -> Result<crate::Source> {
+            let path = std::path::PathBuf::from(path);
+            let image = Arc::new(crate::storage::Image::open(&path).map_err(err)?);
+            let digest = crate::hash_source(image.as_ref(), &state.cancel, |processed| {
+                if let Ok(mut job) = state.job.lock() {
+                    job.processed = processed;
+                    job.total = image.len();
+                }
+            })?.ok_or("Evidence reopen was cancelled; no source was activated.")?;
+            if state.cancel.load(Ordering::SeqCst) {
+                return Err("Evidence reopen was cancelled; no source was activated.".into());
+            }
+            image.verify_unchanged().map_err(err)?;
+            if image.len() != expected_size || digest != expected_sha256 {
+                let mut db = state.db.lock().map_err(err)?;
+                let tx = db.transaction().map_err(err)?;
+                tx.execute(
+                    "UPDATE evidence_sources SET sha256=NULL,status='compromised' WHERE id=?1 AND case_id=?2 AND sha256=?3 AND status='hashed'",
+                    rusqlite::params![evidence_id, case_id, expected_sha256],
+                ).map_err(err)?;
+                audit(&tx, "archived_evidence_reopen_rejected", &serde_json::json!({"case_id":case_id,"evidence_record_id":evidence_id,"scan_session_id":scan_session_id,"expected_sha256":expected_sha256,"observed_size":image.len(),"observed_sha256":digest}).to_string())?;
+                tx.commit().map_err(err)?;
+                return Err("The evidence at the archived path no longer matches its recorded SHA-256. Its case record was marked compromised; do not recover from this file.".into());
+            }
+            let mut prefix = vec![0; image.len().min(512) as usize];
+            image.read_exact_at(0, &mut prefix).map_err(err)?;
+            let db = state.db.lock().map_err(err)?;
+            if crate::require_audited_active_case(&db)? != case_id {
+                return Err("The active case changed during evidence verification. No source was activated.".into());
+            }
+            let (current_size, current_sha256, current_status):
+                (i64, Option<String>, String) = db
+                .query_row(
+                    "SELECT size_bytes,sha256,status FROM evidence_sources WHERE id=?1 AND case_id=?2",
+                    rusqlite::params![evidence_id, case_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .map_err(err)?;
+            if current_size < 1
+                || current_size as u64 != expected_size
+                || current_sha256.as_deref() != Some(expected_sha256.as_str())
+                || current_status != "hashed"
+            {
+                return Err("The archived evidence record changed during source verification. No source was activated.".into());
+            }
+            audit(&db, "archived_evidence_reopened", &serde_json::json!({"case_id":case_id,"evidence_record_id":evidence_id,"scan_session_id":scan_session_id,"sha256":digest,"size":expected_size}).to_string())?;
+            drop(db);
+            let id = state.generation.fetch_add(1, Ordering::SeqCst);
+            let source = crate::Source {
+                id,
+                case_id,
+                evidence_record_id: evidence_id,
+                name,
+                size: expected_size,
+                filesystem: crate::detect(&prefix),
+                sha256: Some(digest),
+            };
+            *state.scan.lock().map_err(err)? = None;
+            *state.source.lock().map_err(err)? = Some(crate::Evidence {
+                image,
+                info: source.clone(),
+                integrity_compromised: false,
+            });
+            Ok(source)
+        })();
+        let mut job = state.job.lock().map_err(err)?;
+        match &result {
+            Ok(_) => { job.state = "completed".into(); job.message = Some("Evidence digest verified. Run a fresh NTFS scan before recovery.".into()); }
+            Err(error) => { job.state = if state.cancel.load(Ordering::SeqCst) { "cancelled" } else { "failed" }.into(); job.error = Some(error.clone()); }
+        }
+        result
+    }).await;
+    let result = match result {
+        Ok(result) => result,
+        Err(error) => {
+            if let Ok(mut job) = state.job.lock() {
+                job.state = "failed".into();
+                job.error = Some(format!("Archived evidence reopen task failed: {error}"));
+            }
+            return Err(err(error));
+        }
+    };
+    result
+}
+
+fn archived_source_record_from(
+    db: &rusqlite::Connection,
+    session: &CaseScanSession,
+) -> Result<(String, String, u64)> {
+    let (path, name, size, sha256, status): (String, String, i64, Option<String>, String) = db
+        .query_row(
+            "SELECT original_path,name,size_bytes,sha256,status FROM evidence_sources WHERE id=?1 AND case_id=?2",
+            rusqlite::params![session.evidence_id, session.case_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+        )
+        .map_err(err)?;
+    if status != "hashed" || size < 1 || sha256.as_deref() != Some(session.source_sha256.as_str()) {
+        return Err("The archived scan's evidence record is not in a verified state. Do not use this snapshot for recovery.".into());
+    }
+    Ok((path, name, size as u64))
+}
+
 fn archived_scan_results_from(
     db: &rusqlite::Connection,
     case_id: i64,
@@ -749,7 +906,7 @@ mod tests {
             [],
         )
         .unwrap();
-        db.execute("INSERT INTO evidence_sources(id,case_id,original_path,name,size_bytes,filesystem,opened_at,status) VALUES (2,1,'evidence.img','evidence.img',4096,'NTFS','1','hashed')", []).unwrap();
+        db.execute("INSERT INTO evidence_sources(id,case_id,original_path,name,size_bytes,filesystem,opened_at,sha256,status) VALUES (2,1,'evidence.img','evidence.img',4096,'NTFS','1',?1,'hashed')", [&"b".repeat(64)]).unwrap();
         let boot = scan_boot();
         let candidates = [scan_candidate()];
         let scan_id = persist_scan_snapshot(
@@ -781,6 +938,21 @@ mod tests {
         let sessions = list_case_scan_sessions_from(&db, 1).unwrap();
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].id, scan_id);
+        assert_eq!(
+            archived_source_record_from(&db, &sessions[0]).unwrap(),
+            ("evidence.img".into(), "evidence.img".into(), 4096)
+        );
+        db.execute(
+            "UPDATE evidence_sources SET status='compromised' WHERE id=2 AND case_id=1",
+            [],
+        )
+        .unwrap();
+        assert!(archived_source_record_from(&db, &sessions[0]).is_err());
+        db.execute(
+            "UPDATE evidence_sources SET status='hashed' WHERE id=2 AND case_id=1",
+            [],
+        )
+        .unwrap();
         let archived = archived_scan_results_from(&db, 1, scan_id, 0, 10).unwrap();
         assert_eq!(archived.total, 1);
         assert_eq!(archived.rows[0].name, "recovered.bin");

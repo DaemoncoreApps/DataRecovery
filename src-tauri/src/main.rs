@@ -978,6 +978,7 @@ fn main() {
             recovery_commands::scan_summary,
             recovery_commands::list_case_scan_sessions,
             recovery_commands::archived_scan_results,
+            recovery_commands::reopen_archived_source,
             recovery_commands::scan_results,
             recovery_commands::export_selected,
             recovery_verify::verify_recovery_export

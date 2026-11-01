@@ -2,6 +2,22 @@
 
 ## Current workspace validation and fuzz evidence
 
+- Archived case scans now have an explicit **Verify and reopen source** action.
+  It checks the audit-validated scan and evidence linkage, requires the case's
+  stored evidence record to remain hashed at the original size/digest, then
+  reopens the recorded path and hashes the full image before activation. A
+  changed size or digest marks that evidence record compromised and adds an
+  audit event; attempts also record a start event. Reopened evidence has no
+  active scan cache; a fresh scan is required before recovery. The focused
+  archived-source test checks acceptance
+  of the matching record and rejection of a compromised record.
+- After this change, `npm run validate` passed: frontend TypeScript/Vite
+  production build, Rust formatting, 4 NTFS core tests, 80 application tests
+  passed, 0 failed, 3 ignored, and Clippy with warnings denied. Windows
+  incremental compilation emitted its known hard-link fallback warning and
+  copied cache files successfully. This validates code and tests; the newly
+  built packaged UI has not received a native smoke run.
+
 - `npm run validate` passed after extracting the shared NTFS parser core:
   TypeScript/Vite production build, Rust format checks, 4 core tests, 79
   application tests passed, 0 failed, 2 ignored, and Clippy with warnings
