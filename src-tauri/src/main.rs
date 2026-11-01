@@ -1,4 +1,4 @@
-use daemoncore_ntfs_core::{ntfs, storage::BlockSource};
+use daemoncore_ntfs_core::{ntfs, partition, storage::BlockSource};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -15,7 +15,6 @@ mod case_report;
 mod destination;
 #[cfg(test)]
 mod ntfs_tests;
-mod partition;
 mod recovery;
 mod recovery_commands;
 mod recovery_verify;

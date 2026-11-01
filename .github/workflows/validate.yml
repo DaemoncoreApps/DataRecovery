@@ -41,7 +41,7 @@ jobs:
       - name: Build and validate
         run: npm run validate
 
-  ntfs-fuzz:
+  disk-parser-fuzz:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -60,11 +60,14 @@ jobs:
       - name: Run whole-image NTFS scan fuzz campaign
         working-directory: src-tauri
         run: cargo +nightly fuzz run --jobs 1 ntfs_scan_image -- -runs=1000000 -max_total_time=120 -max_len=4194304 -timeout=10 -rss_limit_mb=2048
-      - name: Preserve fuzz corpus and crash artifacts
+      - name: Run disk partition and boot-sector fuzz campaign
+        working-directory: src-tauri
+        run: cargo +nightly fuzz run --jobs 1 partition_image -- -runs=1000000 -max_total_time=120 -max_len=4194304 -timeout=10 -rss_limit_mb=2048
+      - name: Preserve parser fuzz corpora and crash artifacts
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
-          name: ntfs-fuzz-results-${{ github.run_id }}
+          name: disk-parser-fuzz-results-${{ github.run_id }}
           path: |
             src-tauri/fuzz/artifacts
             src-tauri/fuzz/corpus

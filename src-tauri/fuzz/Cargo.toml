@@ -24,3 +24,10 @@ path = "fuzz_targets/ntfs_scan_image.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "partition_image"
+path = "fuzz_targets/partition_image.rs"
+test = false
+doc = false
+bench = false

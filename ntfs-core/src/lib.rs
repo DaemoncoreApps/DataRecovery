@@ -1,4 +1,5 @@
 pub mod ntfs;
+pub mod partition;
 
 pub mod storage {
     use std::io;
