@@ -46,9 +46,21 @@
   bounded Linux campaigns of both fuzz targets. The workflow fetches each
   locked Rust dependency graph before running the offline validation command,
   uses read-only repository permissions, pins its GitHub actions to commit
-  SHAs, and preserves fuzz corpus/artifacts after a failed campaign. The first
-  hosted Actions run is still pending; configuration alone is not fuzz or CI
-  evidence.
+  SHAs, and stores the resulting fuzz corpus/artifacts for 14 days. Markdown-
+  only changes do not trigger the build/fuzz jobs.
+- Hosted Actions run `41263131573` passed on commit
+  `6a1447e4dba032beed057cc90a915d13a629f49f`. The Windows validation job passed
+  the frontend build, formatting, 4 NTFS core tests, 80 application tests, and
+  Clippy with warnings denied (3 tests ignored). On Ubuntu 24.04, the
+  `ntfs_parse_record` target completed 1,000,000 executions in 12 seconds
+  (444 coverage counters, 565 features, 422 MiB peak RSS). The
+  `ntfs_scan_image` target completed 482,601 executions in 121 seconds before
+  its 120-second time limit (1,408 coverage counters, 4,156 features, 457 MiB
+  peak RSS). Neither campaign reported a crash. The scan corpus grew from 3
+  seeds to 330 inputs (20 MiB) during the run; the updated workflow retains
+  that evolved corpus as a run artifact, and will verify this retention on the
+  next run. This is an initial bounded fuzz campaign, not sustained or
+  independent-volume qualification.
 - The previous refactored Windows release executable was rebuilt using the
   warm workspace target and launched once after approval. It is 12,969,472
   bytes, SHA-256 `5a7075617143cefc1b74783ba57930f05c6d0086e0ee282d935e0916db73f35d`,
