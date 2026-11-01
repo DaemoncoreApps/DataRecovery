@@ -765,7 +765,8 @@ with Windows system error 623 (`ERROR_ILLEGAL_DLL_RELOCATION`). The output
 directory still contains an older setup, but this failed run produced no
 current installer. Added a manually dispatched Windows-hosted staging
 workflow that builds the NSIS package and records the installer hash and
-Authenticode status in a 7-day artifact; its first run is still required.
+Authenticode status in a 7-day artifact; the first hosted run succeeded, as
+recorded below.
 
 The optimized r51 Windows x64 executable was rebuilt from the timestamp-corrected
 source and staged as
@@ -797,3 +798,24 @@ the archive's size was free on the local C: drive, so the inner setup hash and
 signature state have not been independently checked here. The package remains
 staged and has not been installed. Install, update, uninstall, publisher
 signing, and clean-account behavior remain unverified.
+
+### exFAT boot-region validation
+
+Partition analysis now validates the exFAT main and backup boot regions before
+reporting a filesystem hint. It checks each region's rotating checksum (with
+the specification's excluded status fields), sector signatures, sector/cluster
+shifts, revision, FAT and cluster-heap bounds, cluster count, root cluster, and
+volume extent. It can report a valid backup when the main region is damaged and
+reports when the two valid regions disagree on boot metadata. The UI explicitly
+states that this does not parse directories or file contents. The field layout,
+boot-region checksum, and range rules follow the
+[Microsoft exFAT File System Specification](https://learn.microsoft.com/en-us/windows/win32/fileio/exfat-specification).
+
+Regression tests cover valid 512-byte and 4096-byte sectors, valid main/backup
+regions with differing checksum-excluded state fields, primary/backup fallback,
+bad checksums, and invalid root-cluster geometry. `npm run validate` passed
+after the change: frontend build, 4 NTFS-core tests, 91 desktop tests (3
+ignored), Rust format checks, and Clippy with warnings denied. These are
+specification-derived synthetic fixtures; an independently formatted exFAT
+volume fixture has not yet been verified, and exFAT recovery remains
+unimplemented.

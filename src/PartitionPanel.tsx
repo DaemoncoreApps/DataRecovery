@@ -100,9 +100,11 @@ export function PartitionPanel({ source, busy, analyze }: Props) {
                 </div>
               )}
               <p className="panelFootnote">
-                Filesystem hints come from a boot-sector signature and basic
-                geometry checks only. They do not validate a filesystem.
-                Partition recovery and writing repaired tables are not provided.
+                exFAT boot-region checksums and geometry are validated. NTFS
+                and FAT32 identification uses boot signatures and basic
+                geometry only. These checks do not validate filesystem
+                directories or file contents. File recovery and partition-table
+                repair are not provided here.
               </p>
             </>
           )}

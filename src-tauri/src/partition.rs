@@ -32,6 +32,190 @@ fn u64_at(b: &[u8], o: usize) -> Option<u64> {
     Some(u64::from_le_bytes(b.get(o..o + 8)?.try_into().ok()?))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+// Backup VolumeFlags and PercentInUse may be stale, so omit them from copy comparison.
+struct ExfatBootMetadata {
+    bytes_per_sector: u32,
+    sectors_per_cluster: u64,
+    partition_offset: u64,
+    volume_length: u64,
+    fat_offset: u64,
+    fat_length: u64,
+    cluster_heap_offset: u64,
+    cluster_count: u64,
+    root_cluster: u32,
+    number_of_fats: u8,
+    revision: u16,
+    volume_serial: u32,
+}
+
+fn exfat_boot_checksum(region: &[u8], bytes_per_sector: usize) -> Option<u32> {
+    if !(512..=4096).contains(&bytes_per_sector) || !bytes_per_sector.is_power_of_two() {
+        return None;
+    }
+    let checksum_bytes = bytes_per_sector.checked_mul(11)?;
+    let checksum_sector = bytes_per_sector.checked_mul(11)?;
+    if region.len() != bytes_per_sector.checked_mul(12)? {
+        return None;
+    }
+    // The exFAT specification excludes VolumeFlags and PercentInUse from this checksum.
+    let mut checksum = 0_u32;
+    for (index, byte) in region[..checksum_bytes].iter().enumerate() {
+        if matches!(index, 106 | 107 | 112) {
+            continue;
+        }
+        checksum = checksum.rotate_right(1).wrapping_add(u32::from(*byte));
+    }
+    let stored = region.get(checksum_sector..)?;
+    if stored
+        .chunks(4)
+        .any(|word| u32::from_le_bytes([word[0], word[1], word[2], word[3]]) != checksum)
+    {
+        return None;
+    }
+    Some(checksum)
+}
+
+fn parse_exfat_boot_region(
+    region: &[u8],
+    expected_sector_size: u32,
+    partition_sectors: u64,
+) -> Option<ExfatBootMetadata> {
+    let sector_size = usize::try_from(expected_sector_size).ok()?;
+    if !(512..=4096).contains(&sector_size)
+        || !sector_size.is_power_of_two()
+        || region.len() != sector_size.checked_mul(12)?
+    {
+        return None;
+    }
+    let boot = region.get(..sector_size)?;
+    if boot.get(..3)? != [0xeb, 0x76, 0x90]
+        || boot.get(3..11)? != b"EXFAT   "
+        || boot.get(11..64)?.iter().any(|byte| *byte != 0)
+        || boot.get(510..512)? != [0x55, 0xaa]
+        || usize::from(*boot.get(108)?) != sector_size.trailing_zeros() as usize
+    {
+        return None;
+    }
+    for sector_index in 1_usize..=8 {
+        let end = (sector_index + 1).checked_mul(sector_size)?;
+        if region.get(end.checked_sub(4)?..end)? != [0xaa, 0x55, 0, 0] {
+            return None;
+        }
+    }
+    exfat_boot_checksum(region, sector_size)?;
+
+    let bytes_shift = *boot.get(108)?;
+    let cluster_shift = *boot.get(109)?;
+    if !(9..=12).contains(&bytes_shift)
+        || cluster_shift > 25_u8.checked_sub(bytes_shift)?
+        || boot.get(113..120)?.iter().any(|byte| *byte != 0)
+    {
+        return None;
+    }
+    let volume_length = u64_at(boot, 72)?;
+    let fat_offset = u64::from(u32_at(boot, 80)?);
+    let fat_length = u64::from(u32_at(boot, 84)?);
+    let cluster_heap_offset = u64::from(u32_at(boot, 88)?);
+    let cluster_count = u64::from(u32_at(boot, 92)?);
+    let root_cluster = u32_at(boot, 96)?;
+    let revision = u16::from_le_bytes(boot.get(104..106)?.try_into().ok()?);
+    let volume_flags = u16::from_le_bytes(boot.get(106..108)?.try_into().ok()?);
+    let number_of_fats = *boot.get(110)?;
+    let percent_in_use = *boot.get(112)?;
+    let bytes_per_sector = 1_u32.checked_shl(u32::from(bytes_shift))?;
+    let sectors_per_cluster = 1_u64.checked_shl(u32::from(cluster_shift))?;
+    let volume_minimum_sectors = (1_u64 << 20) / u64::from(bytes_per_sector);
+    let expected_cluster_count = volume_length
+        .checked_sub(cluster_heap_offset)?
+        .checked_div(sectors_per_cluster)?
+        .min(u64::from(u32::MAX) - 10);
+    let required_fat_bytes = cluster_count.checked_add(2)?.checked_mul(4)?;
+    let minimum_fat_sectors = required_fat_bytes
+        .checked_add(u64::from(bytes_per_sector) - 1)?
+        .checked_div(u64::from(bytes_per_sector))?;
+    let fats_end = fat_offset.checked_add(fat_length.checked_mul(u64::from(number_of_fats))?)?;
+    let cluster_heap_end =
+        cluster_heap_offset.checked_add(cluster_count.checked_mul(sectors_per_cluster)?)?;
+    let major_revision = (revision >> 8) as u8;
+    let minor_revision = revision as u8;
+
+    if major_revision != 1
+        || minor_revision > 99
+        || !matches!(number_of_fats, 1 | 2)
+        || (number_of_fats == 1 && volume_flags & 1 != 0)
+        || volume_flags & 0xfff0 != 0
+        || !(percent_in_use <= 100 || percent_in_use == 0xff)
+        || volume_length < volume_minimum_sectors
+        || volume_length > partition_sectors
+        || fat_offset < 24
+        || fat_length == 0
+        || fat_length < minimum_fat_sectors
+        || fats_end > cluster_heap_offset
+        || cluster_heap_offset > u64::from(u32::MAX)
+        || cluster_count != expected_cluster_count
+        || !(2..=cluster_count.checked_add(1)?).contains(&u64::from(root_cluster))
+        || cluster_heap_end > volume_length
+    {
+        return None;
+    }
+
+    Some(ExfatBootMetadata {
+        bytes_per_sector,
+        sectors_per_cluster,
+        partition_offset: u64_at(boot, 64)?,
+        volume_length,
+        fat_offset,
+        fat_length,
+        cluster_heap_offset,
+        cluster_count,
+        root_cluster,
+        number_of_fats,
+        revision,
+        volume_serial: u32_at(boot, 100)?,
+    })
+}
+
+fn exfat_geometry_hint<R: Read + Seek>(
+    r: &mut R,
+    volume_offset: u64,
+    partition_sectors: u64,
+    sector_size: u32,
+    image_size: u64,
+) -> Option<String> {
+    let sector_size_usize = usize::try_from(sector_size).ok()?;
+    if !(512..=4096).contains(&sector_size_usize) || !sector_size_usize.is_power_of_two() {
+        return None;
+    }
+    let boot_region_length = sector_size_usize.checked_mul(12)?;
+    let boot_region_sectors = 12_u64;
+    if partition_sectors < boot_region_sectors.checked_mul(2)? {
+        return None;
+    }
+    let main_region = read_at(r, volume_offset, boot_region_length, image_size).ok()?;
+    let backup_offset =
+        volume_offset.checked_add(boot_region_sectors.checked_mul(u64::from(sector_size))?)?;
+    let backup_region = read_at(r, backup_offset, boot_region_length, image_size).ok()?;
+    let primary = parse_exfat_boot_region(&main_region, sector_size, partition_sectors);
+    let backup = parse_exfat_boot_region(&backup_region, sector_size, partition_sectors);
+
+    match (primary, backup) {
+        (Some(primary), Some(backup)) if primary == backup => Some(
+            "exFAT boot regions validated (main and backup checksums and geometry; directory parser unavailable)".into(),
+        ),
+        (Some(_), Some(_)) => Some(
+            "exFAT main boot region validated; backup boot metadata differs (directory parser unavailable)".into(),
+        ),
+        (Some(_), None) => Some(
+            "exFAT main boot region validated; backup boot region invalid (directory parser unavailable)".into(),
+        ),
+        (None, Some(_)) => Some(
+            "exFAT backup boot region validated; main boot region invalid (directory parser unavailable)".into(),
+        ),
+        (None, None) => None,
+    }
+}
+
 fn read_at<R: Read + Seek>(
     r: &mut R,
     offset: u64,
@@ -69,6 +253,9 @@ fn filesystem_hint<R: Read + Seek>(
 ) -> Option<String> {
     let offset = start_lba.checked_mul(sector_size as u64)?;
     let b = read_at(r, offset, (sector_size as usize).min(4096), image_size).ok()?;
+    if b.get(3..11) == Some(b"EXFAT   ") {
+        return exfat_geometry_hint(r, offset, partition_sectors, sector_size, image_size);
+    }
     if b.get(510..512) != Some(&[0x55, 0xaa]) {
         return None;
     }
@@ -84,20 +271,6 @@ fn filesystem_hint<R: Read + Seek>(
         let total = u64_at(&b, 40)?;
         if total > 0 && total <= partition_sectors {
             return Some("NTFS boot signature (basic geometry checked; parser unavailable)".into());
-        }
-    } else if b.get(3..11) == Some(b"EXFAT   ") {
-        let bytes_shift = *b.get(108)?;
-        let cluster_shift = *b.get(109)?;
-        let volume_sectors = u64_at(&b, 72)?;
-        if (9..=12).contains(&bytes_shift)
-            && bytes_shift == sector_size.trailing_zeros() as u8
-            && cluster_shift <= 25
-            && volume_sectors > 0
-            && volume_sectors <= partition_sectors
-        {
-            return Some(
-                "exFAT boot signature (basic geometry checked; parser unavailable)".into(),
-            );
         }
     } else if b.get(82..90) == Some(b"FAT32   ") {
         let total = u32_at(&b, 32)? as u64;
@@ -497,6 +670,154 @@ pub fn analyze<R: Read + Seek>(r: &mut R, image_size: u64) -> Result<PartitionRe
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    fn write_exfat_boot_checksum(region: &mut [u8], sector_size: usize) {
+        let mut checksum = 0_u32;
+        for (index, byte) in region[..sector_size * 11].iter().enumerate() {
+            if matches!(index, 106 | 107 | 112) {
+                continue;
+            }
+            checksum = checksum.rotate_right(1).wrapping_add(u32::from(*byte));
+        }
+        let checksum_sector = &mut region[sector_size * 11..sector_size * 12];
+        for word in checksum_sector.chunks_mut(4) {
+            word.copy_from_slice(&checksum.to_le_bytes());
+        }
+    }
+
+    fn exfat_boot_region(sector_size: usize) -> Vec<u8> {
+        let mut region = vec![0; sector_size * 12];
+        let boot = &mut region[..sector_size];
+        boot[..3].copy_from_slice(&[0xeb, 0x76, 0x90]);
+        boot[3..11].copy_from_slice(b"EXFAT   ");
+        boot[72..80].copy_from_slice(&2048_u64.to_le_bytes());
+        boot[80..84].copy_from_slice(&24_u32.to_le_bytes());
+        boot[84..88].copy_from_slice(&16_u32.to_le_bytes());
+        boot[88..92].copy_from_slice(&56_u32.to_le_bytes());
+        boot[92..96].copy_from_slice(&1992_u32.to_le_bytes());
+        boot[96..100].copy_from_slice(&2_u32.to_le_bytes());
+        boot[104..106].copy_from_slice(&0x0100_u16.to_le_bytes());
+        boot[108] = sector_size.trailing_zeros() as u8;
+        boot[109] = 0;
+        boot[110] = 1;
+        boot[112] = 50;
+        boot[510..512].copy_from_slice(&[0x55, 0xaa]);
+        for sector_index in 1..=8 {
+            let end = (sector_index + 1) * sector_size;
+            region[end - 4..end].copy_from_slice(&[0xaa, 0x55, 0, 0]);
+        }
+        write_exfat_boot_checksum(&mut region, sector_size);
+        region
+    }
+
+    fn mbr_with_exfat(main_region: &[u8], backup_region: &[u8]) -> Vec<u8> {
+        let sector_size = 512;
+        let mut image = vec![0; 2501 * sector_size];
+        image[510..512].copy_from_slice(&[0x55, 0xaa]);
+        image[446 + 4] = 0x07;
+        image[446 + 8..446 + 12].copy_from_slice(&1_u32.to_le_bytes());
+        image[446 + 12..446 + 16].copy_from_slice(&2500_u32.to_le_bytes());
+        image[sector_size..sector_size + main_region.len()].copy_from_slice(main_region);
+        let backup_start = sector_size + 12 * sector_size;
+        image[backup_start..backup_start + backup_region.len()].copy_from_slice(backup_region);
+        image
+    }
+
+    #[test]
+    fn validates_exfat_main_and_backup_boot_regions() {
+        let region = exfat_boot_region(512);
+        let image = mbr_with_exfat(&region, &region);
+        let report = analyze(&mut Cursor::new(image.clone()), image.len() as u64).unwrap();
+        let hint = report.partitions[0].filesystem_hint.as_deref().unwrap();
+        assert!(hint.contains("main and backup checksums and geometry"));
+        assert!(hint.contains("directory parser unavailable"));
+    }
+
+    #[test]
+    fn accepts_exfat_backup_when_main_boot_checksum_is_invalid() {
+        let mut main = exfat_boot_region(512);
+        main[11 * 512] ^= 1;
+        let backup = exfat_boot_region(512);
+        let image = mbr_with_exfat(&main, &backup);
+        let report = analyze(&mut Cursor::new(image.clone()), image.len() as u64).unwrap();
+        let hint = report.partitions[0].filesystem_hint.as_deref().unwrap();
+        assert!(hint.contains("backup boot region validated"));
+        assert!(hint.contains("main boot region invalid"));
+    }
+
+    #[test]
+    fn reports_when_valid_exfat_boot_metadata_copies_disagree() {
+        let main = exfat_boot_region(512);
+        let mut backup = exfat_boot_region(512);
+        backup[96..100].copy_from_slice(&3_u32.to_le_bytes());
+        write_exfat_boot_checksum(&mut backup, 512);
+        let image = mbr_with_exfat(&main, &backup);
+        let report = analyze(&mut Cursor::new(image.clone()), image.len() as u64).unwrap();
+        let hint = report.partitions[0].filesystem_hint.as_deref().unwrap();
+        assert!(hint.contains("backup boot metadata differs"));
+    }
+
+    #[test]
+    fn allows_exfat_boot_fields_excluded_from_checksum_to_differ() {
+        let main = exfat_boot_region(512);
+        let mut backup = exfat_boot_region(512);
+        backup[106..108].copy_from_slice(&2_u16.to_le_bytes());
+        backup[112] = 0xff;
+        let image = mbr_with_exfat(&main, &backup);
+        let report = analyze(&mut Cursor::new(image.clone()), image.len() as u64).unwrap();
+        assert!(report.partitions[0]
+            .filesystem_hint
+            .as_deref()
+            .unwrap()
+            .contains("main and backup checksums and geometry"));
+    }
+
+    #[test]
+    fn validates_exfat_boot_regions_with_4k_sectors() {
+        let region = exfat_boot_region(4096);
+        let parsed = parse_exfat_boot_region(&region, 4096, 2500).unwrap();
+        assert_eq!(parsed.bytes_per_sector, 4096);
+        assert_eq!(parsed.sectors_per_cluster, 1);
+        assert_eq!(parsed.partition_offset, 0);
+        assert_eq!(parsed.volume_length, 2048);
+        assert_eq!(parsed.fat_offset, 24);
+        assert_eq!(parsed.fat_length, 16);
+        assert_eq!(parsed.cluster_heap_offset, 56);
+        assert_eq!(parsed.cluster_count, 1992);
+        assert_eq!(parsed.root_cluster, 2);
+        assert_eq!(parsed.number_of_fats, 1);
+        assert_eq!(parsed.revision, 0x0100);
+        assert_eq!(parsed.volume_serial, 0);
+        assert_eq!(exfat_boot_checksum(&[], 0), None);
+    }
+
+    #[test]
+    fn retains_a_valid_exfat_primary_when_backup_checksum_fails() {
+        let main = exfat_boot_region(512);
+        let mut backup = exfat_boot_region(512);
+        backup[11 * 512] ^= 1;
+        let image = mbr_with_exfat(&main, &backup);
+        let report = analyze(&mut Cursor::new(image.clone()), image.len() as u64).unwrap();
+        let hint = report.partitions[0].filesystem_hint.as_deref().unwrap();
+        assert!(hint.contains("main boot region validated"));
+        assert!(hint.contains("backup boot region invalid"));
+    }
+
+    #[test]
+    fn rejects_exfat_regions_with_invalid_checksum_or_root_cluster() {
+        let mut invalid_checksum = exfat_boot_region(512);
+        invalid_checksum[11 * 512] ^= 1;
+        let image = mbr_with_exfat(&invalid_checksum, &invalid_checksum);
+        let report = analyze(&mut Cursor::new(image.clone()), image.len() as u64).unwrap();
+        assert_eq!(report.partitions[0].filesystem_hint, None);
+
+        let mut invalid_geometry = exfat_boot_region(512);
+        invalid_geometry[96..100].copy_from_slice(&0_u32.to_le_bytes());
+        write_exfat_boot_checksum(&mut invalid_geometry, 512);
+        let image = mbr_with_exfat(&invalid_geometry, &invalid_geometry);
+        let report = analyze(&mut Cursor::new(image.clone()), image.len() as u64).unwrap();
+        assert_eq!(report.partitions[0].filesystem_hint, None);
+    }
 
     #[test]
     fn parses_mbr_bounds_and_boot_flag() {
