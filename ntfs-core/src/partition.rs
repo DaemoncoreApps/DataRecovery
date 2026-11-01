@@ -460,11 +460,17 @@ fn parse_gpt_header(bytes: &[u8], sector_size: u32) -> Result<GptHeader, String>
     if array_len > ARRAY_LIMIT {
         return Err("GPT entry array is larger than the 4 MiB safety limit".into());
     }
+    let disk_guid: [u8; 16] = bytes
+        .get(56..72)
+        .ok_or("GPT disk GUID is missing")?
+        .try_into()
+        .map_err(|_| "GPT disk GUID is invalid")?;
     Ok(GptHeader {
         current_lba: u64_at(bytes, 24).ok_or("GPT current LBA is missing")?,
         backup_lba: u64_at(bytes, 32).ok_or("GPT backup LBA is missing")?,
         first_usable_lba: u64_at(bytes, 40).ok_or("GPT first usable LBA is missing")?,
         last_usable_lba: u64_at(bytes, 48).ok_or("GPT last usable LBA is missing")?,
+        disk_guid,
         entries_lba: u64_at(bytes, 72).ok_or("GPT entries LBA is missing")?,
         entry_count,
         entry_size,
@@ -479,7 +485,7 @@ fn gpt_header_layout_valid(
     sector_size: u32,
 ) -> bool {
     let backup_reference_valid = if observed_lba == 1 {
-        header.backup_lba > 1 && header.backup_lba != observed_lba
+        header.backup_lba == last_lba
     } else {
         header.backup_lba == 1
     };
@@ -531,6 +537,7 @@ struct GptHeader {
     backup_lba: u64,
     first_usable_lba: u64,
     last_usable_lba: u64,
+    disk_guid: [u8; 16],
     entries_lba: u64,
     entry_count: u32,
     entry_size: u32,
@@ -589,6 +596,17 @@ fn parse_gpt<R: Read + Seek>(
         }
         if p.backup_lba != b.current_lba || b.backup_lba != p.current_lba {
             warnings.push("Primary and backup GPT headers disagree about their locations.".into());
+        }
+        if p.disk_guid != b.disk_guid
+            || p.first_usable_lba != b.first_usable_lba
+            || p.last_usable_lba != b.last_usable_lba
+            || p.entry_count != b.entry_count
+            || p.entry_size != b.entry_size
+        {
+            warnings.push(
+                "Primary and backup GPT headers disagree about disk identity, usable range, or partition entry dimensions."
+                    .into(),
+            );
         }
     }
     if let (Some(p), Some(b)) = (&primary_entries, &backup_entries) {
@@ -1388,6 +1406,36 @@ mod tests {
     }
 
     #[test]
+    fn reports_disagreement_between_valid_gpt_header_metadata() {
+        for mismatch in 0..3 {
+            let mut image = valid_gpt_image();
+            let backup_offset = 99 * 512;
+            match mismatch {
+                0 => image[backup_offset + 56..backup_offset + 72].fill(2),
+                1 => image[backup_offset + 48..backup_offset + 56]
+                    .copy_from_slice(&89_u64.to_le_bytes()),
+                2 => {
+                    image[backup_offset + 80..backup_offset + 84]
+                        .copy_from_slice(&2_u32.to_le_bytes());
+                    image[backup_offset + 84..backup_offset + 88]
+                        .copy_from_slice(&256_u32.to_le_bytes());
+                }
+                _ => unreachable!(),
+            }
+            update_gpt_header_crc(&mut image, 99);
+
+            let report = analyze(&mut Cursor::new(image.clone()), image.len() as u64).unwrap();
+
+            assert_eq!(report.primary_gpt_valid, Some(true));
+            assert_eq!(report.backup_gpt_valid, Some(true));
+            assert_eq!(report.partitions.len(), 1);
+            assert!(report.warnings.iter().any(|warning| warning.contains(
+                "disagree about disk identity, usable range, or partition entry dimensions"
+            )));
+        }
+    }
+
+    #[test]
     fn reports_zero_gpt_unique_partition_guid() {
         let mut image = valid_gpt_image();
         image[2 * 512 + 16..2 * 512 + 32].fill(0);
@@ -1567,6 +1615,23 @@ mod tests {
         assert_eq!(report.primary_gpt_valid, Some(false));
         assert_eq!(report.backup_gpt_valid, Some(true));
         assert_eq!(report.partitions.len(), 1);
+    }
+
+    #[test]
+    fn rejects_primary_gpt_header_that_points_to_a_nonterminal_backup() {
+        let mut image = valid_gpt_image();
+        image[512 + 32..512 + 40].copy_from_slice(&98_u64.to_le_bytes());
+        update_gpt_header_crc(&mut image, 1);
+
+        let report = analyze(&mut Cursor::new(image.clone()), image.len() as u64).unwrap();
+
+        assert_eq!(report.primary_gpt_valid, Some(false));
+        assert_eq!(report.backup_gpt_valid, Some(true));
+        assert_eq!(report.partitions.len(), 1);
+        assert!(report
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("Primary GPT header is missing or invalid")));
     }
 
     #[test]

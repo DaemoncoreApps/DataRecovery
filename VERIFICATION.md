@@ -990,4 +990,24 @@ Partition overlap warnings now identify only the affected partition indexes;
 they no longer claim an MBR overlap is a GPT finding. A synthetic MBR regression
 confirms the warning text. `npm run validate` passed locally with 36 core tests,
 75 desktop tests (3 ignored), formatting, and Clippy with warnings denied.
-Hosted validation for this follow-up is pending.
+Hosted CI run
+[41278490909](https://github.com/DaemoncoreApps/DataRecovery/actions/runs/41278490909)
+for commit `50e12fd5c0582556a1497d97651674cdc9b82f66` passed Windows
+validation (36 core tests, 75 desktop tests with 3 ignored, production build,
+formatting, and Clippy with warnings denied) and all three bounded fuzz
+campaigns. The retained fuzz archive is
+[13071754522](https://github.com/DaemoncoreApps/DataRecovery/actions/runs/41278490909/artifacts/13071754522),
+485,276 bytes, SHA-256
+`4aa9940a959542bd38177b8392f51c1783f15f8fba7461af36e1bdb573dcbb7b`,
+expiring 2026-11-15. These hosted results apply to `50e12fd`; the subsequent
+GPT header consistency change below still requires hosted validation.
+
+When both GPT headers and arrays pass their CRCs, the parser now also compares
+the disk GUID, usable-LBA bounds, partition count, and entry size. A disagreement
+is disclosed without hiding the otherwise usable table. A primary header that
+points to a nonterminal backup LBA is rejected, with valid backup fallback
+preserved. Regressions independently change the backup disk GUID, usable bound,
+entry dimensions, and primary backup reference while preserving valid header/
+array CRCs. `npm run validate` passed locally with 38 core tests, 75 desktop
+tests (3 ignored), formatting, and Clippy with warnings denied. Hosted validation
+for this follow-up is pending.
