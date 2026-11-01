@@ -525,6 +525,7 @@ fn gpt_header_layout_valid(
         && backup_reference_valid
         && header.first_usable_lba >= 2
         && header.first_usable_lba <= header.last_usable_lba
+        && header.last_usable_lba < last_lba
         && header.entries_lba > 1
         && entries_end <= image_end
         && !overlaps_usable
@@ -1621,6 +1622,23 @@ mod tests {
     fn rejects_primary_gpt_header_that_points_to_a_nonterminal_backup() {
         let mut image = valid_gpt_image();
         image[512 + 32..512 + 40].copy_from_slice(&98_u64.to_le_bytes());
+        update_gpt_header_crc(&mut image, 1);
+
+        let report = analyze(&mut Cursor::new(image.clone()), image.len() as u64).unwrap();
+
+        assert_eq!(report.primary_gpt_valid, Some(false));
+        assert_eq!(report.backup_gpt_valid, Some(true));
+        assert_eq!(report.partitions.len(), 1);
+        assert!(report
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("Primary GPT header is missing or invalid")));
+    }
+
+    #[test]
+    fn rejects_primary_gpt_usable_range_beyond_image_and_uses_backup() {
+        let mut image = valid_gpt_image();
+        image[512 + 48..512 + 56].copy_from_slice(&120_u64.to_le_bytes());
         update_gpt_header_crc(&mut image, 1);
 
         let report = analyze(&mut Cursor::new(image.clone()), image.len() as u64).unwrap();

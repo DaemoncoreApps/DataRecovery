@@ -1009,5 +1009,19 @@ points to a nonterminal backup LBA is rejected, with valid backup fallback
 preserved. Regressions independently change the backup disk GUID, usable bound,
 entry dimensions, and primary backup reference while preserving valid header/
 array CRCs. `npm run validate` passed locally with 38 core tests, 75 desktop
-tests (3 ignored), formatting, and Clippy with warnings denied. Hosted validation
-for this follow-up is pending.
+tests (3 ignored), formatting, and Clippy with warnings denied. Hosted CI run
+[41359888423](https://github.com/DaemoncoreApps/DataRecovery/actions/runs/41359888423)
+for commit `471d8c9a17eba8b99d764a5b625d18af47c45a68` passed Windows validation
+(38 core tests, 75 desktop tests with 3 ignored, production build, formatting,
+and Clippy with warnings denied) and all three bounded fuzz campaigns. The
+retained fuzz archive is
+[13104514952](https://github.com/DaemoncoreApps/DataRecovery/actions/runs/41359888423/artifacts/13104514952),
+474,257 bytes, SHA-256
+`c1eaa2f7945fc222420382152b9d9eae6472e731a2e51c9490b607aeed2abbd4`,
+expiring 2026-11-15.
+
+The parser now rejects a primary GPT header whose last usable LBA lies outside
+the image. A CRC-valid malformed-header regression confirms rejection while
+retaining valid backup fallback. The local `npm run validate` passed with 39
+core tests, 75 desktop tests (3 ignored), formatting, and Clippy with warnings
+denied. Hosted validation for this follow-up is pending.
