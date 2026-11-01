@@ -757,6 +757,14 @@ current clock. `npm run validate` passed after this schema correction: 4
 NTFS-core tests and 84 desktop tests (3 ignored), frontend build, formatting,
 and Clippy with warnings denied.
 
+An attempt to build the current offline NSIS setup with `npm exec -- tauri
+build` compiled the optimized app, then failed when Tauri ran `makensis.exe`
+with Windows system error 623 (`ERROR_ILLEGAL_DLL_RELOCATION`). The output
+directory still contains an older setup, but this failed run produced no
+current installer. Added a manually dispatched Windows-hosted staging
+workflow that builds the NSIS package and records the installer hash and
+Authenticode status in a 7-day artifact; its first run is still required.
+
 The optimized r51 Windows x64 executable was rebuilt from the timestamp-corrected
 source and staged as
 `src-tauri/target/release/DaemonCore-Data-Recovery-Windows-0.1.0-case-report-r51-unsigned.exe`

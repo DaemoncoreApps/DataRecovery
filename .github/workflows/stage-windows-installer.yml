@@ -1,0 +1,63 @@
+name: Stage unsigned Windows installer
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  stage-nsis:
+    runs-on: windows-2025
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install JavaScript dependencies
+        run: npm ci
+      - name: Build the offline NSIS installer
+        run: npm exec -- tauri build --bundles nsis
+      - name: Record package provenance
+        id: provenance
+        shell: pwsh
+        run: |
+          $packageDirectory = Join-Path $PWD 'src-tauri/target/release/bundle/nsis'
+          $packages = @(Get-ChildItem -LiteralPath $packageDirectory -File -Filter '*-setup.exe')
+          if ($packages.Count -ne 1) {
+            throw "Expected exactly one NSIS setup in $packageDirectory; found $($packages.Count)."
+          }
+
+          $package = $packages[0]
+          $signature = Get-AuthenticodeSignature -LiteralPath $package.FullName
+          $signerSubject = $null
+          if ($signature.SignerCertificate) {
+            $signerSubject = $signature.SignerCertificate.Subject
+          }
+          $record = [ordered]@{
+            application_commit = '${{ github.sha }}'
+            workflow_run_id = '${{ github.run_id }}'
+            filename = $package.Name
+            bytes = $package.Length
+            sha256 = (Get-FileHash -LiteralPath $package.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            authenticode_status = $signature.Status.ToString()
+            signer_subject = $signerSubject
+            built_at_utc = [DateTimeOffset]::UtcNow.ToString('O')
+          }
+          $manifestPath = "$($package.FullName).provenance.json"
+          $json = $record | ConvertTo-Json -Depth 4
+          [IO.File]::WriteAllText($manifestPath, $json + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "package_path=$($package.FullName)"
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "manifest_path=$manifestPath"
+          $record | ConvertTo-Json -Depth 4 | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+      - name: Upload staged installer and provenance
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: daemoncore-offline-nsis-${{ github.run_id }}
+          path: |
+            ${{ steps.provenance.outputs.package_path }}
+            ${{ steps.provenance.outputs.manifest_path }}
+          if-no-files-found: error
+          retention-days: 7
