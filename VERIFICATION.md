@@ -1045,13 +1045,17 @@ reconstructs an LFN only when its sequence, checksum, and UTF-16 contents
 validate. `Volume::open` now uses the same FAT32 BPB checks as partition analysis
 and rejects an invalid or metadata-conflicting declared backup boot sector.
 Bounded live tree traversal reconstructs validated long names and rejects
-directory cross-links; deleted entries remain skipped. FAT32 is still not
-integrated with Tauri scan persistence, UI, or export. Synthetic 65,525-cluster
-images verify fragmented reads, malformed chains, live nested entries, LFN
-checksum/order fallback, deleted-LFN isolation, and invalid/conflicting backup
-sectors. `npm run validate` passed locally with 45 core tests, 75 desktop tests
-(3 ignored), frontend build, formatting, and Clippy with warnings denied.
-Hosted Windows and fuzz validation for the traversal and deleted-LFN changes is
-pending on commit `da6d4d020262e45d8c79b8783647ac6d44d57ab2`; run
-[41362996205](https://github.com/DaemoncoreApps/DataRecovery/actions/runs/41362996205)
-is queued for that exact revision.
+directory cross-links. A separate API exposes deleted short-name records while
+keeping the default live-tree scan unchanged. The contiguous deleted-file
+mapper verifies every expected cluster is still free in all mirrored FATs and
+returns an explicit `ContiguousAssumed` layout marker; this is not a full FAT
+allocation map. When mirroring is disabled, the declared active FAT is used,
+and the primary and backup boot records must agree on those FAT-selection
+flags. FAT32 is still not integrated with Tauri scan persistence, UI, or export.
+Synthetic 65,525-cluster images verify fragmented reads, malformed
+chains, nested live/deleted entries, LFN checksum/order fallback, deleted-LFN
+isolation, conservative contiguous mapping, active-FAT selection, and
+invalid/conflicting backup sectors. `npm run validate` passed locally with 47
+core tests, 75 desktop tests (3 ignored), frontend production build, formatting,
+and Clippy with warnings denied. Hosted Windows and fuzz validation for the
+deleted-entry mapper is pending.

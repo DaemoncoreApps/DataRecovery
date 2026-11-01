@@ -9,6 +9,7 @@ const FAT32_RESERVED_START: u32 = 0x0fff_fff0;
 const MAX_CHAIN_CLUSTERS: usize = 1_000_000;
 const MAX_DIRECTORY_ENTRIES: usize = 1_000_000;
 const MAX_DIRECTORY_DEPTH: usize = 256;
+const FAT_RANGE_READ_BYTES: usize = 64 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Volume {
@@ -33,6 +34,17 @@ pub struct FileMapping {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeletedFileMapping {
+    mapping: FileMapping,
+    layout: DeletedClusterLayout,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeletedClusterLayout {
+    ContiguousAssumed,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DirectoryEntry {
     /// Absolute source offset of the short-name record.
     pub source_offset: u64,
@@ -42,6 +54,7 @@ pub struct DirectoryEntry {
     pub short_name: [u8; 11],
     /// A checksum-verified long name, when its complete LFN sequence is valid.
     pub long_name: Option<String>,
+    pub deleted: bool,
     pub attributes: u8,
     pub first_cluster: u32,
     pub size: u32,
@@ -68,10 +81,14 @@ impl DirectoryEntry {
         if let Some(long_name) = &self.long_name {
             return long_name.clone();
         }
-        let base = String::from_utf8_lossy(&self.short_name[..8])
+        let mut short_name = self.short_name;
+        if self.deleted {
+            short_name[0] = b'?';
+        }
+        let base = String::from_utf8_lossy(&short_name[..8])
             .trim_end()
             .to_owned();
-        let extension = String::from_utf8_lossy(&self.short_name[8..])
+        let extension = String::from_utf8_lossy(&short_name[8..])
             .trim_end()
             .to_owned();
         if extension.is_empty() {
@@ -247,6 +264,15 @@ impl Volume {
         source: &dyn BlockSource,
         first_cluster: u32,
     ) -> Result<Vec<DirectoryEntry>> {
+        self.read_directory_records(source, first_cluster, false)
+    }
+
+    fn read_directory_records(
+        &self,
+        source: &dyn BlockSource,
+        first_cluster: u32,
+        include_deleted: bool,
+    ) -> Result<Vec<DirectoryEntry>> {
         if first_cluster < 2 {
             return Err("FAT32 directory starting cluster is invalid".into());
         }
@@ -278,13 +304,16 @@ impl Volume {
                     ended = true;
                     break;
                 }
-                if record[0] == 0xe5 {
+                let deleted = record[0] == 0xe5;
+                if deleted {
                     lfn_parts = None;
                     lfn_expected = None;
                     lfn_checksum = None;
-                    continue;
+                    if !include_deleted || record[11] == 0x0f || record[11] & 0x08 != 0 {
+                        continue;
+                    }
                 }
-                if record[11] == 0x0f {
+                if !deleted && record[11] == 0x0f {
                     let ordinal = record[0] & 0x1f;
                     let is_last = record[0] & 0x40 != 0;
                     if record[0] & 0xa0 != 0
@@ -327,7 +356,8 @@ impl Volume {
                 }
                 let mut short_name = [0; 11];
                 short_name.copy_from_slice(&record[..11]);
-                let long_name = if lfn_expected == Some(0)
+                let long_name = if !deleted
+                    && lfn_expected == Some(0)
                     && lfn_checksum == Some(lfn_short_name_checksum(&short_name))
                 {
                     lfn_parts.as_ref().and_then(|parts| decode_lfn_parts(parts))
@@ -346,6 +376,7 @@ impl Volume {
                     raw_record,
                     short_name,
                     long_name,
+                    deleted,
                     attributes: record[11],
                     first_cluster: (high << 16) | low,
                     size: u32::from_le_bytes(record[28..32].try_into().unwrap()),
@@ -364,16 +395,33 @@ impl Volume {
     /// Enumerate live entries below the FAT32 root with explicit depth,
     /// entry-count, and directory-cluster cycle bounds.
     pub fn read_tree(&self, source: &dyn BlockSource) -> Result<Vec<TreeEntry>> {
+        self.read_tree_records(source, false)
+    }
+
+    /// Include deleted short-name directory records in the traversal result.
+    /// Deleted long-name slots are not emitted as files because their original
+    /// ordinals are overwritten by the deletion marker.
+    pub fn read_tree_including_deleted(&self, source: &dyn BlockSource) -> Result<Vec<TreeEntry>> {
+        self.read_tree_records(source, true)
+    }
+
+    fn read_tree_records(
+        &self,
+        source: &dyn BlockSource,
+        include_deleted: bool,
+    ) -> Result<Vec<TreeEntry>> {
         let mut output = Vec::new();
         let mut visited_directories = HashSet::new();
         let mut pending = vec![(self.root_cluster, Vec::<String>::new(), 0_usize)];
         visited_directories.insert(self.root_cluster);
 
         while let Some((cluster, parent_path, depth)) = pending.pop() {
-            let entries = self.read_directory(source, cluster)?;
+            let entries = self.read_directory_records(source, cluster, include_deleted)?;
             let mut child_directories = Vec::new();
             for entry in entries {
-                if entry.short_name == *b".          " || entry.short_name == *b"..         " {
+                if !entry.deleted
+                    && (entry.short_name == *b".          " || entry.short_name == *b"..         ")
+                {
                     continue;
                 }
                 if output.len() >= MAX_DIRECTORY_ENTRIES {
@@ -381,7 +429,7 @@ impl Volume {
                 }
                 let mut path = parent_path.clone();
                 path.push(entry.display_name());
-                if entry.is_directory() && !entry.is_volume_label() {
+                if !entry.deleted && entry.is_directory() && !entry.is_volume_label() {
                     if depth >= MAX_DIRECTORY_DEPTH {
                         return Err("FAT32 directory tree exceeds the depth safety bound".into());
                     }
@@ -425,6 +473,20 @@ impl Volume {
     }
 
     fn next_cluster(&self, source: &dyn BlockSource, cluster: u32) -> Result<Option<u32>> {
+        let value = self.fat_entry(source, cluster)?;
+        match value {
+            0 => Err("FAT32 cluster chain enters a free cluster".into()),
+            1 | FAT32_RESERVED_START..=0x0fff_fff6 => {
+                Err("FAT32 cluster chain contains a reserved value".into())
+            }
+            FAT32_BAD => Err("FAT32 cluster chain contains a bad-cluster marker".into()),
+            FAT32_EOC..=0x0fff_ffff => Ok(None),
+            next if (2..=self.cluster_count + 1).contains(&next) => Ok(Some(next)),
+            _ => Err("FAT32 cluster chain points beyond the data region".into()),
+        }
+    }
+
+    fn fat_entry(&self, source: &dyn BlockSource, cluster: u32) -> Result<u32> {
         if !(2..=self.cluster_count + 1).contains(&cluster) {
             return Err("FAT32 cluster chain references an invalid cluster".into());
         }
@@ -455,17 +517,100 @@ impl Volume {
             }
             value = Some(next);
         }
-        let value = value.ok_or("FAT32 volume has no active allocation table")?;
-        match value {
-            0 => Err("FAT32 cluster chain enters a free cluster".into()),
-            1 | FAT32_RESERVED_START..=0x0fff_fff6 => {
-                Err("FAT32 cluster chain contains a reserved value".into())
+        value.ok_or_else(|| "FAT32 volume has no active allocation table".into())
+    }
+
+    fn ensure_free_contiguous_range(
+        &self,
+        source: &dyn BlockSource,
+        first_cluster: u32,
+        cluster_count: u64,
+    ) -> Result<()> {
+        let entry_bytes = cluster_count
+            .checked_mul(4)
+            .ok_or("Deleted FAT32 allocation range overflow")?;
+        let fat_bytes = u64::from(self.sectors_per_fat)
+            .checked_mul(u64::from(self.bytes_per_sector))
+            .ok_or("FAT32 table size overflow")?;
+        let fat_indexes: Vec<u8> = if self.mirrored_fats {
+            (0..self.fat_count).collect()
+        } else {
+            vec![self.active_fat]
+        };
+        let mut position = 0_u64;
+        let mut buffers = vec![vec![0; FAT_RANGE_READ_BYTES]; fat_indexes.len()];
+        while position < entry_bytes {
+            let count = (entry_bytes - position).min(FAT_RANGE_READ_BYTES as u64) as usize;
+            for (copy_index, fat_index) in fat_indexes.iter().enumerate() {
+                let copy_offset = u64::from(*fat_index)
+                    .checked_mul(fat_bytes)
+                    .ok_or("FAT32 table offset overflow")?;
+                let offset = self
+                    .fat_offset
+                    .checked_add(copy_offset)
+                    .and_then(|base| base.checked_add(u64::from(first_cluster) * 4))
+                    .and_then(|base| base.checked_add(position))
+                    .ok_or("FAT32 allocation range offset overflow")?;
+                source
+                    .read_exact_at(offset, &mut buffers[copy_index][..count])
+                    .map_err(|error| format!("Could not read FAT32 allocation range: {error}"))?;
             }
-            FAT32_BAD => Err("FAT32 cluster chain contains a bad-cluster marker".into()),
-            FAT32_EOC..=0x0fff_ffff => Ok(None),
-            next if (2..=self.cluster_count + 1).contains(&next) => Ok(Some(next)),
-            _ => Err("FAT32 cluster chain points beyond the data region".into()),
+            for entry_index in 0..(count / 4) {
+                let start = entry_index * 4;
+                let first_value =
+                    u32::from_le_bytes(buffers[0][start..start + 4].try_into().unwrap())
+                        & 0x0fff_ffff;
+                if buffers.iter().skip(1).any(|buffer| {
+                    (u32::from_le_bytes(buffer[start..start + 4].try_into().unwrap()) & 0x0fff_ffff)
+                        != first_value
+                }) {
+                    return Err(
+                        "Mirrored FAT32 allocation tables disagree for this cluster range".into(),
+                    );
+                }
+                if first_value != 0 {
+                    return Err("Deleted FAT32 file overlaps a cluster that is not free".into());
+                }
+            }
+            position += count as u64;
         }
+        Ok(())
+    }
+
+    /// Map a deleted file only when its entire expected cluster run is
+    /// contiguous and remains free in every selected/mirrored FAT copy. This
+    /// is an explicit recovery assumption; a prior fragmented chain cannot be
+    /// reconstructed from a deleted directory entry alone.
+    pub fn map_deleted_file_contiguous(
+        &self,
+        source: &dyn BlockSource,
+        first_cluster: u32,
+        size: u64,
+    ) -> Result<DeletedFileMapping> {
+        if size == 0 || size > self.volume_size || first_cluster < 2 {
+            return Err("Deleted FAT32 file size or starting cluster is invalid".into());
+        }
+        let required_clusters = size.div_ceil(self.cluster_size());
+        if required_clusters > MAX_CHAIN_CLUSTERS as u64 {
+            return Err("Deleted FAT32 file exceeds the recovery safety bound".into());
+        }
+        let last_cluster = first_cluster
+            .checked_add(
+                u32::try_from(required_clusters - 1)
+                    .map_err(|_| "Deleted FAT32 file is too large")?,
+            )
+            .ok_or("Deleted FAT32 cluster range overflow")?;
+        self.cluster_offset(first_cluster)?;
+        self.cluster_offset(last_cluster)?;
+        self.ensure_free_contiguous_range(source, first_cluster, required_clusters)?;
+        let mut clusters = Vec::with_capacity(required_clusters as usize);
+        for cluster in first_cluster..=last_cluster {
+            clusters.push(cluster);
+        }
+        Ok(DeletedFileMapping {
+            mapping: FileMapping { size, clusters },
+            layout: DeletedClusterLayout::ContiguousAssumed,
+        })
     }
 
     pub fn map_file(
@@ -583,6 +728,16 @@ impl FileMapping {
 
     pub fn clusters(&self) -> &[u32] {
         &self.clusters
+    }
+}
+
+impl DeletedFileMapping {
+    pub fn mapping(&self) -> &FileMapping {
+        &self.mapping
+    }
+
+    pub fn layout(&self) -> DeletedClusterLayout {
+        self.layout
     }
 }
 
@@ -811,6 +966,84 @@ mod tests {
     }
 
     #[test]
+    fn lists_deleted_short_entries_and_only_maps_free_contiguous_clusters() {
+        let mut image = fixture();
+        set_directory_entry(&mut image, 0, b"DELETED TXT", 0x20, 10, 700);
+        image[1056 * 512] = 0xe5;
+        let cluster10 = 1056 * 512 + 8 * 512;
+        let cluster11 = 1056 * 512 + 9 * 512;
+        image[cluster10..cluster10 + 512].fill(b'a');
+        image[cluster11..cluster11 + 512].fill(b'b');
+        let source = SliceSource(&image);
+        let volume = Volume::open(&source, 0, source.len()).unwrap();
+        assert!(volume.read_tree(&source).unwrap().is_empty());
+        let tree = volume.read_tree_including_deleted(&source).unwrap();
+        assert_eq!(tree.len(), 1);
+        assert!(tree[0].entry.deleted);
+        assert_eq!(tree[0].path, ["?ELETED.TXT"]);
+
+        let deleted = volume
+            .map_deleted_file_contiguous(&source, 10, 700)
+            .unwrap();
+        assert_eq!(deleted.layout(), DeletedClusterLayout::ContiguousAssumed);
+        assert_eq!(deleted.mapping().clusters(), &[10, 11]);
+        let mut recovered = vec![0; 200];
+        volume
+            .read_file_at(&source, deleted.mapping(), 500, &mut recovered)
+            .unwrap();
+        assert_eq!(&recovered[..12], &[b'a'; 12]);
+        assert_eq!(&recovered[12..], &[b'b'; 188]);
+        drop(source);
+
+        set_fat_entry(&mut image, 544, 11, 1);
+        let source = SliceSource(&image);
+        let volume = Volume::open(&source, 0, source.len()).unwrap();
+        assert!(volume
+            .map_deleted_file_contiguous(&source, 10, 700)
+            .unwrap_err()
+            .contains("disagree"));
+        drop(source);
+
+        set_fat_entry(&mut image, 32, 11, FAT32_EOC);
+        set_fat_entry(&mut image, 544, 11, FAT32_EOC);
+        let source = SliceSource(&image);
+        let volume = Volume::open(&source, 0, source.len()).unwrap();
+        assert!(volume
+            .map_deleted_file_contiguous(&source, 10, 700)
+            .unwrap_err()
+            .contains("not free"));
+        assert!(volume
+            .map_deleted_file_contiguous(&source, 0x0fff_fff5, 700)
+            .is_err());
+    }
+
+    #[test]
+    fn deleted_mapping_uses_the_declared_active_fat_when_mirroring_is_disabled() {
+        let mut image = fixture();
+        for boot_offset in [0, 6 * 512] {
+            image[boot_offset + 40..boot_offset + 42].copy_from_slice(&0x0081_u16.to_le_bytes());
+        }
+        for cluster in [10, 11] {
+            set_fat_entry(&mut image, 32, cluster, FAT32_EOC);
+        }
+        let source = SliceSource(&image);
+        let volume = Volume::open(&source, 0, source.len()).unwrap();
+        let deleted = volume
+            .map_deleted_file_contiguous(&source, 10, 700)
+            .unwrap();
+        assert_eq!(deleted.mapping().clusters(), &[10, 11]);
+        drop(source);
+
+        set_fat_entry(&mut image, 544, 11, FAT32_EOC);
+        let source = SliceSource(&image);
+        let volume = Volume::open(&source, 0, source.len()).unwrap();
+        assert!(volume
+            .map_deleted_file_contiguous(&source, 10, 700)
+            .unwrap_err()
+            .contains("not free"));
+    }
+
+    #[test]
     fn refuses_invalid_or_conflicting_fat32_backup_boot_metadata() {
         let mut image = fixture();
         image[6 * 512 + 510] ^= 1;
@@ -818,6 +1051,14 @@ mod tests {
         assert!(Volume::open(&source, 0, source.len())
             .unwrap_err()
             .contains("backup boot metadata is invalid"));
+        drop(source);
+
+        let mut image = fixture();
+        image[6 * 512 + 40..6 * 512 + 42].copy_from_slice(&0x0081_u16.to_le_bytes());
+        let source = SliceSource(&image);
+        assert!(Volume::open(&source, 0, source.len())
+            .unwrap_err()
+            .contains("metadata disagree"));
         drop(source);
 
         let mut image = fixture();
