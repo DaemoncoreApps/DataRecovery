@@ -773,3 +773,27 @@ source and staged as
 (13,327,360 bytes, SHA-256
 `35879811d945e8d2501d5d9a45373b33f56cf8e2b3f28382c6611609c204d041`,
 Authenticode `NotSigned`). It has not been launched or installed.
+
+### Hosted Windows validation and installer staging
+
+Commit `64a4a13a3187429fbce4f2b0a03c4b3b49e3606a` passed the hosted validation
+workflow on 2026-11-01 (run
+[41268448124](https://github.com/DaemoncoreApps/DataRecovery/actions/runs/41268448124)).
+The Windows job's `npm run validate` completed successfully: frontend build,
+4 NTFS-core tests, 84 desktop tests (3 ignored), Rust format checks, and Clippy
+with warnings denied. Both Linux fuzz jobs completed successfully. The fuzz
+corpus/artifact archive (ID `13068172643`) was retained for 14 days.
+
+The same commit's hosted NSIS staging workflow also succeeded (run
+[41268453150](https://github.com/DaemoncoreApps/DataRecovery/actions/runs/41268453150)).
+It built the offline NSIS setup, generated a provenance JSON file containing
+the setup's SHA-256 and Authenticode status, and uploaded the setup plus
+manifest as artifact
+[13067684312](https://github.com/DaemoncoreApps/DataRecovery/actions/runs/41268453150/artifacts/13067684312).
+The artifact archive is 222,331,931 bytes with SHA-256
+`225cb9545ed3d8db8e89fc382daa50a4f26d5431b7763afdb6378b1ee2b9ee68`; it
+expires on 2026-11-08. The archive was not unpacked locally because less than
+the archive's size was free on the local C: drive, so the inner setup hash and
+signature state have not been independently checked here. The package remains
+staged and has not been installed. Install, update, uninstall, publisher
+signing, and clean-account behavior remain unverified.
