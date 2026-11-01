@@ -812,8 +812,9 @@ boot-region checksum, and range rules follow the
 [Microsoft exFAT File System Specification](https://learn.microsoft.com/en-us/windows/win32/fileio/exfat-specification).
 
 Regression tests cover valid 512-byte and 4096-byte sectors, valid main/backup
-regions with differing checksum-excluded state fields, primary/backup fallback,
-bad checksums, and invalid root-cluster geometry. `npm run validate` passed
+regions with differing checksum-excluded state fields, an independent
+checksum known answer, primary/backup fallback, bad checksums, and invalid
+root-cluster geometry. `npm run validate` passed
 after the change: frontend build, 4 NTFS-core tests, 91 desktop tests (3
 ignored), Rust format checks, and Clippy with warnings denied. These are
 specification-derived synthetic fixtures; an independently formatted exFAT

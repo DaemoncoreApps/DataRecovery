@@ -726,6 +726,7 @@ mod tests {
     #[test]
     fn validates_exfat_main_and_backup_boot_regions() {
         let region = exfat_boot_region(512);
+        assert_eq!(exfat_boot_checksum(&region, 512), Some(0x1197_4f12));
         let image = mbr_with_exfat(&region, &region);
         let report = analyze(&mut Cursor::new(image.clone()), image.len() as u64).unwrap();
         let hint = report.partitions[0].filesystem_hint.as_deref().unwrap();
