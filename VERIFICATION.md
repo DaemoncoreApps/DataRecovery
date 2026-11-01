@@ -871,3 +871,14 @@ tests, 97 desktop tests (3 ignored), Rust format checks, and Clippy with
 warnings denied. These fixtures are constructed from specification fields; no
 independently formatted FAT32 volume has yet been verified, and FAT32 file
 recovery remains unimplemented.
+
+Commit `809deef3ff5174369169ae0a6b42017663c23ecc` passed hosted validation
+(run [41272993477](https://github.com/DaemoncoreApps/DataRecovery/actions/runs/41272993477)).
+The Windows job completed `npm run validate`: frontend build, 4 NTFS-core
+tests, 97 desktop tests (3 ignored), Rust format checks, and Clippy with
+warnings denied. Both NTFS fuzz jobs passed; these campaigns do not exercise
+the FAT32 parser. Their retained results are artifact
+[13070307090](https://github.com/DaemoncoreApps/DataRecovery/actions/runs/41272993477/artifacts/13070307090),
+501,447 bytes, archive SHA-256
+`ce26678c815c83abca8e76e26b5d693f6a314f6f5fa6e6fb830906859f388164`,
+expiring 2026-11-15.
