@@ -60,7 +60,7 @@ jobs:
       - name: Run whole-image NTFS scan fuzz campaign
         working-directory: src-tauri
         run: cargo +nightly fuzz run --jobs 1 ntfs_scan_image -- -runs=1000000 -max_total_time=120 -max_len=4194304 -timeout=10 -rss_limit_mb=2048
-      - name: Run MBR GPT and filesystem boot-sector fuzz campaign
+      - name: Run MBR, GPT, FAT32, and exFAT fuzz campaign
         working-directory: src-tauri
         run: cargo +nightly fuzz run --jobs 1 partition_image -- -runs=1000000 -max_total_time=120 -max_len=4194304 -timeout=10 -rss_limit_mb=2048
       - name: Preserve parser fuzz corpora and crash artifacts

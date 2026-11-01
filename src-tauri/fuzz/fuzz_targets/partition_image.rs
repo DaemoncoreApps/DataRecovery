@@ -1,8 +1,10 @@
 #![no_main]
 
-use daemoncore_ntfs_core::partition::analyze;
+use daemoncore_ntfs_core::{
+    fat32::Volume as Fat32Volume, partition::analyze, storage::BlockSource,
+};
 use libfuzzer_sys::fuzz_target;
-use std::io::Cursor;
+use std::io::{self, Cursor};
 
 const SECTOR_SIZE: usize = 512;
 const EXFAT_REGION_SIZE: usize = SECTOR_SIZE * 12;
@@ -11,6 +13,139 @@ const GPT_IMAGE_SECTORS: usize = 512;
 const GPT_ENTRY_COUNT: usize = 16;
 const GPT_ENTRY_SIZE: usize = 128;
 const MAX_INPUT_SIZE: usize = 4 * 1024 * 1024;
+const FAT32_SECTORS_PER_FAT: u32 = 512;
+const FAT32_CLUSTER_COUNT: u32 = 65_525;
+const FAT32_TOTAL_SECTORS: u32 = 32 + 2 * FAT32_SECTORS_PER_FAT + FAT32_CLUSTER_COUNT;
+const FAT32_IMAGE_SIZE: u64 = FAT32_TOTAL_SECTORS as u64 * SECTOR_SIZE as u64;
+const FAT32_FAT_PREFIX_BYTES: usize = 66 * 4;
+
+struct VirtualFat32Image {
+    boot: [u8; SECTOR_SIZE],
+    fats: [[u8; FAT32_FAT_PREFIX_BYTES]; 2],
+    root_directory: [u8; SECTOR_SIZE],
+}
+
+impl VirtualFat32Image {
+    fn new(data: &[u8]) -> Self {
+        let mut boot = [0; SECTOR_SIZE];
+        boot[..3].copy_from_slice(&[0xeb, 0x58, 0x90]);
+        boot[11..13].copy_from_slice(&(SECTOR_SIZE as u16).to_le_bytes());
+        boot[13] = 1;
+        boot[14..16].copy_from_slice(&32_u16.to_le_bytes());
+        boot[16] = 2;
+        boot[32..36].copy_from_slice(&FAT32_TOTAL_SECTORS.to_le_bytes());
+        boot[36..40].copy_from_slice(&FAT32_SECTORS_PER_FAT.to_le_bytes());
+        boot[40..42].copy_from_slice(&0_u16.to_le_bytes());
+        boot[44..48].copy_from_slice(&2_u32.to_le_bytes());
+        boot[48..50].copy_from_slice(&1_u16.to_le_bytes());
+        boot[50..52].copy_from_slice(&6_u16.to_le_bytes());
+        boot[510..512].copy_from_slice(&[0x55, 0xaa]);
+
+        let mut fat = [0; FAT32_FAT_PREFIX_BYTES];
+        fat[..4].copy_from_slice(&0x0fff_fff8_u32.to_le_bytes());
+        fat[4..8].copy_from_slice(&0x0fff_ffff_u32.to_le_bytes());
+        fat[8..12].copy_from_slice(&0x0fff_ffff_u32.to_le_bytes());
+        for (index, byte) in data.iter().skip(5).take(fat.len() - 12).enumerate() {
+            fat[12 + index] ^= *byte;
+        }
+        let mut second_fat = fat;
+        if let Some(byte) = data.get(1) {
+            second_fat[40] ^= *byte;
+        }
+
+        let mut root_directory = [0; SECTOR_SIZE];
+        root_directory[..11].copy_from_slice(b"FUZZ    TXT");
+        root_directory[11] = 0x20;
+        root_directory[32..43].copy_from_slice(b"DELETED TXT");
+        root_directory[32] = 0xe5;
+        root_directory[43] = 0x20;
+        root_directory[58..60].copy_from_slice(&10_u16.to_le_bytes());
+        root_directory[60..64].copy_from_slice(&512_u32.to_le_bytes());
+        if let Some(first) = data.first() {
+            root_directory[58..60].copy_from_slice(&(2_u16 + u16::from(*first % 64)).to_le_bytes());
+        }
+        if data.len() >= 5 {
+            let size = u32::from_le_bytes(data[1..5].try_into().unwrap()) % 4097;
+            root_directory[60..64].copy_from_slice(&size.to_le_bytes());
+        }
+        for (index, byte) in data.iter().skip(5).take(SECTOR_SIZE - 64).enumerate() {
+            let position = 64 + index;
+            root_directory[position] ^= *byte;
+        }
+        if root_directory[0] == 0 {
+            root_directory[0] = b'F';
+        }
+        if root_directory[32] == 0 {
+            root_directory[32] = b'G';
+        }
+
+        Self {
+            boot,
+            fats: [fat, second_fat],
+            root_directory,
+        }
+    }
+
+    fn byte_at(&self, offset: u64) -> u8 {
+        if offset < SECTOR_SIZE as u64 {
+            return self.boot[offset as usize];
+        }
+        if (6 * SECTOR_SIZE as u64..7 * SECTOR_SIZE as u64).contains(&offset) {
+            return self.boot[(offset - 6 * SECTOR_SIZE as u64) as usize];
+        }
+
+        let fat_start = 32 * SECTOR_SIZE as u64;
+        let fat_size = u64::from(FAT32_SECTORS_PER_FAT) * SECTOR_SIZE as u64;
+        let fat_area_end = fat_start + 2 * fat_size;
+        if (fat_start..fat_area_end).contains(&offset) {
+            let relative = offset - fat_start;
+            let fat_index = (relative / fat_size) as usize;
+            let index = (relative % fat_size) as usize;
+            return self.fats[fat_index].get(index).copied().unwrap_or(0);
+        }
+
+        let root_start = (32 + 2 * FAT32_SECTORS_PER_FAT) as u64 * SECTOR_SIZE as u64;
+        if (root_start..root_start + SECTOR_SIZE as u64).contains(&offset) {
+            return self.root_directory[(offset - root_start) as usize];
+        }
+        0
+    }
+}
+
+impl BlockSource for VirtualFat32Image {
+    fn len(&self) -> u64 {
+        FAT32_IMAGE_SIZE
+    }
+
+    fn read_exact_at(&self, offset: u64, buffer: &mut [u8]) -> io::Result<()> {
+        offset
+            .checked_add(buffer.len() as u64)
+            .filter(|end| *end <= FAT32_IMAGE_SIZE)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "outside virtual image"))?;
+        for (index, byte) in buffer.iter_mut().enumerate() {
+            *byte = self.byte_at(offset + index as u64);
+        }
+        Ok(())
+    }
+}
+
+fn fuzz_fat32_tree(data: &[u8]) {
+    // Model the minimum legal FAT32 geometry on demand; allocating its 34 MB
+    // backing image for every fuzz input would hide parser coverage behind IO.
+    let image = VirtualFat32Image::new(data);
+    let volume = Fat32Volume::open(&image, 0, image.len())
+        .expect("virtual FAT32 fixture must retain valid boot metadata");
+    let _ = volume.read_tree(&image);
+    if let Ok(entries) = volume.read_tree_including_deleted(&image) {
+        for entry in entries.iter().filter(|entry| entry.entry.deleted) {
+            let _ = volume.map_deleted_file_contiguous(
+                &image,
+                entry.entry.first_cluster,
+                u64::from(entry.entry.size),
+            );
+        }
+    }
+}
 
 fn exfat_region() -> Vec<u8> {
     let mut region = vec![0; EXFAT_REGION_SIZE];
@@ -153,6 +288,8 @@ fuzz_target!(|data: &[u8]| {
     if data.len() > MAX_INPUT_SIZE {
         return;
     }
+
+    fuzz_fat32_tree(data);
 
     if data.len() >= SECTOR_SIZE {
         let _ = analyze(&mut Cursor::new(data), data.len() as u64);

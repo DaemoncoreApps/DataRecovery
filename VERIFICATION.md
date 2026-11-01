@@ -1057,5 +1057,11 @@ chains, nested live/deleted entries, LFN checksum/order fallback, deleted-LFN
 isolation, conservative contiguous mapping, active-FAT selection, and
 invalid/conflicting backup sectors. `npm run validate` passed locally with 47
 core tests, 75 desktop tests (3 ignored), frontend production build, formatting,
-and Clippy with warnings denied. Hosted Windows and fuzz validation for the
-deleted-entry mapper is pending.
+and Clippy with warnings denied. Hosted run
+[41363697439](https://github.com/DaemoncoreApps/DataRecovery/actions/runs/41363697439)
+passed its disk-parser fuzz job for the active-FAT mapper revision; Windows
+validation was still running at last inspection. The partition-image fuzz
+target now also traverses a virtual FAT32 directory tree and attempts deleted
+file mapping. That expanded harness awaits hosted compilation and execution on
+the next code revision; its libfuzzer C++ build cannot run with this host's
+MSVC toolchain.
