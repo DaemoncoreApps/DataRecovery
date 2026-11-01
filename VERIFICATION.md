@@ -799,6 +799,21 @@ signature state have not been independently checked here. The package remains
 staged and has not been installed. Install, update, uninstall, publisher
 signing, and clean-account behavior remain unverified.
 
+Commit `6257d91ca79c84a3050f520b1f01a2283d38618e` also passed the hosted
+validation workflow (run
+[41270166328](https://github.com/DaemoncoreApps/DataRecovery/actions/runs/41270166328))
+and its NSIS staging run succeeded
+([41270836937](https://github.com/DaemoncoreApps/DataRecovery/actions/runs/41270836937)).
+The hosted build produced artifact
+[13069990774](https://github.com/DaemoncoreApps/DataRecovery/actions/runs/41270836937/artifacts/13069990774),
+222,330,633 bytes, with archive SHA-256
+`c1e8bec8d65558a30c92eaadce6762e31b2d12df4b9a0a41985f70cc62f689bf`;
+it expires on 2026-11-08. This artifact was built before the later test-only
+commit `5a0b822`. It remains staged and was not downloaded, unpacked, or
+installed locally, so its inner installer hash and signature state have not
+been independently verified here. The staging workflow records installer
+provenance, but packaging lifecycle and signature gates remain open.
+
 ### exFAT boot-region validation
 
 Partition analysis now validates the exFAT main and backup boot regions before
