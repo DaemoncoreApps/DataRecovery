@@ -33,7 +33,7 @@ const groups = [
     label: "Analysis",
     items: [
       ["Deep Scan", Search],
-      ["Partition Recovery", Layers],
+      ["Partition Analysis", Layers],
       ["Filesystem Analysis", Database],
       ["File Carving", FileSearch],
       ["Hex Inspector", Hexagon],

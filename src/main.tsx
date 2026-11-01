@@ -255,14 +255,14 @@ function App() {
           {sourcePanel}
           {jobPanel}
         </>
-      ) : page === "Partition Recovery" ? (
+      ) : page === "Partition Analysis" ? (
         <PartitionPanel
           key={source?.id}
           source={source}
           busy={busy || job.state === "running"}
           analyze={(read) => run(read)}
         />
-      ) : page === "Recovery Workspace" || page === "Filesystem Analysis" ? (
+      ) : page === "Recovery Workspace" ? (
         <>
           <RecoveryPanel
             source={source}

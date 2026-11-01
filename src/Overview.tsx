@@ -129,7 +129,7 @@ export function Overview({
               </button>
               <button
                 className="workflowStep"
-                onClick={() => setPage("Partition Recovery")}
+                onClick={() => setPage("Partition Analysis")}
               >
                 <span className="stepNumber">02</span>
                 <div>
@@ -174,7 +174,7 @@ export function Overview({
                 description: "Examine raw bytes",
               },
               {
-                page: "Partition Recovery",
+                page: "Partition Analysis",
                 icon: Layers,
                 title: "Partition analysis",
                 description: "Inspect MBR & GPT metadata",
