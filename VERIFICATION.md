@@ -9,14 +9,26 @@
   changed size or digest marks that evidence record compromised and adds an
   audit event; attempts also record a start event. Reopened evidence has no
   active scan cache; a fresh scan is required before recovery. The focused
-  archived-source test checks acceptance
-  of the matching record and rejection of a compromised record.
+  archived-source test checks acceptance of the matching record, rejection of
+  compromised evidence, and atomic audit/status recording on a digest mismatch.
 - After this change, `npm run validate` passed: frontend TypeScript/Vite
   production build, Rust formatting, 4 NTFS core tests, 80 application tests
   passed, 0 failed, 3 ignored, and Clippy with warnings denied. Windows
   incremental compilation emitted its known hard-link fallback warning and
   copied cache files successfully. This validates code and tests; the newly
   built packaged UI has not received a native smoke run.
+- Hosted Actions run `41265328618` passed on commit
+  `2c5d5eb4bc6bca9f2dadd5ff150396725b68c606` ([run details](https://github.com/DaemoncoreApps/DataRecovery/actions/runs/41265328618)).
+  The Windows job passed all validation steps, including 4 core tests, 80 app
+  tests (3 ignored), and Clippy with warnings denied. Linux fuzzing completed
+  1,000,000 record-parser executions (435 coverage counters, 536 features,
+  426 MiB peak RSS) and 439,589 whole-image scans in 121 seconds (1,394
+  counters, 4,203 features, 455 MiB peak RSS), with no reported crashes. The
+  scan corpus reached 325 inputs (19 MiB). GitHub retained artifact
+  `ntfs-fuzz-results-41265328618` (482,394 bytes, SHA-256
+  `4fad346554603758e9d9a410d01707e1af3368799687e0c7334a89054c2d4821`) until
+  2026-11-15. The follow-up local validation and mismatch-audit regression
+  changes are not part of this hosted run.
 
 - `npm run validate` passed after extracting the shared NTFS parser core:
   TypeScript/Vite production build, Rust format checks, 4 core tests, 79

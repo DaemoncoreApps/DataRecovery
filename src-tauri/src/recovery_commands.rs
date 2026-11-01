@@ -175,14 +175,23 @@ pub async fn reopen_archived_source(
             image.verify_unchanged().map_err(err)?;
             if image.len() != expected_size || digest != expected_sha256 {
                 let mut db = state.db.lock().map_err(err)?;
-                let tx = db.transaction().map_err(err)?;
-                tx.execute(
-                    "UPDATE evidence_sources SET sha256=NULL,status='compromised' WHERE id=?1 AND case_id=?2 AND sha256=?3 AND status='hashed'",
-                    rusqlite::params![evidence_id, case_id, expected_sha256],
-                ).map_err(err)?;
-                audit(&tx, "archived_evidence_reopen_rejected", &serde_json::json!({"case_id":case_id,"evidence_record_id":evidence_id,"scan_session_id":scan_session_id,"expected_sha256":expected_sha256,"observed_size":image.len(),"observed_sha256":digest}).to_string())?;
-                tx.commit().map_err(err)?;
-                return Err("The evidence at the archived path no longer matches its recorded SHA-256. Its case record was marked compromised; do not recover from this file.".into());
+                let evidence_compromised = record_archived_source_mismatch(
+                    &mut db,
+                    ArchivedSourceMismatch {
+                        case_id,
+                        evidence_id,
+                        scan_session_id,
+                        expected_sha256: &expected_sha256,
+                        expected_size,
+                        observed_size: image.len(),
+                        observed_sha256: &digest,
+                    },
+                )?;
+                return Err(if evidence_compromised {
+                    "The evidence at the archived path no longer matches its recorded SHA-256. Its case record was marked compromised; do not recover from this file.".into()
+                } else {
+                    "The evidence at the archived path no longer matches its recorded SHA-256. The case record changed during verification, so no source was activated; inspect the audit history.".into()
+                });
             }
             let mut prefix = vec![0; image.len().min(512) as usize];
             image.read_exact_at(0, &mut prefix).map_err(err)?;
@@ -260,6 +269,46 @@ fn archived_source_record_from(
         return Err("The archived scan's evidence record is not in a verified state. Do not use this snapshot for recovery.".into());
     }
     Ok((path, name, size as u64))
+}
+
+struct ArchivedSourceMismatch<'a> {
+    case_id: i64,
+    evidence_id: i64,
+    scan_session_id: i64,
+    expected_sha256: &'a str,
+    expected_size: u64,
+    observed_size: u64,
+    observed_sha256: &'a str,
+}
+
+fn record_archived_source_mismatch(
+    db: &mut rusqlite::Connection,
+    mismatch: ArchivedSourceMismatch<'_>,
+) -> Result<bool> {
+    let tx = db.transaction().map_err(err)?;
+    let compromised = tx.execute(
+        "UPDATE evidence_sources SET sha256=NULL,status='compromised' WHERE id=?1 AND case_id=?2 AND size_bytes=?3 AND sha256=?4 AND status='hashed'",
+        rusqlite::params![mismatch.evidence_id, mismatch.case_id, mismatch.expected_size as i64, mismatch.expected_sha256],
+    )
+    .map_err(err)?
+        == 1;
+    audit(
+        &tx,
+        "archived_evidence_reopen_rejected",
+        &serde_json::json!({
+            "case_id": mismatch.case_id,
+            "evidence_record_id": mismatch.evidence_id,
+            "scan_session_id": mismatch.scan_session_id,
+            "expected_size": mismatch.expected_size,
+            "expected_sha256": mismatch.expected_sha256,
+            "observed_size": mismatch.observed_size,
+            "observed_sha256": mismatch.observed_sha256,
+            "evidence_record_compromised": compromised,
+        })
+        .to_string(),
+    )?;
+    tx.commit().map_err(err)?;
+    Ok(compromised)
 }
 
 fn archived_scan_results_from(
@@ -957,6 +1006,28 @@ mod tests {
         assert_eq!(archived.total, 1);
         assert_eq!(archived.rows[0].name, "recovered.bin");
         assert!(archived_scan_results_from(&db, 2, scan_id, 0, 10).is_err());
+        assert!(record_archived_source_mismatch(
+            &mut db,
+            ArchivedSourceMismatch {
+                case_id: 1,
+                evidence_id: 2,
+                scan_session_id: scan_id,
+                expected_sha256: &"b".repeat(64),
+                expected_size: 4096,
+                observed_size: 4096,
+                observed_sha256: &"c".repeat(64),
+            },
+        )
+        .unwrap());
+        let compromised: (Option<String>, String) = db
+            .query_row(
+                "SELECT sha256,status FROM evidence_sources WHERE id=2 AND case_id=1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(compromised, (None, "compromised".into()));
+        assert!(crate::verify_audit_chain(&db).unwrap().valid);
         db.execute(
             "UPDATE scan_sessions SET candidates_json='[]' WHERE id=?1",
             [scan_id],
