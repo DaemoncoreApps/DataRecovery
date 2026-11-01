@@ -1156,6 +1156,33 @@ form label {
 .archivedPagination {
   justify-content: flex-end;
 }
+.reportIntro {
+  max-width: 760px;
+  padding: 4px 24px 0;
+  line-height: 1.65;
+}
+.reportActions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin: 18px 24px 24px;
+}
+.reportResult {
+  display: grid;
+  gap: 8px;
+  margin: 0 24px 24px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #0b1119;
+}
+.reportResult span,
+.reportResult code {
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 11px;
+}
 .hash {
   margin: 0 22px 22px;
   padding: 17px;

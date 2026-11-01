@@ -5,6 +5,7 @@ import {
   command,
   native,
   type Case,
+  type CaseReportExport,
   type CaseEvidenceRecord,
   type CaseScanSession,
   type ActiveCaseState,
@@ -46,6 +47,7 @@ function App() {
     [archivedPageIndex, setArchivedPageIndex] = useState(0),
     [activeCaseId, setActiveCaseId] = useState<number | null>(null),
     [activeCaseAuditMatched, setActiveCaseAuditMatched] = useState(true),
+    [caseReport, setCaseReport] = useState<CaseReportExport | null>(null),
     [title, setTitle] = useState(""),
     [examiner, setExaminer] = useState(""),
     [offset, setOffset] = useState("0"),
@@ -135,6 +137,7 @@ function App() {
     setArchivedScanId(null);
     setArchivedPage(null);
     setArchivedPageIndex(0);
+    setCaseReport(null);
   };
   const open = () =>
     run(async () => {
@@ -194,6 +197,21 @@ function App() {
       setArchivedScanId(null);
       setArchivedPage(null);
       setPage("Image Workspace");
+    });
+  const exportCaseReport = () =>
+    run(async () => {
+      setCaseReport(null);
+      if (activeCaseId === null) throw new Error("Select a case first.");
+      if (!activeCaseAuditMatched)
+        throw new Error("Reconfirm the active case before exporting a report.");
+      const exported = await command<CaseReportExport | null>(
+        "export_case_report",
+        { caseId: activeCaseId },
+      );
+      if (exported) {
+        setCaseReport(exported);
+        setJob(await command<Job>("job_status"));
+      }
     });
   const selectedArchivedScan = caseScans.find(
     (scan) => scan.id === archivedScanId,
@@ -619,6 +637,61 @@ function App() {
             <span>Case persistence</span>
             <b>Windows local application data</b>
           </div>
+        </section>
+      ) : page === "Reports" ? (
+        <section className="panel">
+          <div className="panelTitle">
+            <h2>Forensic case report</h2>
+            <span className="tag">JSON · AUDIT LINKED</span>
+          </div>
+          <div className="reportIntro">
+            <p>
+              Export the active case register, verified evidence metadata,
+              completed NTFS scan summaries, and candidate snapshots in one
+              portable JSON file.
+            </p>
+            <p className="muted">
+              The report checks the local audit chain and records its head hash.
+              It is not signed or externally anchored, and it does not certify
+              recovered file contents or acquisition provenance.
+            </p>
+          </div>
+          <div className="reportActions">
+            <button
+              className="primary"
+              type="button"
+              disabled={
+                !native ||
+                busy ||
+                job.state === "running" ||
+                activeCaseId === null ||
+                !activeCaseAuditMatched
+              }
+              onClick={exportCaseReport}
+            >
+              Export active case report
+            </button>
+            {!native && (
+              <span className="muted">
+                Open the Windows desktop app to export a report.
+              </span>
+            )}
+            {activeCaseId === null && (
+              <span className="muted">Select a case before exporting.</span>
+            )}
+            {activeCaseId !== null && !activeCaseAuditMatched && (
+              <span className="archivedSourceWarning">
+                Reconfirm the active case before reporting.
+              </span>
+            )}
+          </div>
+          {caseReport && (
+            <div className="reportResult">
+              <b>Report exported · {caseReport.scans} scans · {caseReport.candidates} candidates</b>
+              <span>{caseReport.path}</span>
+              <code>SHA-256 · {caseReport.sha256}</code>
+            </div>
+          )}
         </section>
       ) : (
         <section className="panel">

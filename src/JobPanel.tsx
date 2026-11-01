@@ -12,8 +12,14 @@ export function JobPanel({ job, cancel }: Props) {
       ? "NTFS metadata scan"
       : job.kind === "recovery_export"
         ? "Recovery export & verification"
-        : "SHA-256 image digest";
+        : job.kind === "evidence_reopen"
+          ? "Archived evidence verification"
+          : job.kind === "case_report_export"
+            ? "Forensic case report"
+            : "SHA-256 image digest";
   const percent = job.total ? (100 * job.processed) / job.total : 0;
+  const canCancel =
+    job.state === "running" && job.kind !== "case_report_export";
   const status =
     job.state === "idle"
       ? "Idle"
@@ -53,7 +59,7 @@ export function JobPanel({ job, cancel }: Props) {
                 "Processing locally through the native evidence engine."}
           </p>
         </div>
-        {job.state === "running" && (
+        {canCancel && (
           <button onClick={cancel}>
             <Square size={12} /> Cancel
           </button>
@@ -66,7 +72,11 @@ export function JobPanel({ job, cancel }: Props) {
         </div>
         <div>
           <span>
-            {job.kind === "recovery_export" ? "READ + VERIFY" : "TOTAL SIZE"}
+            {job.kind === "recovery_export"
+              ? "READ + VERIFY"
+              : job.kind === "case_report_export"
+                ? "REPORT SIZE"
+                : "TOTAL SIZE"}
           </span>
           <strong>{job.total ? bytes(job.total) : "—"}</strong>
         </div>
@@ -87,7 +97,9 @@ export function JobPanel({ job, cancel }: Props) {
             ? `${job.discovered} candidates`
             : job.kind === "recovery_export"
               ? "Destination verification"
-              : "SHA-256"}
+              : job.kind === "case_report_export"
+                ? "Audit-linked JSON"
+                : "SHA-256"}
         </span>
         <span className="miniDivider" />
         <span>Read only</span>

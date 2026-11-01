@@ -684,3 +684,22 @@ and truncation mutations without panicking. `npm run validate` passed 83 tests,
 mutations are not coverage-guided fuzzing. The synthetic extension fixture does
 not replace an independently formatted hard-link-heavy volume; aliases not
 referenced by the validated attribute list are not enumerated.
+
+## 2026-10-31 case report work
+
+Added a native-only JSON case report export. It binds the active audited case,
+verified evidence register, archived NTFS scan summaries and candidate
+snapshots, snapshot hashes, and the locally verified audit-chain head. The
+report states that the audit chain is not externally anchored and that the
+report does not prove acquisition provenance or recovered-content integrity.
+Export uses a synced staging file and no-replace publication; separate audit
+events record preparation and completion with the report SHA-256. A failed
+completion audit reports that the file exists but the completion was not logged.
+
+`npm run validate` passed: frontend TypeScript/Vite production build, Rust
+format checks, 4 NTFS-core tests, 82 desktop tests (3 ignored), and Clippy with
+warnings denied. New tests cover report schema/disclosure, audit-chain tamper
+rejection, staging, and no-replace publication. The report export has not yet
+been exercised in the packaged native UI. This does not close production gate
+13; signed/external anchoring, acquisition/device logging, and PDF/HTML/CSV
+reports remain absent.

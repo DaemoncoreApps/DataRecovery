@@ -11,6 +11,7 @@ use std::{
 };
 use tauri::{Manager, State};
 mod audit_export;
+mod case_report;
 mod destination;
 #[cfg(test)]
 mod ntfs_tests;
@@ -413,6 +414,10 @@ struct EvidenceRecord {
 #[tauri::command]
 fn list_case_evidence(case_id: i64, state: State<AppState>) -> Result<Vec<EvidenceRecord>> {
     let db = state.db.lock().map_err(err)?;
+    list_case_evidence_from(&db, case_id)
+}
+
+fn list_case_evidence_from(db: &Connection, case_id: i64) -> Result<Vec<EvidenceRecord>> {
     let mut statement = db.prepare("SELECT id,case_id,original_path,name,size_bytes,filesystem,opened_at,sha256,status FROM evidence_sources WHERE case_id=?1 ORDER BY id DESC").map_err(err)?;
     let rows = statement
         .query_map([case_id], |row| {
@@ -434,7 +439,7 @@ fn list_case_evidence(case_id: i64, state: State<AppState>) -> Result<Vec<Eviden
     let records = rows
         .collect::<std::result::Result<Vec<_>, _>>()
         .map_err(err)?;
-    verify_evidence_record_integrity(&db, &records)?;
+    verify_evidence_record_integrity(db, &records)?;
     Ok(records)
 }
 
@@ -979,6 +984,7 @@ fn main() {
             recovery_commands::list_case_scan_sessions,
             recovery_commands::archived_scan_results,
             recovery_commands::reopen_archived_source,
+            case_report::export_case_report,
             recovery_commands::scan_results,
             recovery_commands::export_selected,
             recovery_verify::verify_recovery_export

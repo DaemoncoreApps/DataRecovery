@@ -18,16 +18,16 @@ pub struct ScanSummary {
 }
 #[derive(Serialize)]
 pub struct CaseScanSession {
-    id: i64,
-    evidence_id: i64,
-    case_id: i64,
-    volume_offset: String,
-    source_sha256: String,
-    completed_at: String,
-    records: u64,
-    skipped: u64,
-    found: usize,
-    limited: bool,
+    pub(super) id: i64,
+    pub(super) evidence_id: i64,
+    pub(super) case_id: i64,
+    pub(super) volume_offset: String,
+    pub(super) source_sha256: String,
+    pub(super) completed_at: String,
+    pub(super) records: u64,
+    pub(super) skipped: u64,
+    pub(super) found: usize,
+    pub(super) limited: bool,
 }
 #[derive(Serialize)]
 pub struct Page {
@@ -343,7 +343,7 @@ fn archived_scan_results_from(
     })
 }
 
-fn list_case_scan_sessions_from(
+pub(super) fn list_case_scan_sessions_from(
     db: &rusqlite::Connection,
     case_id: i64,
 ) -> Result<Vec<CaseScanSession>> {

@@ -9,7 +9,12 @@ export interface Source {
   sha256: string | null;
 }
 export interface Job {
-  kind: "hash" | "ntfs_scan" | "recovery_export" | "evidence_reopen";
+  kind:
+    | "hash"
+    | "ntfs_scan"
+    | "recovery_export"
+    | "evidence_reopen"
+    | "case_report_export";
   discovered: number;
   message: string | null;
   output_directory: string | null;
@@ -106,6 +111,13 @@ export interface Case {
   title: string;
   examiner: string;
   integrity: "audit_matched" | "legacy_unverified";
+}
+export interface CaseReportExport {
+  path: string;
+  sha256: string;
+  bytes: number;
+  scans: number;
+  candidates: number;
 }
 export interface ActiveCaseState {
   case_id: number | null;
