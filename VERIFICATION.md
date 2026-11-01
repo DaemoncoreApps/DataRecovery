@@ -976,3 +976,12 @@ which defines a unique GUID for every partition entry and zero type GUIDs for
 unused entries. The production build, 34 core tests, 75 desktop tests (3
 ignored), formatting, and Clippy with warnings denied passed locally. Hosted
 validation for this follow-up is pending.
+
+GPT entry sizes are now restricted to the UEFI-defined 128 × 2ⁿ sequence within
+the parser's existing 4 MiB safety limit. A regression gives the primary header
+a CRC-valid 136-byte entry size and confirms that it is rejected while the
+valid backup table remains usable. This rule follows the
+[UEFI GPT header definition](https://uefi.org/specs/UEFI/2.10/05_GUID_Partition_Table_Format.html).
+`npm run validate` passed locally with 35 core tests, 75 desktop tests (3
+ignored), formatting, and Clippy with warnings denied. Hosted validation for
+this additional change is pending.

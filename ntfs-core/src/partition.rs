@@ -448,7 +448,8 @@ fn parse_gpt_header(bytes: &[u8], sector_size: u32) -> Result<GptHeader, String>
     let entry_count = u32_at(bytes, 80).ok_or("GPT entry count is missing")?;
     if entry_count == 0
         || !(128..=1024).contains(&entry_size)
-        || entry_size % 8 != 0
+        || entry_size % 128 != 0
+        || !(entry_size / 128).is_power_of_two()
         || entry_count as u64 > ENTRY_LIMIT
     {
         return Err("GPT partition entry dimensions exceed safe limits".into());
@@ -1441,6 +1442,23 @@ mod tests {
     fn rejects_gpt_header_with_unsupported_revision_and_uses_backup() {
         let mut image = valid_gpt_image();
         image[512 + 8..512 + 12].copy_from_slice(&0x0002_0000_u32.to_le_bytes());
+        update_gpt_header_crc(&mut image, 1);
+
+        let report = analyze(&mut Cursor::new(image.clone()), image.len() as u64).unwrap();
+
+        assert_eq!(report.primary_gpt_valid, Some(false));
+        assert_eq!(report.backup_gpt_valid, Some(true));
+        assert_eq!(report.partitions.len(), 1);
+        assert!(report
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("Primary GPT header is missing or invalid")));
+    }
+
+    #[test]
+    fn rejects_gpt_entry_size_outside_uefi_power_of_two_multiples() {
+        let mut image = valid_gpt_image();
+        image[512 + 84..512 + 88].copy_from_slice(&136_u32.to_le_bytes());
         update_gpt_header_crc(&mut image, 1);
 
         let report = analyze(&mut Cursor::new(image.clone()), image.len() as u64).unwrap();
