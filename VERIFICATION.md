@@ -28,12 +28,11 @@
   MFT record reads, resident and nonresident `$ATTRIBUTE_LIST` resolution, and
   extension records. Its corpus includes three controlled regression images
   covering resident, nonresident, and continued nonresident lists. These are
-  synthetic seeds, not independent-volume fixtures. The target has not yet had
-  a coverage-guided campaign: the native Windows libFuzzer build remains
-  unusable with the installed MSVC toolchain, and Docker/WSL access is denied in
-  this session. Run it on a supported Linux cargo-fuzz/Clang host before
-  claiming fuzz coverage of these reader paths.
-- On 2026-10-31, the three checked-in scan seeds each passed the new
+  synthetic seeds, not independent-volume fixtures. The native Windows
+  libFuzzer build remains unusable with the installed MSVC toolchain, and
+  Docker/WSL access is denied in this session; hosted Linux Actions now runs
+  the target instead.
+- Earlier on 2026-10-31, before hosted fuzzing was added, the three checked-in scan seeds each passed the new
   `whole_image_fuzz_seeds_scan_and_resolve_attribute_lists` regression. Fresh
   `npm run validate` passed: frontend build, Rust format checks, 4 NTFS core
   tests, 80 application tests, 0 failures, 3 ignored, and Clippy with warnings
@@ -57,10 +56,19 @@
   `ntfs_scan_image` target completed 482,601 executions in 121 seconds before
   its 120-second time limit (1,408 coverage counters, 4,156 features, 457 MiB
   peak RSS). Neither campaign reported a crash. The scan corpus grew from 3
-  seeds to 330 inputs (20 MiB) during the run; the updated workflow retains
-  that evolved corpus as a run artifact, and will verify this retention on the
-  next run. This is an initial bounded fuzz campaign, not sustained or
-  independent-volume qualification.
+  seeds to 330 inputs (20 MiB) during the run.
+- Follow-up Actions run `41263922574` passed on commit
+  `fc2e61c353700c2012f9d9a148499eba7aa50f32`, using Node 24 compatible, SHA-
+  pinned workflow actions. Windows validation again passed with 4 core tests
+  and 80 application tests (3 ignored). Linux fuzzing completed 1,000,000
+  record-parser inputs in 10 seconds (446 counters, 551 features, 425 MiB peak
+  RSS) and 484,757 whole-image scans in 121 seconds (1,412 counters, 4,317
+  features, 459 MiB peak RSS); neither reported a crash. The scan corpus
+  reached 336 inputs (20 MiB). GitHub retained the success artifact
+  `ntfs-fuzz-results-41263922574` (492,928 bytes, SHA-256
+  `90fdad262bc14e8b9a8c4b8048fb3d010737a0b26980a0a6f1f84c46ec8d06bc`) until
+  2026-11-15. These are initial bounded campaigns with synthetic seeds, not
+  sustained or independent-volume qualification.
 - The previous refactored Windows release executable was rebuilt using the
   warm workspace target and launched once after approval. It is 12,969,472
   bytes, SHA-256 `5a7075617143cefc1b74783ba57930f05c6d0086e0ee282d935e0916db73f35d`,

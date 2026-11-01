@@ -29,10 +29,11 @@ remains the target.
 
 - Independently verified deleted-file fixtures across NTFS, FAT32 and exFAT.
 - Sustained coverage-guided campaigns for record parsing and whole-image
-  attribute-list resolution, with corpus retention and artifact triage. One
-  bounded 1,000,000-input run covers `parse_record`; a separate whole-image
-  `scan` target and three validated synthetic seeds now cover the reader paths
-  in the test suite, but that target still needs a coverage-guided campaign.
+  attribute-list resolution, with corpus retention and artifact triage. Two
+  hosted 1,000,000-input runs cover `parse_record`;
+  two hosted 120-second campaigns cover whole-image `scan` from three validated
+  synthetic seeds. The workflow retains evolved corpora and artifacts, but
+  sustained campaigns and independent real-volume fixtures are still required.
 - Real damaged images, overwrite/TRIM cases, Unicode/deep paths, large images.
 - Restricted-account tests, representative large-image exports, and failure/crash recovery.
 - Source-protection, failure recovery and crash/resume verification.
