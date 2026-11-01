@@ -1035,13 +1035,16 @@ retained fuzz archive is
 `ee93626cc5c10b90e20bab929e206d1eee0fc77ef3e87b1b5f7180a6d843e098`,
 expiring 2026-11-15.
 
-The NTFS core crate now also contains an unexposed FAT32 volume mapper. It
-validates partition bounds and FAT32 geometry, resolves bounded fragmented
-cluster chains, rejects cycles, free/reserved/bad clusters, insufficient chains,
-and disagreement between mirrored FAT copies, and can read requested file
-ranges without buffering whole files. A synthetic 65,525-cluster image verifies
-fragmented reads and failure cases. This is parser-layer groundwork only: it is
-not wired into directory traversal, the application scan/persistence/export
-path, or deleted-file recovery. `npm run validate` passed locally with 40 core
+The NTFS core crate now also contains an unexposed FAT32 volume mapper and
+bounded live-directory enumerator. It validates partition bounds and FAT32
+geometry, resolves fragmented cluster chains, rejects cycles, free/reserved/bad
+clusters, insufficient chains, and disagreement between mirrored FAT copies,
+and reads requested file ranges without buffering whole files. Directory
+enumeration retains raw 8.3 name bytes and skips deleted and LFN records; it
+does not yet reconstruct long names, recurse through directories, recover
+deleted entries, or integrate with Tauri scan persistence, UI, or export. A
+synthetic 65,525-cluster image verifies fragmented reads, malformed chains, and
+live directory record handling. `npm run validate` passed locally with 41 core
 tests, 75 desktop tests (3 ignored), frontend build, formatting, and Clippy with
-warnings denied. Hosted validation for this addition is pending.
+warnings denied. This local result applies to the uncommitted directory-reader
+change; hosted validation is pending.

@@ -7,6 +7,7 @@ const FAT32_EOC: u32 = 0x0fff_fff8;
 const FAT32_BAD: u32 = 0x0fff_fff7;
 const FAT32_RESERVED_START: u32 = 0x0fff_fff0;
 const MAX_CHAIN_CLUSTERS: usize = 1_000_000;
+const MAX_DIRECTORY_ENTRIES: usize = 1_000_000;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Volume {
@@ -30,9 +31,48 @@ pub struct FileMapping {
     clusters: Vec<u32>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DirectoryEntry {
+    /// The on-disk 8.3 name bytes, retained for exact identification.
+    pub short_name: [u8; 11],
+    pub attributes: u8,
+    pub first_cluster: u32,
+    pub size: u32,
+}
+
+impl DirectoryEntry {
+    pub fn is_directory(&self) -> bool {
+        self.attributes & 0x10 != 0
+    }
+
+    pub fn is_volume_label(&self) -> bool {
+        self.attributes & 0x08 != 0
+    }
+
+    /// Render the short name without interpreting non-ASCII OEM bytes.
+    /// The original bytes remain available in `short_name` for forensic use.
+    pub fn display_name(&self) -> String {
+        let base = String::from_utf8_lossy(&self.short_name[..8])
+            .trim_end()
+            .to_owned();
+        let extension = String::from_utf8_lossy(&self.short_name[8..])
+            .trim_end()
+            .to_owned();
+        if extension.is_empty() {
+            base
+        } else {
+            format!("{base}.{extension}")
+        }
+    }
+}
+
 impl Volume {
     pub fn cluster_count(&self) -> u32 {
         self.cluster_count
+    }
+
+    pub fn root_cluster(&self) -> u32 {
+        self.root_cluster
     }
 
     pub fn open(source: &dyn BlockSource, offset: u64, partition_size: u64) -> Result<Self> {
@@ -154,6 +194,69 @@ impl Volume {
 
     pub fn cluster_size(&self) -> u64 {
         u64::from(self.bytes_per_sector) * u64::from(self.sectors_per_cluster)
+    }
+
+    /// Enumerate live short-name entries in a directory cluster chain.
+    /// Deleted entries and long-file-name decoration are intentionally not
+    /// inferred here; callers can preserve the raw directory bytes separately.
+    pub fn read_directory(
+        &self,
+        source: &dyn BlockSource,
+        first_cluster: u32,
+    ) -> Result<Vec<DirectoryEntry>> {
+        if first_cluster < 2 {
+            return Err("FAT32 directory starting cluster is invalid".into());
+        }
+        let mut entries = Vec::new();
+        let mut visited = HashSet::new();
+        let mut cluster = first_cluster;
+        loop {
+            if !visited.insert(cluster) {
+                return Err("FAT32 directory chain contains a cycle".into());
+            }
+            if visited.len() > MAX_CHAIN_CLUSTERS || visited.len() > self.cluster_count as usize {
+                return Err("FAT32 directory chain exceeds the volume safety bound".into());
+            }
+            let offset = self.cluster_offset(cluster)?;
+            let mut bytes = vec![0; self.cluster_size() as usize];
+            source
+                .read_exact_at(offset, &mut bytes)
+                .map_err(|error| format!("Could not read FAT32 directory cluster: {error}"))?;
+            let mut ended = false;
+            let (records, remainder) = bytes.as_chunks::<32>();
+            if !remainder.is_empty() {
+                return Err("FAT32 directory cluster has an invalid record boundary".into());
+            }
+            for record in records {
+                if record[0] == 0 {
+                    ended = true;
+                    break;
+                }
+                if record[0] == 0xe5 || record[11] == 0x0f {
+                    continue;
+                }
+                if entries.len() >= MAX_DIRECTORY_ENTRIES {
+                    return Err("FAT32 directory exceeds the entry safety bound".into());
+                }
+                let mut short_name = [0; 11];
+                short_name.copy_from_slice(&record[..11]);
+                let high = u16::from_le_bytes([record[20], record[21]]) as u32;
+                let low = u16::from_le_bytes([record[26], record[27]]) as u32;
+                entries.push(DirectoryEntry {
+                    short_name,
+                    attributes: record[11],
+                    first_cluster: (high << 16) | low,
+                    size: u32::from_le_bytes(record[28..32].try_into().unwrap()),
+                });
+            }
+            if ended {
+                return Ok(entries);
+            }
+            match self.next_cluster(source, cluster)? {
+                Some(next) => cluster = next,
+                None => return Ok(entries),
+            }
+        }
     }
 
     fn cluster_offset(&self, cluster: u32) -> Result<u64> {
@@ -366,6 +469,50 @@ mod tests {
     fn set_fat_entry(image: &mut [u8], fat_sector: usize, cluster: usize, value: u32) {
         let offset = fat_sector * 512 + cluster * 4;
         image[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn set_directory_entry(
+        image: &mut [u8],
+        index: usize,
+        short_name: &[u8; 11],
+        attributes: u8,
+        first_cluster: u32,
+        size: u32,
+    ) {
+        let offset = 1056 * 512 + index * 32;
+        image[offset..offset + 11].copy_from_slice(short_name);
+        image[offset + 11] = attributes;
+        image[offset + 20..offset + 22]
+            .copy_from_slice(&((first_cluster >> 16) as u16).to_le_bytes());
+        image[offset + 26..offset + 28].copy_from_slice(&(first_cluster as u16).to_le_bytes());
+        image[offset + 28..offset + 32].copy_from_slice(&size.to_le_bytes());
+    }
+
+    #[test]
+    fn reads_live_fat32_directory_entries_and_preserves_raw_short_names() {
+        let mut image = fixture();
+        set_directory_entry(&mut image, 0, b"REPORT  TXT", 0x20, 3, 700);
+        set_directory_entry(&mut image, 1, b"SUBDIR     ", 0x10, 5, 0);
+        set_directory_entry(&mut image, 2, b"DELETED TXT", 0x20, 6, 10);
+        image[1056 * 512 + 2 * 32] = 0xe5;
+        set_directory_entry(&mut image, 3, b"LONGNA~1TXT", 0x0f, 0, 0);
+        set_directory_entry(&mut image, 4, b"VOLUME     ", 0x08, 0, 0);
+        let source = SliceSource(&image);
+        let volume = Volume::open(&source, 0, source.len()).unwrap();
+
+        assert_eq!(volume.root_cluster(), 2);
+        let entries = volume
+            .read_directory(&source, volume.root_cluster())
+            .unwrap();
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].short_name, *b"REPORT  TXT");
+        assert_eq!(entries[0].display_name(), "REPORT.TXT");
+        assert_eq!(entries[0].size, 700);
+        assert!(!entries[0].is_directory());
+        assert!(entries[1].is_directory());
+        assert_eq!(entries[1].first_cluster, 5);
+        assert!(entries[2].is_volume_label());
+        assert!(volume.read_directory(&source, 1).is_err());
     }
 
     #[test]
