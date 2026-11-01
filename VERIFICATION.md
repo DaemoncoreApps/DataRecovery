@@ -23,14 +23,25 @@
   release qualification remain open. The native Windows cargo-fuzz build was
   not usable with the installed MSVC sanitizer toolchain, so this run used the
   Linux container.
-- A second fuzz target, `ntfs_read_record`, now feeds bounded (1 MiB maximum)
-  in-memory images through the shared `read_record` API, including its
-  attribute-list and extension-record resolution paths. Its Windows compile
-  attempt is currently blocked because the MSVC librarian fails to overwrite
-  libFuzzer's intermediate archive (LNK1114/access denied); this target has
-  not yet had a coverage-guided campaign. Run it on the existing Linux
-  cargo-fuzz/Clang environment with a seed corpus of valid synthetic MFT
-  records before treating attribute-list parsing as fuzz-qualified.
+- A second fuzz target, `ntfs_scan_image`, now feeds bounded (4 MiB maximum)
+  volume images through the shared `scan` API. This reaches boot-sector parsing,
+  MFT record reads, resident and nonresident `$ATTRIBUTE_LIST` resolution, and
+  extension records. Its corpus includes three controlled regression images
+  covering resident, nonresident, and continued nonresident lists. These are
+  synthetic seeds, not independent-volume fixtures. The target has not yet had
+  a coverage-guided campaign: the native Windows libFuzzer build remains
+  unusable with the installed MSVC toolchain, and Docker/WSL access is denied in
+  this session. Run it on a supported Linux cargo-fuzz/Clang host before
+  claiming fuzz coverage of these reader paths.
+- On 2026-10-31, the three checked-in scan seeds each passed the new
+  `whole_image_fuzz_seeds_scan_and_resolve_attribute_lists` regression. Fresh
+  `npm run validate` passed: frontend build, Rust format checks, 4 NTFS core
+  tests, 80 application tests, 0 failures, 3 ignored, and Clippy with warnings
+  denied. Cargo metadata lists both `ntfs_parse_record` and `ntfs_scan_image`
+  targets. The Windows `cargo check` attempt for the fuzzer could not complete:
+  MSVC's librarian failed to overwrite libFuzzer's intermediate archive
+  (LNK1114/access denied). No coverage-guided run has yet exercised
+  `ntfs_scan_image`.
 - The previous refactored Windows release executable was rebuilt using the
   warm workspace target and launched once after approval. It is 12,969,472
   bytes, SHA-256 `5a7075617143cefc1b74783ba57930f05c6d0086e0ee282d935e0916db73f35d`,

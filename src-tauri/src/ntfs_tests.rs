@@ -791,6 +791,36 @@ fn attribute_list_extents_are_sequence_checked_and_exported_as_one_stream() {
 }
 
 #[test]
+fn whole_image_fuzz_seeds_scan_and_resolve_attribute_lists() {
+    let seeds: &[(&str, &[u8])] = &[
+        (
+            "resident attribute list",
+            include_bytes!("../fuzz/corpus/ntfs_scan_image/resident_attribute_list.img"),
+        ),
+        (
+            "nonresident attribute list",
+            include_bytes!("../fuzz/corpus/ntfs_scan_image/nonresident_attribute_list.img"),
+        ),
+        (
+            "continued nonresident attribute list",
+            include_bytes!("../fuzz/corpus/ntfs_scan_image/continued_attribute_list.img"),
+        ),
+    ];
+
+    for (description, bytes) in seeds {
+        let source = MemorySource(bytes.to_vec());
+        let scan = ntfs::scan(&source, 0, &AtomicBool::new(false), |_, _, _| {}).unwrap();
+        let candidate = scan
+            .candidates
+            .iter()
+            .find(|candidate| candidate.id == 22)
+            .unwrap_or_else(|| panic!("missing attribute-list candidate in {description}"));
+        assert!(candidate.exportable, "{description}: {:?}", candidate.notes);
+        assert_eq!(candidate.size, 700, "{description}");
+    }
+}
+
+#[test]
 fn attribute_list_data_reference_must_match_attribute_instance_id() {
     let mut source = image();
     let record_offset = 4 * 512 + 22 * 1024;
@@ -1223,6 +1253,35 @@ fn emit_controlled_fixture_for_desktop_smoke() {
         .unwrap();
     file.write_all(&image().0).unwrap();
     file.sync_all().unwrap();
+}
+
+#[test]
+#[ignore = "writes three controlled NTFS parser fuzz seeds to an explicit directory"]
+fn emit_ntfs_fuzz_seeds() {
+    use std::io::Write;
+    let directory = std::env::var_os("DAEMONCORE_FUZZ_SEED_DIRECTORY")
+        .expect("set DAEMONCORE_FUZZ_SEED_DIRECTORY");
+    let directory = std::path::PathBuf::from(directory);
+    std::fs::create_dir_all(&directory).unwrap();
+    for (name, source) in [
+        ("resident_attribute_list.img", image()),
+        (
+            "nonresident_attribute_list.img",
+            image_with_nonresident_attribute_list(true),
+        ),
+        (
+            "continued_attribute_list.img",
+            image_with_attribute_list_layout(true, true),
+        ),
+    ] {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(directory.join(name))
+            .unwrap();
+        file.write_all(&source.0).unwrap();
+        file.sync_all().unwrap();
+    }
 }
 
 #[test]

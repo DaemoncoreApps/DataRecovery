@@ -17,9 +17,10 @@ path = "fuzz_targets/ntfs_parse_record.rs"
 test = false
 doc = false
 bench = false
+
 [[bin]]
-name = "ntfs_read_record"
-path = "fuzz_targets/ntfs_read_record.rs"
+name = "ntfs_scan_image"
+path = "fuzz_targets/ntfs_scan_image.rs"
 test = false
 doc = false
 bench = false

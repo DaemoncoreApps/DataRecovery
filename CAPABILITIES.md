@@ -28,10 +28,11 @@ remains the target.
 ## Hard release gates
 
 - Independently verified deleted-file fixtures across NTFS, FAT32 and exFAT.
-- Sustained coverage-guided campaigns for record parsing and attribute-list
-  resolution, with corpus retention and artifact triage. One bounded 1,000,000
-  input run currently covers `parse_record` only; deterministic mutations do
-  not substitute for the untested reader paths.
+- Sustained coverage-guided campaigns for record parsing and whole-image
+  attribute-list resolution, with corpus retention and artifact triage. One
+  bounded 1,000,000-input run covers `parse_record`; a separate whole-image
+  `scan` target and three validated synthetic seeds now cover the reader paths
+  in the test suite, but that target still needs a coverage-guided campaign.
 - Real damaged images, overwrite/TRIM cases, Unicode/deep paths, large images.
 - Restricted-account tests, representative large-image exports, and failure/crash recovery.
 - Source-protection, failure recovery and crash/resume verification.
