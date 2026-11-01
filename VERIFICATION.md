@@ -42,6 +42,13 @@
   MSVC's librarian failed to overwrite libFuzzer's intermediate archive
   (LNK1114/access denied). No coverage-guided run has yet exercised
   `ntfs_scan_image`.
+- Added `.github/workflows/validate.yml` for Windows `npm run validate` and
+  bounded Linux campaigns of both fuzz targets. The workflow fetches each
+  locked Rust dependency graph before running the offline validation command,
+  uses read-only repository permissions, pins its GitHub actions to commit
+  SHAs, and preserves fuzz corpus/artifacts after a failed campaign. The first
+  hosted Actions run is still pending; configuration alone is not fuzz or CI
+  evidence.
 - The previous refactored Windows release executable was rebuilt using the
   warm workspace target and launched once after approval. It is 12,969,472
   bytes, SHA-256 `5a7075617143cefc1b74783ba57930f05c6d0086e0ee282d935e0916db73f35d`,

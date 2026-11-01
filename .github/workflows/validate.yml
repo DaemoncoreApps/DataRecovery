@@ -1,0 +1,68 @@
+name: Validate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-validation:
+    runs-on: windows-2025
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install Rust validation components
+        run: rustup component add rustfmt clippy
+      - name: Install JavaScript dependencies
+        run: npm ci
+      - name: Fetch locked Rust dependencies
+        shell: pwsh
+        run: |
+          cargo fetch --locked --manifest-path ntfs-core/Cargo.toml
+          cargo fetch --locked --manifest-path src-tauri/Cargo.toml
+          cargo fetch --locked --manifest-path src-tauri/fuzz/Cargo.toml
+      - name: Build and validate
+        run: npm run validate
+
+  ntfs-fuzz:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Install Clang
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes clang
+      - name: Install nightly Rust and LLVM tools
+        run: rustup toolchain install nightly --profile minimal --component llvm-tools-preview
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --version 0.13.2 --locked
+      - name: Run MFT record fuzz campaign
+        working-directory: src-tauri
+        run: cargo +nightly fuzz run --jobs 1 ntfs_parse_record -- -runs=1000000 -max_total_time=120 -max_len=1024 -timeout=10 -rss_limit_mb=2048
+      - name: Run whole-image NTFS scan fuzz campaign
+        working-directory: src-tauri
+        run: cargo +nightly fuzz run --jobs 1 ntfs_scan_image -- -runs=1000000 -max_total_time=120 -max_len=4194304 -timeout=10 -rss_limit_mb=2048
+      - name: Preserve fuzz corpus and crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ntfs-fuzz-failure-${{ github.run_id }}
+          path: |
+            src-tauri/fuzz/artifacts
+            src-tauri/fuzz/corpus
+          if-no-files-found: ignore
+          retention-days: 14
