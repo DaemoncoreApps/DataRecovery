@@ -248,6 +248,7 @@ fn export_audit_payload(
                 "record": candidate.id,
                 "record_sha256": candidate.fingerprint,
                 "size": candidate.size,
+                "filename_references": candidate.filename_references,
             })
         })
         .collect::<Vec<_>>();
@@ -715,6 +716,7 @@ mod tests {
             parent_sequence: 1,
             parent_ambiguous: false,
             parent_path: None,
+            filename_references: Vec::new(),
             size: 12,
             deleted: true,
             storage: "resident".into(),
@@ -837,6 +839,15 @@ mod tests {
             parent_sequence: 1,
             parent_ambiguous: false,
             parent_path: None,
+            filename_references: vec![ntfs::FilenameReference {
+                name: "evidence.bin".into(),
+                attribute_record: 41,
+                attribute_record_sequence: 1,
+                parent_record: 5,
+                parent_sequence: 1,
+                namespace: 1,
+                attribute_id: 0,
+            }],
             size: 1234,
             deleted: true,
             storage: "nonresident".into(),
@@ -872,6 +883,10 @@ mod tests {
         assert_eq!(payload["records"][0]["record"], 41);
         assert_eq!(payload["records"][0]["record_sha256"], "a".repeat(64));
         assert_eq!(payload["records"][0]["size"], 1234);
+        assert_eq!(
+            payload["records"][0]["filename_references"][0]["name"],
+            "evidence.bin"
+        );
         assert!(payload["outcome"].is_null());
 
         let outcome = Job {

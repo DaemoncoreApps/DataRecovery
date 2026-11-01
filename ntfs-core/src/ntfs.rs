@@ -122,7 +122,7 @@ pub struct Stream {
     pub content: Content,
     pub blocked: Option<String>,
 }
-pub(crate) fn mft_record_count(mft: &Stream, boot: &Boot) -> Result<u64> {
+pub fn mft_record_count(mft: &Stream, boot: &Boot) -> Result<u64> {
     if boot.record_size == 0
         || mft.size == 0
         || mft.size > boot.volume_size
@@ -275,6 +275,7 @@ pub struct Record {
     pub parent: u64,
     pub parent_sequence: u16,
     pub parent_ambiguous: bool,
+    pub filename_references: Vec<FilenameReference>,
     pub deleted: bool,
     pub directory: bool,
     pub stream: Option<Stream>,
@@ -790,6 +791,83 @@ fn assemble_unnamed_data(
         },
     })
 }
+
+fn resolve_filename_references(
+    source: &dyn BlockSource,
+    boot: &Boot,
+    mft: &Stream,
+    base: &Record,
+    entries: &[AttributeListEntry],
+) -> Result<Vec<FilenameReference>> {
+    let mut references = base.filename_references.clone();
+    let mut extension_cache = BTreeMap::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for entry in entries.iter().filter(|entry| entry.attribute_type == 0x30) {
+        if !entry.name.is_empty() || entry.lowest_vcn != 0 {
+            return Err("$FILE_NAME attribute-list reference has an invalid name or VCN".into());
+        }
+        if !seen.insert((entry.record, entry.attribute_id)) {
+            return Err("Attribute list repeats a $FILE_NAME attribute reference".into());
+        }
+        if entry.record == base.number {
+            if entry.sequence != base.sequence
+                || !base
+                    .filename_references
+                    .iter()
+                    .any(|reference| reference.attribute_id == entry.attribute_id)
+            {
+                return Err(
+                    "Attribute list does not identify a base-record $FILE_NAME attribute".into(),
+                );
+            }
+            continue;
+        }
+        if !extension_cache.contains_key(&entry.record) {
+            if extension_cache.len() >= MAX_ATTRIBUTE_LIST_RECORDS {
+                return Err("Attribute list references too many extension records".into());
+            }
+            extension_cache.insert(
+                entry.record,
+                read_record_raw(source, boot, mft, entry.record)?,
+            );
+        }
+        let extension = extension_cache
+            .get(&entry.record)
+            .ok_or("Attribute-list extension record is unavailable")?;
+        if extension.sequence != entry.sequence
+            || extension.base_reference != Some((base.number, base.sequence))
+        {
+            return Err("Attribute-list extension record identity does not match".into());
+        }
+        let mut matches = extension
+            .filename_references
+            .iter()
+            .filter(|reference| reference.attribute_id == entry.attribute_id);
+        references.push(
+            matches
+                .next()
+                .ok_or("Attribute-list reference does not identify a $FILE_NAME attribute")?
+                .clone(),
+        );
+        if matches.next().is_some() {
+            return Err(
+                "Attribute-list reference ambiguously identifies a $FILE_NAME attribute".into(),
+            );
+        }
+    }
+    Ok(references)
+}
+
+fn filename_references_have_ambiguous_parent(references: &[FilenameReference]) -> bool {
+    references.iter().enumerate().any(|(index, reference)| {
+        references[index + 1..].iter().any(|other| {
+            reference.parent_record != other.parent_record
+                || reference.parent_sequence != other.parent_sequence
+                || (reference.namespace == other.namespace && reference.name != other.name)
+        })
+    })
+}
+
 fn fixup(raw: &[u8]) -> Result<Vec<u8>> {
     if raw.get(..4) != Some(b"FILE") {
         return Err("MFT record is not a FILE record".into());
@@ -843,6 +921,7 @@ pub fn parse_record(raw: &[u8], number: u64, boot: &Boot) -> Result<Record> {
         parent: 0,
         parent_sequence: 0,
         parent_ambiguous: false,
+        filename_references: Vec::new(),
         deleted: flags & 1 == 0,
         directory: flags & 2 != 0,
         stream: None,
@@ -923,31 +1002,45 @@ pub fn parse_record(raw: &[u8], number: u64, boot: &Boot) -> Result<Record> {
                 });
             }
             0x30 => {
-                if let Some(value) = resident {
-                    let name_header = bytes(value, 64, 2)?;
-                    let chars = name_header[0] as usize;
-                    let ns = name_header[1];
-                    let text = unicode(bytes(value, 66, chars * 2)?)?;
-                    let parent_reference = u64le(value, 0)?;
-                    let parent = parent_reference & 0x0000_ffff_ffff_ffff;
-                    let parent_sequence = (parent_reference >> 48) as u16;
-                    if has_name
-                        && (record.parent != parent || record.parent_sequence != parent_sequence)
-                    {
-                        record.parent_ambiguous = true;
-                    }
-                    if has_name && namespace == ns && record.name != text {
-                        // Multiple same-namespace names are separate links; a single restored path
-                        // would hide that the record had more than one directory entry.
-                        record.parent_ambiguous = true;
-                    }
-                    if !has_name || (namespace == 2 && ns != 2) {
-                        record.name = text;
-                        record.parent = parent;
-                        record.parent_sequence = parent_sequence;
-                        namespace = ns;
-                        has_name = true;
-                    }
+                if !attribute_name.is_empty() {
+                    return Err("$FILE_NAME attribute must be unnamed".into());
+                }
+                let value = resident.ok_or("$FILE_NAME attribute must be resident")?;
+                let name_header = bytes(value, 64, 2)?;
+                let chars = name_header[0] as usize;
+                let ns = name_header[1];
+                if ns > 3 {
+                    return Err("Invalid $FILE_NAME namespace".into());
+                }
+                let text = unicode(bytes(value, 66, chars * 2)?)?;
+                let parent_reference = u64le(value, 0)?;
+                let parent = parent_reference & 0x0000_ffff_ffff_ffff;
+                let parent_sequence = (parent_reference >> 48) as u16;
+                record.filename_references.push(FilenameReference {
+                    name: text.clone(),
+                    attribute_record: record.number,
+                    attribute_record_sequence: record.sequence,
+                    parent_record: parent,
+                    parent_sequence,
+                    namespace: ns,
+                    attribute_id: u16le(a, 14)?,
+                });
+                if has_name
+                    && (record.parent != parent || record.parent_sequence != parent_sequence)
+                {
+                    record.parent_ambiguous = true;
+                }
+                if has_name && namespace == ns && record.name != text {
+                    // Multiple same-namespace names are separate links; a single restored path
+                    // would hide that the record had more than one directory entry.
+                    record.parent_ambiguous = true;
+                }
+                if !has_name || (namespace == 2 && ns != 2) {
+                    record.name = text;
+                    record.parent = parent;
+                    record.parent_sequence = parent_sequence;
+                    namespace = ns;
+                    has_name = true;
                 }
             }
             0x80 => {
@@ -1047,6 +1140,8 @@ pub struct Candidate {
     pub parent_ambiguous: bool,
     #[serde(default)]
     pub parent_path: Option<Vec<DirectoryComponent>>,
+    #[serde(default)]
+    pub filename_references: Vec<FilenameReference>,
     pub size: u64,
     pub deleted: bool,
     pub storage: String,
@@ -1056,6 +1151,17 @@ pub struct Candidate {
     pub fingerprint: String,
     pub created_filetime: Option<String>,
     pub modified_filetime: Option<String>,
+}
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct FilenameReference {
+    pub name: String,
+    pub attribute_record: u64,
+    pub attribute_record_sequence: u16,
+    pub parent_record: u64,
+    pub parent_sequence: u16,
+    pub namespace: u8,
+    pub attribute_id: u16,
 }
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -1156,18 +1262,30 @@ pub fn read_record(
             let assembled = match attribute_list {
                 AttributeList::Resident(bytes) => {
                     parse_attribute_list(&bytes).and_then(|entries| {
-                        assemble_unnamed_data(source, boot, mft, &record, &entries)
+                        let filename_references =
+                            resolve_filename_references(source, boot, mft, &record, &entries)?;
+                        let stream = assemble_unnamed_data(source, boot, mft, &record, &entries)?;
+                        Ok((stream, filename_references))
                     })
                 }
                 AttributeList::NonResident(attribute) => {
                     read_nonresident_attribute_list(source, boot, mft, &record, &attribute)
                         .and_then(|entries| {
-                            assemble_unnamed_data(source, boot, mft, &record, &entries)
+                            let filename_references =
+                                resolve_filename_references(source, boot, mft, &record, &entries)?;
+                            let stream =
+                                assemble_unnamed_data(source, boot, mft, &record, &entries)?;
+                            Ok((stream, filename_references))
                         })
                 }
             };
             match assembled {
-                Ok(stream) => record.stream = Some(stream),
+                Ok((stream, filename_references)) => {
+                    record.parent_ambiguous |=
+                        filename_references_have_ambiguous_parent(&filename_references);
+                    record.stream = Some(stream);
+                    record.filename_references = filename_references;
+                }
                 Err(reason) => {
                     if let Some(stream) = record.stream.as_mut() {
                         stream.blocked = Some(format!(
@@ -1352,6 +1470,7 @@ pub fn scan(
                             parent_sequence: record.parent_sequence,
                             parent_ambiguous: record.parent_ambiguous,
                             parent_path: None,
+                            filename_references: record.filename_references,
                             size: stream.size,
                             deleted: record.deleted,
                             storage: match &stream.content {
@@ -1521,5 +1640,50 @@ mod path_tests {
             })
             .collect::<BTreeMap<_, _>>();
         assert!(resolve_parent_path(30, 1, &too_deep).is_none());
+    }
+
+    #[test]
+    fn filename_namespace_aliases_are_distinguished_from_hard_links() {
+        let reference = FilenameReference {
+            name: "LongName.txt".into(),
+            attribute_record: 16,
+            attribute_record_sequence: 1,
+            parent_record: 30,
+            parent_sequence: 1,
+            namespace: 1,
+            attribute_id: 0,
+        };
+        let short_alias = FilenameReference {
+            name: "LONGNA~1.TXT".into(),
+            attribute_record: 16,
+            attribute_record_sequence: 1,
+            parent_record: 30,
+            parent_sequence: 1,
+            namespace: 2,
+            attribute_id: 1,
+        };
+        assert!(!filename_references_have_ambiguous_parent(&[
+            reference.clone(),
+            short_alias.clone()
+        ]));
+
+        let hard_link = FilenameReference {
+            name: "OtherLink.txt".into(),
+            namespace: 1,
+            ..short_alias
+        };
+        assert!(filename_references_have_ambiguous_parent(&[
+            reference.clone(),
+            hard_link
+        ]));
+        let other_parent = FilenameReference {
+            name: "LongName.txt".into(),
+            parent_record: 31,
+            ..reference.clone()
+        };
+        assert!(filename_references_have_ambiguous_parent(&[
+            reference,
+            other_parent
+        ]));
     }
 }

@@ -1,6 +1,6 @@
 use crate::{
     audit, err,
-    ntfs::DirectoryComponent,
+    ntfs::{DirectoryComponent, FilenameReference},
     recovery::{safe_name, safe_relative_name},
     AppState, Result,
 };
@@ -19,6 +19,7 @@ const MAX_METADATA_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_INVENTORY_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_CHECKSUMS_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_EXPORT_RELATIVE_PATH_UTF16: usize = 1024;
+const MAX_FILENAME_REFERENCES: usize = 1024;
 
 #[derive(Debug, Serialize)]
 pub struct RecoveryExportVerification {
@@ -85,6 +86,8 @@ struct SelectedRecord {
     #[serde(default)]
     parent_path: Option<Vec<DirectoryComponent>>,
     #[serde(default)]
+    filename_references: Vec<FilenameReference>,
+    #[serde(default)]
     output_name: Option<String>,
     #[serde(default)]
     path_restored: Option<bool>,
@@ -101,6 +104,8 @@ struct InventoryRecord {
     parent_record: Option<u64>,
     parent_sequence: Option<u16>,
     original_name: String,
+    #[serde(default)]
+    filename_references: Vec<FilenameReference>,
     output_name: Option<String>,
     #[serde(default)]
     path_restored: Option<bool>,
@@ -201,6 +206,16 @@ fn validate_hex_digest(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn valid_filename_references(references: &[FilenameReference]) -> bool {
+    references.len() <= MAX_FILENAME_REFERENCES
+        && references.iter().all(|reference| {
+            reference.attribute_record <= 0x0000_ffff_ffff_ffff
+                && reference.parent_record <= 0x0000_ffff_ffff_ffff
+                && reference.name.encode_utf16().count() <= 255
+                && reference.namespace <= 3
+        })
 }
 
 fn safe_relative_package_path(name: &str) -> bool {
@@ -460,6 +475,7 @@ pub(crate) fn verify_package(directory: &Path) -> Result<RecoveryExportVerificat
                 record.parent_sequence,
                 record.parent_path.as_deref(),
             )
+            || !valid_filename_references(&record.filename_references)
             || !validate_hex_digest(&record.record_sha256)
     }) {
         return Err("Recovery manifest contains invalid selected-record metadata.".into());
@@ -476,6 +492,7 @@ pub(crate) fn verify_package(directory: &Path) -> Result<RecoveryExportVerificat
             .get(&record.record)
             .ok_or("Recovery inventory contains a record absent from the manifest.")?;
         if selected_record.name != record.original_name
+            || selected_record.filename_references != record.filename_references
             || selected_record.size != record.size
             || record
                 .parent_record
@@ -673,6 +690,42 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    #[test]
+    fn filename_reference_metadata_is_bounded_and_uses_known_namespaces() {
+        let reference = FilenameReference {
+            name: "evidence.txt".into(),
+            attribute_record: 7,
+            attribute_record_sequence: 1,
+            parent_record: 5,
+            parent_sequence: 2,
+            namespace: 1,
+            attribute_id: 4,
+        };
+        assert!(valid_filename_references(std::slice::from_ref(&reference)));
+
+        let mut invalid = reference.clone();
+        invalid.namespace = 4;
+        assert!(!valid_filename_references(&[invalid]));
+        let mut invalid = reference.clone();
+        invalid.parent_record = 0x0001_0000_0000_0000;
+        assert!(!valid_filename_references(&[invalid]));
+        let mut invalid = reference;
+        invalid.name = "x".repeat(256);
+        assert!(!valid_filename_references(&[invalid]));
+        assert!(!valid_filename_references(&vec![
+            FilenameReference {
+                name: "x".into(),
+                attribute_record: 7,
+                attribute_record_sequence: 1,
+                parent_record: 5,
+                parent_sequence: 1,
+                namespace: 1,
+                attribute_id: 0,
+            };
+            MAX_FILENAME_REFERENCES + 1
+        ]));
+    }
+
     fn hash(bytes: &[u8]) -> String {
         format!("{:x}", Sha256::digest(bytes))
     }
@@ -701,7 +754,7 @@ mod tests {
             "export_started_unix_ns":"1",
             "source":{"case_id":1,"evidence_record_id":2,"scan_session_id":3,"session_id":1,"path":"evidence.img","size":4096,"sha256_before_export":"a".repeat(64)},
             "volume":{"sector_size":512},
-            "selected_records":[{"record":7,"name":"deleted.txt","parent_record":5,"parent_sequence":1,"size":data.len(),"storage":"resident","allocation":"unallocated","record_sha256":"b".repeat(64)}],
+            "selected_records":[{"record":7,"name":"deleted.txt","parent_record":5,"parent_sequence":1,"filename_references":[{"name":"deleted.txt","attribute_record":7,"attribute_record_sequence":1,"parent_record":5,"parent_sequence":1,"namespace":1,"attribute_id":0}],"size":data.len(),"storage":"resident","allocation":"unallocated","record_sha256":"b".repeat(64)}],
             "state":"incomplete_until_completion_marker_exists",
             "content_validation":"Export verification compares the reconstructed stream with destination bytes. Original file content integrity is not established."
         });
@@ -710,6 +763,7 @@ mod tests {
             "parent_record":5,
             "parent_sequence":1,
             "original_name":"deleted.txt",
+            "filename_references":[{"name":"deleted.txt","attribute_record":7,"attribute_record_sequence":1,"parent_record":5,"parent_sequence":1,"namespace":1,"attribute_id":0}],
             "output_name":output_name,
             "size":data.len(),
             "sha256":output_hash,
@@ -772,6 +826,41 @@ mod tests {
         assert_eq!(result.exported, 1);
         assert_eq!(result.failed, 0);
         assert_eq!(result.state, "complete");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rejects_filename_reference_mismatch_after_package_hashes_are_recomputed() {
+        let (root, _) = valid_package();
+        let directory = root.join("export");
+        let inventory_path = directory.join("inventory.jsonl");
+        let mut inventory: serde_json::Value =
+            serde_json::from_slice(&fs::read(&inventory_path).unwrap()).unwrap();
+        inventory["filename_references"][0]["name"] = json!("forged-alias.txt");
+        let inventory_bytes = [serde_json::to_vec(&inventory).unwrap(), b"\n".to_vec()].concat();
+        fs::write(&inventory_path, &inventory_bytes).unwrap();
+
+        let checksum_path = directory.join("checksums.sha256");
+        let mut checksums = parse_checksums(&fs::read(&checksum_path).unwrap()).unwrap();
+        checksums.insert("inventory.jsonl".into(), hash(&inventory_bytes));
+        let checksums = checksums
+            .iter()
+            .map(|(name, digest)| format!("{digest}  {name}\n"))
+            .collect::<String>();
+        fs::write(&checksum_path, &checksums).unwrap();
+
+        let completion_path = directory.join("completion.json");
+        let mut completion: serde_json::Value =
+            serde_json::from_slice(&fs::read(&completion_path).unwrap()).unwrap();
+        completion["checksums_sha256"] = json!(hash(checksums.as_bytes()));
+        fs::write(
+            &completion_path,
+            serde_json::to_vec_pretty(&completion).unwrap(),
+        )
+        .unwrap();
+
+        let error = verify_package(&directory).unwrap_err();
+        assert!(error.contains("selected-record manifest"));
         fs::remove_dir_all(root).unwrap();
     }
 

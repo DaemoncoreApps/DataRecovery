@@ -1599,6 +1599,21 @@ input[type="checkbox"] {
 .candidateInspector .detail {
   padding: 22px 0;
 }
+.filenameReferenceList {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+.filenameReferenceList > div {
+  display: grid;
+  gap: 3px;
+  overflow-wrap: anywhere;
+}
+.filenameReferenceList > div > span,
+.filenameReferenceList > span {
+  color: #7b899e;
+  font: 9px/1.6 var(--mono);
+}
 .candidateInspector code {
   font: 10px/1.8 var(--mono);
   color: #a5b5cd;

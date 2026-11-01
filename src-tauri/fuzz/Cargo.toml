@@ -1,0 +1,25 @@
+[package]
+name = "daemoncore-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+daemoncore-ntfs-core = { path = "../../ntfs-core" }
+libfuzzer-sys = "0.4"
+
+[[bin]]
+name = "ntfs_parse_record"
+path = "fuzz_targets/ntfs_parse_record.rs"
+test = false
+doc = false
+bench = false
+[[bin]]
+name = "ntfs_read_record"
+path = "fuzz_targets/ntfs_read_record.rs"
+test = false
+doc = false
+bench = false

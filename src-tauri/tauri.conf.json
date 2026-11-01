@@ -45,10 +45,12 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
+    "useLocalToolsDir": true,
     "icon": ["icons/icon.ico"],
     "publisher": "DaemonCore Enterprises",
     "shortDescription": "Read-only evidence image analysis",
     "windows": {
+      "allowDowngrades": false,
       "webviewInstallMode": {
         "type": "offlineInstaller",
         "silent": true

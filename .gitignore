@@ -1,6 +1,10 @@
 node_modules/
 dist/
 src-tauri/target/
+ntfs-core/target/
+src-tauri/fuzz/target/
+src-tauri/fuzz/artifacts/
+.tools/
 *.db
 *.db-wal
 *.db-shm

@@ -1,7 +1,69 @@
 # Recovery validation — 2026-10-31
 
+## Current workspace validation and fuzz evidence
+
+- `npm run validate` passed after extracting the shared NTFS parser core:
+  TypeScript/Vite production build, Rust format checks, 4 core tests, 79
+  application tests passed, 0 failed, 2 ignored, and Clippy with warnings
+  denied. Windows incremental compilation emitted a hard-link fallback warning;
+  it copied cache files and all commands completed successfully.
+- The parser now lives in `ntfs-core`, consumed by both the Tauri application
+  and the standalone cargo-fuzz crate. This keeps the fuzzer on the same parser
+  implementation as the app.
+- Coverage-guided run completed in a Linux container with Rust nightly,
+  `cargo-fuzz 0.13.2`, and Clang:
+  `cargo +nightly fuzz run ntfs_parse_record --jobs 1 --target-dir /work/src-tauri/target/linux-fuzz -- -runs=1000000 -max_total_time=120 -max_len=1024`.
+  It completed 1,000,000 executions in 16 seconds, reported 401 coverage
+  counters and 506 features, and produced no crash artifact. The checked-in
+  corpus has the seed records and coverage-increasing inputs.
+- Scope limitation: this target calls `parse_record` on 1024-byte records. It
+  does not exercise `read_record`, `$ATTRIBUTE_LIST` resolution, on-disk
+  geometry parsing, or application workflows. Sustained fuzz campaigns,
+  corpus review, independent real-world fixtures, and broader platform and
+  release qualification remain open. The native Windows cargo-fuzz build was
+  not usable with the installed MSVC sanitizer toolchain, so this run used the
+  Linux container.
+- A second fuzz target, `ntfs_read_record`, now feeds bounded (1 MiB maximum)
+  in-memory images through the shared `read_record` API, including its
+  attribute-list and extension-record resolution paths. Its Windows compile
+  attempt is currently blocked because the MSVC librarian fails to overwrite
+  libFuzzer's intermediate archive (LNK1114/access denied); this target has
+  not yet had a coverage-guided campaign. Run it on the existing Linux
+  cargo-fuzz/Clang environment with a seed corpus of valid synthetic MFT
+  records before treating attribute-list parsing as fuzz-qualified.
+- The previous refactored Windows release executable was rebuilt using the
+  warm workspace target and launched once after approval. It is 12,969,472
+  bytes, SHA-256 `5a7075617143cefc1b74783ba57930f05c6d0086e0ee282d935e0916db73f35d`,
+  and not Authenticode signed. The dashboard/logo rendered, Evidence Vault
+  opened, and the verifier reported 27 internally consistent records with
+  chain head `10669c0ef2dafbf6dd162190df847de7545441c32926f1746820bba4748b06a0`.
+  No independent head hash was compared.
+- `npm run tauri -- build --bundles nsis --verbose` rebuilt the Tauri
+  `custom-protocol` release executable and staged a copy at
+  `outputs/DaemonCore-Data-Recovery-Windows-0.1.0-ntfs-core-r47-unsigned.exe`:
+  12,969,472 bytes, SHA-256
+  `3f3e4ae4228a2c3634ee976c0279c2f3e42c32a220ddfd6ab41d2c3fc98cdfb0`,
+  Authenticode `NotSigned`. The staged copy was launched once after approval;
+  the dashboard/logo rendered, Evidence Vault opened, and the verifier reported
+  27 internally consistent records with chain head
+  `10669c0ef2dafbf6dd162190df847de7545441c32926f1746820bba4748b06a0`. No
+  independent head was compared.
+- The configured offline NSIS package step downloaded the 215,017,168-byte
+  Microsoft WebView2 offline runtime; its Authenticode status is `Valid`.
+  NSIS then failed to start with Windows system error 623
+  (`ERROR_ILLEGAL_DLL_RELOCATION`). The same failure reproduced when invoking
+  the local Tauri-bundled NSIS compiler directly and the official NSIS 3.13
+  compiler. The downloaded NSIS 3.13 ZIP matched the official release dataset
+  SHA-256 `ba63dffc4410ee89193e1cb5a41989991bd77c61068da17e3156d136b7b0b3d8`.
+  The offline setup was not produced; no installer was installed or launched.
+  See [Microsoft's definition of error 623](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-erref/18d8fbe8-a967-4f1c-ae50-99ca8e491d2d) and the [official NSIS releases](https://sourceforge.net/projects/nsis/files/NSIS%203/3.13/).
+
 ## Automated checks
 
+- Fresh `npm run validate` on 2026-10-31 passed: TypeScript/Vite production
+  build, Rust format check, 83 tests passed, 0 failed, 2 ignored, and Clippy
+  with warnings denied. Cargo emitted only the known incremental-cache
+  hard-link fallback warning.
 - Unified `npm run validate` gate: passed (TypeScript/Vite, Rust format, tests, Clippy).
 - Latest `npm run validate` on 2026-10-31 passed: TypeScript/Vite production build, Rust format check, 76 Rust tests passed, 0 failed, 2 ignored, and Clippy with warnings denied.
 - Cargo reported that incremental-cache hard links were unavailable and copied cache files instead; the validation command still exited successfully.
@@ -10,6 +72,8 @@
 - After directory-handle verification hardening on 2026-10-31, `npm run validate` passed: TypeScript/Vite production build, Rust format check, 77 Rust tests passed, 0 failed, 2 ignored, and Clippy with warnings denied.
 - The Windows directory-handle regression test confirms that a retained plain-directory handle blocks rename while still allowing enumeration and child creation. The recovery verifier now retains each traversed directory handle through its final tree scan, and the audit checkpoint verifier holds its selected root directory during verification. This narrows path replacement races without claiming an atomic filesystem snapshot.
 - The optimized Windows executable built after directory-handle hardening has SHA-256 `b51cf6d9c2d6acbb760150f93067abc816c5623b8adb8ca658a129adcfa231cc`; its Authenticode status is `NotSigned`. The matching offline NSIS setup is 222,182,507 bytes with SHA-256 `f0173fb4caae611595b586517abbd6dea04f90ae231e711edf1736f8cd668689`; it is also unsigned. The setup was built but not installed or launched.
+- Packaging configuration now blocks older versions from replacing newer installs. A fresh Tauri bundle build completed for NSIS and MSI with offline WebView2 embedded. NSIS emitted warning 6040. MSI emitted WiX ICE40 (`REINSTALLMODE`), ICE57 (shortcut component mixes per-user HKCU registry state with a per-machine package), and ICE61 (same-version upgrades are allowed in generated `MajorUpgrade` authoring). Treat MSI as unqualified until these authoring warnings are resolved. Both new bundles are unsigned and have not been installed or launched.
+- The release `daemoncore.exe` launched successfully once after approval. The Evidence Vault's local audit verifier reported 27 internally consistent records and displayed the chain head. No independent head hash was provided, so this did not rule out full-database replacement. The UI rendered the supplied logo and the audit disclosure correctly. The executable remains unsigned; no installer was launched.
 - Windows same-physical-disk rejection test: explicitly rerun on 2026-10-31 and passed (1 passed, 0 failed); its temporary source file was confined to ignored `src-tauri/target/test-temp`.
 - Controlled fixture writer: run explicitly with a task-owned output file and passed.
 - Clippy with warnings denied: passed.
@@ -476,5 +540,78 @@ case empty-state spacing to CSS. `devCsp` separately permits inline styles for
 Vite hot reload. The policy retains only local image sources and Tauri IPC for
 connectivity. `npm run validate` passed, and `npm run tauri build -- --no-bundle`
 accepted the production configuration and built the optimized Windows target.
-The actual WebView response headers and full native screen behavior remain
-unverified until the app can be launched for a smoke check.
+The rebuilt Windows x64 executable (`272fb3e4ae1be954060858608be8acff4891e112b01edc225e168bb781c0d196`, unsigned) launched on 2026-10-31. The dashboard and Evidence Vault rendered under the packaged WebView policy. Native audit verification reported 27 records internally consistent and displayed the expected limitation that no independent head hash was compared. This startup check did not open evidence media, run a hash or recovery operation, or verify WebView response headers; it is not a packaged installer test.
+
+### Rust dependency advisory review
+
+On 2026-10-31, `cargo-audit 0.22.2` scanned the locked 485-crate dependency
+graph against 1,395 RustSec advisories. It reported no known vulnerabilities,
+but strict warning mode fails on five advisories: `glib 0.18.5` is marked
+unsound (RUSTSEC-2024-0429), and `proc-macro-error 1.0.4`, `zbus_names 4.3.5`,
+`zvariant 5.15.1`, and `zvariant_derive 5.15.1` are marked unmaintained. The
+Windows x64 `cargo tree` excludes all five flagged crates; they are in the
+GTK/D-Bus graph used for other desktop targets. This is a target graph review,
+not a claim that the whole lockfile is warning-free; non-Windows targets remain
+unqualified.
+`npm audit` reported zero vulnerabilities with and without development
+dependencies.
+
+### Microsoft Store packaging policy review
+
+Reviewed current primary documentation on 2026-10-31. Microsoft Store accepts
+MSIX as its recommended package route and also accepts traditional EXE/MSI
+installers. The EXE/MSI route requires a standalone offline installer that
+supports silent install, a versioned HTTPS package URL whose binary remains
+unchanged after submission, and publisher-provided Authenticode signing; the
+Store does not re-sign those installers or deliver their updates. The current
+Tauri Store guide describes an EXE/MSI listing linked to an unpackaged app and
+calls out signing, offline WebView2, and update handling. This product has no
+Store submission, signed package, update strategy, or certification evidence.
+Sources: [Microsoft Store EXE/MSI requirements](https://learn.microsoft.com/en-us/windows/apps/publish/publish-your-app/msi/app-package-requirements),
+[Microsoft Win32 Store distribution](https://learn.microsoft.com/en-us/windows/apps/distribute-through-store/how-to-distribute-your-win32-app-through-microsoft-store),
+[Tauri Microsoft Store guide](https://v2.tauri.app/distribute/microsoft-store/).
+
+### Filename provenance Windows executable and offline setup
+
+On 2026-10-31, `npm run validate` passed with 82 tests, 0 failures, 2 ignored;
+Clippy completed with warnings denied. An optimized Windows x64 executable was
+built offline from this source. The offline NSIS setup was then generated with
+the cached Tauri NSIS toolchain. NSIS emitted warning 6040 for Tauri's
+`choowHowToInstall` fallback language string; the generated script documents it
+as a compatibility fallback. The staged unsigned executable is
+`DaemonCore-Data-Recovery-Windows-0.1.0-filename-provenance-r40-unsigned.exe`
+(12,992,000 bytes, SHA-256
+`c84dd31f2c13368fc3b2d15f4ea0f5179d1f527bc132c504490fde1ac68f57c3`). The
+offline setup is
+`DaemonCore-Data-Recovery-Windows-0.1.0-filename-provenance-offline-setup-unsigned.exe`
+(222,208,074 bytes, SHA-256
+`8f84c33a1242c481d502d8fd94c3c3c8474c7c482203bfe6e4aed44c921833bc`); both
+are unsigned. A separate executable built from the same source revision was
+launched for a startup/audit-screen smoke check and showed the dashboard and
+Evidence Vault. Native audit verification reported 27 internally consistent
+records and correctly reported that no independent head hash was compared.
+That check did not run the r40 executable. The r40 executable has not been
+launched, and the installer has not been installed or removed. Signing and full
+forensic validation remain release gates.
+
+### Preserve decoded NTFS filename references
+
+The NTFS parser previously retained only its preferred `$FILE_NAME` value and
+an ambiguity flag. It now preserves base-record references and references to
+extension-record `$FILE_NAME` attributes explicitly matched through a validated
+`$ATTRIBUTE_LIST`. Each carries its source record/sequence, raw name, parent
+record/sequence, namespace, and attribute ID. Conflicting same-namespace names
+or parent references keep the export path flat; namespace-paired DOS short names
+are retained without treating them as hard links. The Recovery Workspace
+inspector displays the references; scan snapshots, recovery audit records, and
+both export metadata files carry them forward. The export verifier bounds each
+reference and requires manifest/inventory equality, including after package
+checksums are recomputed following tampering. Regressions cover invalid
+namespaces, nonresident name attributes, stale or wrong extension references,
+and a synthetic DOS alias in an extension record. The NTFS parser also passes
+single-byte mutations across a valid record and 6,144 deterministic multi-byte
+and truncation mutations without panicking. `npm run validate` passed 83 tests,
+0 failures, and 2 ignored, with Clippy warnings denied. These deterministic
+mutations are not coverage-guided fuzzing. The synthetic extension fixture does
+not replace an independently formatted hard-link-heavy volume; aliases not
+referenced by the validated attribute list are not enumerated.

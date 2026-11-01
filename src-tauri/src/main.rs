@@ -1,3 +1,4 @@
+use daemoncore_ntfs_core::{ntfs, storage::BlockSource};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -8,11 +9,9 @@ use std::{
         Arc, Mutex,
     },
 };
-use storage::BlockSource;
 use tauri::{Manager, State};
 mod audit_export;
 mod destination;
-mod ntfs;
 #[cfg(test)]
 mod ntfs_tests;
 mod partition;

@@ -506,6 +506,29 @@ export function RecoveryPanel({ source, job, busy, run, onJob }: Props) {
                           .join("\\")
                       : "\\ (root)"}
                 </b>
+                <span>Names recorded in this MFT record</span>
+                <div className="filenameReferenceList">
+                  {inspected.filename_references.length === 0 ? (
+                    <span>No $FILE_NAME attributes decoded</span>
+                  ) : (
+                    inspected.filename_references.map((reference, index) => (
+                      <div key={`${reference.attribute_id}-${index}`}>
+                        <b>{reference.name}</b>
+                        <span>
+                          Attribute record {reference.attribute_record} (sequence{" "}
+                          {reference.attribute_record_sequence}) · namespace{" "}
+                          {reference.namespace} · parent{" "}
+                          {reference.parent_record} (sequence {reference.parent_sequence}) ·
+                          attribute {reference.attribute_id}
+                        </span>
+                      </div>
+                    ))
+                  )}
+                  <span>
+                    Includes base-record names and extension-record names
+                    explicitly referenced by the validated attribute list.
+                  </span>
+                </div>
                 <span>Created (UTC)</span>
                 <b>{filetime(inspected.created_filetime)}</b>
                 <span>Modified (UTC)</span>

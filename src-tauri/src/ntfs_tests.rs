@@ -87,6 +87,29 @@ fn conflicting_file_name_parents_are_not_treated_as_a_verified_path() {
     assert!(parsed.parent_ambiguous);
     assert_eq!(parsed.parent, 5);
     assert_eq!(parsed.parent_sequence, 1);
+    assert_eq!(
+        parsed.filename_references,
+        vec![
+            ntfs::FilenameReference {
+                name: "Exhibit".into(),
+                attribute_record: 31,
+                attribute_record_sequence: 1,
+                parent_record: 5,
+                parent_sequence: 1,
+                namespace: 1,
+                attribute_id: 0,
+            },
+            ntfs::FilenameReference {
+                name: "Alternate".into(),
+                attribute_record: 31,
+                attribute_record_sequence: 1,
+                parent_record: 6,
+                parent_sequence: 1,
+                namespace: 1,
+                attribute_id: 1,
+            },
+        ]
+    );
 
     let same_directory_links = record(
         31,
@@ -99,6 +122,22 @@ fn conflicting_file_name_parents_are_not_treated_as_a_verified_path() {
     let parsed = ntfs::parse_record(&same_directory_links, 31, &boot).unwrap();
     assert!(parsed.parent_ambiguous);
     assert_eq!(parsed.name, "first-link");
+    assert_eq!(parsed.filename_references.len(), 2);
+    assert_eq!(parsed.filename_references[0].name, "first-link");
+    assert_eq!(parsed.filename_references[1].name, "second-link");
+
+    let mut invalid_namespace = filename("invalid-namespace");
+    invalid_namespace[24 + 65] = 4;
+    assert!(ntfs::parse_record(&record(31, 0, &[invalid_namespace]), 31, &boot).is_err());
+
+    let mut nonresident_name = filename("nonresident-name");
+    nonresident_name[8] = 1;
+    assert!(ntfs::parse_record(&record(31, 0, &[nonresident_name]), 31, &boot).is_err());
+
+    let mut named_name = filename("named-name");
+    named_name[9] = 1;
+    named_name[10] = 24;
+    assert!(ntfs::parse_record(&record(31, 0, &[named_name]), 31, &boot).is_err());
 }
 
 fn nonresident(runs: &[u8], clusters: u64, size: u64, initialized: u64, flags: u16) -> Vec<u8> {
@@ -274,8 +313,15 @@ fn image_with_attribute_list_layout(nonresident_list: bool, continued_list: bool
                     list.extend(attribute_list_entry_with_id(0x20, 1, 23, 1, 1));
                 }
                 list.extend(attribute_list_entry(0x30, 0, 22, 1));
+                list.extend(attribute_list_entry_with_id(0x30, 0, 23, 1, 0));
                 list.extend(attribute_list_entry_with_id(0x80, 0, 22, 1, 2));
-                list.extend(attribute_list_entry(0x80, 1, 23, 1));
+                list.extend(attribute_list_entry_with_id(
+                    0x80,
+                    1,
+                    23,
+                    1,
+                    if continued_list { 2 } else { 1 },
+                ));
                 let list_attribute = if nonresident_list {
                     b[117 * 512..117 * 512 + list.len()].copy_from_slice(&list);
                     nonresident_attribute(
@@ -306,7 +352,9 @@ fn image_with_attribute_list_layout(nonresident_list: bool, continued_list: bool
                 ]
             }
             23 => {
-                let mut attributes = vec![nonresident_extent(&[0x11, 1, 120, 0], 1, 1, 0, 0, 0, 0)];
+                let mut short_alias = filename_ref("CONTIN~1.BIN", 30, 1);
+                short_alias[24 + 65] = 2;
+                let mut attributes = vec![short_alias];
                 if continued_list {
                     attributes.push(nonresident_attribute(
                         0x20,
@@ -319,6 +367,7 @@ fn image_with_attribute_list_layout(nonresident_list: bool, continued_list: bool
                         0,
                     ));
                 }
+                attributes.push(nonresident_extent(&[0x11, 1, 120, 0], 1, 1, 0, 0, 0, 0));
                 attributes
             }
             _ => vec![],
@@ -375,6 +424,30 @@ fn synthetic_ntfs_scan_classifies_real_record_data() {
     assert_eq!(result.candidates.len(), 7);
     let resident = result.candidates.iter().find(|c| c.id == 16).unwrap();
     assert_eq!(resident.name, "notes_証拠_🧪_e\u{301}.txt");
+    assert_eq!(
+        resident.filename_references,
+        vec![ntfs::FilenameReference {
+            name: "notes_証拠_🧪_e\u{301}.txt".into(),
+            attribute_record: 16,
+            attribute_record_sequence: 1,
+            parent_record: 30,
+            parent_sequence: 1,
+            namespace: 1,
+            attribute_id: 0,
+        }]
+    );
+    let continued = result
+        .candidates
+        .iter()
+        .find(|candidate| candidate.id == 22)
+        .unwrap();
+    assert!(continued.filename_references.iter().any(|reference| {
+        reference.name == "CONTIN~1.BIN"
+            && reference.attribute_record == 23
+            && reference.attribute_record_sequence == 1
+            && reference.namespace == 2
+            && reference.attribute_id == 0
+    }));
     assert_eq!(
         resident.parent_path,
         Some(vec![
@@ -561,6 +634,15 @@ fn extraction_matches_known_bytes_for_resident_fragmented_and_sparse_files() {
         .map(|line| serde_json::from_str(line).unwrap())
         .find(|entry: &serde_json::Value| entry["record"] == 16)
         .unwrap();
+    let resident_candidate = scan
+        .candidates
+        .iter()
+        .find(|candidate| candidate.id == 16)
+        .unwrap();
+    assert_eq!(
+        resident_inventory["filename_references"],
+        serde_json::to_value(&resident_candidate.filename_references).unwrap()
+    );
     let restored_relative_path = recovery::safe_relative_name(
         16,
         "notes_証拠_🧪_e\u{301}.txt",
@@ -578,6 +660,17 @@ fn extraction_matches_known_bytes_for_resident_fragmented_and_sparse_files() {
     assert!(manifest.contains("evidence_record_id"));
     assert!(manifest.contains("scan_session_id"));
     assert!(manifest.contains("controlled-fixture.img"));
+    let manifest: serde_json::Value = serde_json::from_str(&manifest).unwrap();
+    let resident_manifest = manifest["selected_records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["record"] == 16)
+        .unwrap();
+    assert_eq!(
+        resident_manifest["filename_references"],
+        resident_inventory["filename_references"]
+    );
     let checksums = std::fs::read_to_string(out.join("checksums.sha256")).unwrap();
     assert!(checksums.contains("manifest.json"));
     assert!(checksums.contains("inventory.jsonl"));
@@ -702,9 +795,27 @@ fn attribute_list_data_reference_must_match_attribute_instance_id() {
     let mut source = image();
     let record_offset = 4 * 512 + 22 * 1024;
     let list_offset = record_offset + 56 + filename_ref("continued-extents.bin", 30, 1).len();
-    // Resident list entries: $ATTRIBUTE_LIST, $FILE_NAME, then unnamed $DATA.
-    source.0[list_offset + 64 + 24..list_offset + 64 + 26].copy_from_slice(&3u16.to_le_bytes());
+    // The base unnamed-data entry follows the list attribute and both filename entries.
+    let data_entry_attribute_id = list_offset + 24 + 3 * 32 + 24;
+    source.0[data_entry_attribute_id..data_entry_attribute_id + 2]
+        .copy_from_slice(&3u16.to_le_bytes());
     let scan = ntfs::scan(&source, 0, &AtomicBool::new(false), |_, _, _| {}).unwrap();
+    assert!(!scan
+        .candidates
+        .iter()
+        .any(|candidate| candidate.id == 22 && candidate.exportable));
+
+    let mut wrong_filename_reference = image();
+    let extension_name_id = list_offset + 24 + 2 * 32 + 24;
+    wrong_filename_reference.0[extension_name_id..extension_name_id + 2]
+        .copy_from_slice(&1u16.to_le_bytes());
+    let scan = ntfs::scan(
+        &wrong_filename_reference,
+        0,
+        &AtomicBool::new(false),
+        |_, _, _| {},
+    )
+    .unwrap();
     assert!(!scan
         .candidates
         .iter()
@@ -811,6 +922,13 @@ fn continued_nonresident_attribute_list_resolves_through_extension_record() {
         .find(|candidate| candidate.id == 22)
         .unwrap();
     assert!(candidate.exportable, "{:?}", candidate.notes);
+    assert!(candidate.filename_references.iter().any(|reference| {
+        reference.name == "CONTIN~1.BIN"
+            && reference.attribute_record == 23
+            && reference.attribute_record_sequence == 1
+            && reference.namespace == 2
+            && reference.attribute_id == 0
+    }));
 
     let directory = temp_dir("continued-nonresident-attribute-list");
     let summary = recovery::export_to(
@@ -1156,6 +1274,49 @@ fn near_valid_record_mutations_are_bounded_and_do_not_panic() {
         assert!(
             std::panic::catch_unwind(|| ntfs::parse_record(&damaged, 16, &boot)).is_ok(),
             "parser panic at offset {offset}"
+        );
+    }
+}
+
+#[test]
+fn randomized_multi_byte_and_truncated_records_do_not_panic() {
+    let source = image();
+    let boot = ntfs::Boot::read(&source, 0).unwrap();
+    let valid = record(
+        16,
+        0,
+        &[
+            filename("mutation-corpus.bin"),
+            nonresident(&[0x11, 1, 104, 0x11, 1, 4, 0], 2, 700, 700, 0),
+        ],
+    );
+
+    // Deterministic structural mutations make failures reproducible without
+    // replacing a coverage-guided fuzzing campaign.
+    let mut state = 0x7a11_c0de_51a7_u64;
+    for trial in 0..6144 {
+        let mut damaged = valid.clone();
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        let mutations = 1 + (state as usize & 7);
+        for _ in 0..mutations {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            let offset = state as usize % damaged.len();
+            let mask = ((state >> 32) as u8).max(1);
+            damaged[offset] ^= mask;
+        }
+        if trial % 5 == 0 {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            damaged.truncate(state as usize % (damaged.len() + 1));
+        }
+        assert!(
+            std::panic::catch_unwind(|| ntfs::parse_record(&damaged, 16, &boot)).is_ok(),
+            "parser panicked on deterministic multi-byte mutation {trial}"
         );
     }
 }

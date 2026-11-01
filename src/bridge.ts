@@ -67,6 +67,15 @@ export interface RecoveryCandidate {
   name: string;
   parent_record: number;
   parent_path: { record: number; name: string }[] | null;
+  filename_references: {
+    name: string;
+    attribute_record: number;
+    attribute_record_sequence: number;
+    parent_record: number;
+    parent_sequence: number;
+    namespace: number;
+    attribute_id: number;
+  }[];
   size: number;
   deleted: boolean;
   storage: string;

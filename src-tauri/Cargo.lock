@@ -674,6 +674,7 @@ name = "daemoncore"
 version = "0.1.0"
 dependencies = [
  "crc32fast",
+ "daemoncore-ntfs-core",
  "rfd",
  "rusqlite",
  "serde",
@@ -681,6 +682,14 @@ dependencies = [
  "sha2",
  "tauri",
  "tauri-build",
+]
+
+[[package]]
+name = "daemoncore-ntfs-core"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "sha2",
 ]
 
 [[package]]

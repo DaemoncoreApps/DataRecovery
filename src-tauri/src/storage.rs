@@ -1,3 +1,4 @@
+pub use daemoncore_ntfs_core::storage::BlockSource;
 use std::os::windows::fs::OpenOptionsExt;
 use std::{
     fs::{File, OpenOptions},
@@ -5,11 +6,6 @@ use std::{
     path::{Path, PathBuf},
     sync::Mutex,
 };
-
-pub trait BlockSource: Send + Sync {
-    fn len(&self) -> u64;
-    fn read_exact_at(&self, offset: u64, buffer: &mut [u8]) -> io::Result<()>;
-}
 
 pub struct Image {
     file: Mutex<File>,
