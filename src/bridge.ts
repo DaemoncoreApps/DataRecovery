@@ -126,6 +126,7 @@ export interface ActiveCaseState {
 export interface Partition {
   index: number;
   type_id: string;
+  unique_guid: string | null;
   start_lba: number;
   end_lba: number;
   size_bytes: number;

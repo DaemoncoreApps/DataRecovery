@@ -1,4 +1,5 @@
 use serde::Serialize;
+use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom};
 
 const ENTRY_LIMIT: u64 = 4096;
@@ -8,6 +9,7 @@ const ARRAY_LIMIT: u64 = 4 * 1024 * 1024;
 pub struct Partition {
     pub index: usize,
     pub type_id: String,
+    pub unique_guid: Option<String>,
     pub start_lba: u64,
     pub end_lba: u64,
     pub size_bytes: u64,
@@ -610,12 +612,25 @@ fn parse_gpt<R: Read + Seek>(
         });
     };
     let mut partitions = Vec::new();
+    let mut unique_guids = HashMap::new();
     {
         for i in 0..selected.entry_count as usize {
             let at = i * selected.entry_size as usize;
             let item = &entries[at..at + selected.entry_size as usize];
             if item[..16].iter().all(|v| *v == 0) {
                 continue;
+            }
+            let unique_guid: [u8; 16] = item[16..32].try_into().ok()?;
+            if unique_guid.iter().all(|byte| *byte == 0) {
+                warnings.push(format!(
+                    "GPT entry {} has a zero unique partition GUID.",
+                    i + 1
+                ));
+            } else if let Some(previous) = unique_guids.insert(unique_guid, i + 1) {
+                warnings.push(format!(
+                    "GPT entries {previous} and {} share a unique partition GUID.",
+                    i + 1
+                ));
             }
             let start = u64_at(item, 32)?;
             let end = u64_at(item, 40)?;
@@ -636,6 +651,7 @@ fn parse_gpt<R: Read + Seek>(
             partitions.push(Partition {
                 index: i + 1,
                 type_id: guid(&item[..16]),
+                unique_guid: Some(guid(&unique_guid)),
                 start_lba: start,
                 end_lba: end,
                 size_bytes,
@@ -713,6 +729,7 @@ fn parse_mbr<R: Read + Seek>(r: &mut R, image_size: u64) -> Result<PartitionRepo
             partitions.push(Partition {
                 index: i + 1,
                 type_id: format!("MBR extended container 0x{kind:02x}"),
+                unique_guid: None,
                 start_lba: start,
                 end_lba: end,
                 size_bytes: count * 512,
@@ -725,6 +742,7 @@ fn parse_mbr<R: Read + Seek>(r: &mut R, image_size: u64) -> Result<PartitionRepo
         partitions.push(Partition {
             index: i + 1,
             type_id: format!("MBR 0x{kind:02x}"),
+            unique_guid: None,
             start_lba: start,
             end_lba: end,
             size_bytes: count * 512,
@@ -804,6 +822,7 @@ fn parse_mbr<R: Read + Seek>(r: &mut R, image_size: u64) -> Result<PartitionRepo
                 let logical_partition = Partition {
                     index: logical_index,
                     type_id: format!("MBR 0x{logical_kind:02x}"),
+                    unique_guid: None,
                     start_lba: start,
                     end_lba: end,
                     size_bytes: count * 512,
@@ -1297,6 +1316,7 @@ mod tests {
             0x28, 0x73, 0x2a, 0xc1, 0x1f, 0xf8, 0xd2, 0x11, 0xba, 0x4b, 0, 0xa0, 0xc9, 0x3e, 0xc9,
             0x3b,
         ]);
+        entries[16..32].copy_from_slice(&[0x42; 16]);
         entries[32..40].copy_from_slice(&34_u64.to_le_bytes());
         entries[40..48].copy_from_slice(&70_u64.to_le_bytes());
         let entries_crc = crc32fast::hash(&entries);
@@ -1315,6 +1335,19 @@ mod tests {
         header[16..20].copy_from_slice(&crc.to_le_bytes());
     }
 
+    fn update_gpt_entry_array_crc(image: &mut [u8], header_lba: usize) {
+        let header_offset = header_lba * 512;
+        let header = &image[header_offset..header_offset + 512];
+        let entries_lba = u64::from_le_bytes(header[72..80].try_into().unwrap()) as usize;
+        let entry_count = u32::from_le_bytes(header[80..84].try_into().unwrap()) as usize;
+        let entry_size = u32::from_le_bytes(header[84..88].try_into().unwrap()) as usize;
+        let entries_offset = entries_lba * 512;
+        let entries_length = entry_count * entry_size;
+        let entries_crc = crc32fast::hash(&image[entries_offset..entries_offset + entries_length]);
+        image[header_offset + 88..header_offset + 92].copy_from_slice(&entries_crc.to_le_bytes());
+        update_gpt_header_crc(image, header_lba);
+    }
+
     #[test]
     fn validates_gpt_headers_and_entry_array() {
         let image = valid_gpt_image();
@@ -1325,7 +1358,54 @@ mod tests {
         assert_eq!(report.partitions.len(), 1);
         assert_eq!(report.partitions[0].start_lba, 34);
         assert_eq!(report.partitions[0].end_lba, 70);
+        assert_eq!(report.partitions[0].unique_guid, Some(guid(&[0x42; 16])));
         assert!(report.warnings.is_empty());
+    }
+
+    #[test]
+    fn reports_zero_gpt_unique_partition_guid() {
+        let mut image = valid_gpt_image();
+        image[2 * 512 + 16..2 * 512 + 32].fill(0);
+        image[98 * 512 + 16..98 * 512 + 32].fill(0);
+        update_gpt_entry_array_crc(&mut image, 1);
+        update_gpt_entry_array_crc(&mut image, 99);
+
+        let report = analyze(&mut Cursor::new(image.clone()), image.len() as u64).unwrap();
+
+        assert_eq!(report.primary_gpt_valid, Some(true));
+        assert_eq!(report.backup_gpt_valid, Some(true));
+        assert_eq!(report.partitions[0].unique_guid, Some(guid(&[0; 16])));
+        assert!(report
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("zero unique partition GUID")));
+    }
+
+    #[test]
+    fn reports_duplicate_gpt_unique_partition_guids() {
+        let mut image = valid_gpt_image();
+        for entries_lba in [2, 98] {
+            let entries_offset = entries_lba * 512;
+            image.copy_within(entries_offset..entries_offset + 128, entries_offset + 128);
+            image[entries_offset + 128 + 32..entries_offset + 128 + 40]
+                .copy_from_slice(&71_u64.to_le_bytes());
+            image[entries_offset + 128 + 40..entries_offset + 128 + 48]
+                .copy_from_slice(&80_u64.to_le_bytes());
+        }
+        update_gpt_entry_array_crc(&mut image, 1);
+        update_gpt_entry_array_crc(&mut image, 99);
+
+        let report = analyze(&mut Cursor::new(image.clone()), image.len() as u64).unwrap();
+
+        assert_eq!(report.partitions.len(), 2);
+        assert_eq!(
+            report.partitions[0].unique_guid,
+            report.partitions[1].unique_guid
+        );
+        assert!(report
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("share a unique partition GUID")));
     }
 
     #[test]
@@ -1337,6 +1417,7 @@ mod tests {
             0x28, 0x73, 0x2a, 0xc1, 0x1f, 0xf8, 0xd2, 0x11, 0xba, 0x4b, 0, 0xa0, 0xc9, 0x3e, 0xc9,
             0x3b,
         ]);
+        entries[16..32].copy_from_slice(&[0x42; 16]);
         entries[32..40].copy_from_slice(&34_u64.to_le_bytes());
         entries[40..48].copy_from_slice(&70_u64.to_le_bytes());
         let checksum = crc32fast::hash(&entries);
@@ -1459,6 +1540,7 @@ mod tests {
             0x28, 0x73, 0x2a, 0xc1, 0x1f, 0xf8, 0xd2, 0x11, 0xba, 0x4b, 0, 0xa0, 0xc9, 0x3e, 0xc9,
             0x3b,
         ]);
+        entries[16..32].copy_from_slice(&[0x42; 16]);
         entries[32..40].copy_from_slice(&34_u64.to_le_bytes());
         entries[40..48].copy_from_slice(&70_u64.to_le_bytes());
         let checksum = crc32fast::hash(&entries);

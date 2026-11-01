@@ -70,6 +70,7 @@ export function PartitionPanel({ source, busy, analyze }: Props) {
                       <tr>
                         <th>Index</th>
                         <th>Type identifier</th>
+                        {report.scheme === "GPT" && <th>Unique partition GUID</th>}
                         <th>Start LBA</th>
                         <th>End LBA</th>
                         <th>Length</th>
@@ -84,6 +85,11 @@ export function PartitionPanel({ source, busy, analyze }: Props) {
                           <td>
                             <code>{p.type_id}</code>
                           </td>
+                          {report.scheme === "GPT" && (
+                            <td>
+                              <code>{p.unique_guid ?? "—"}</code>
+                            </td>
+                          )}
                           <td>{p.start_lba.toLocaleString()}</td>
                           <td>{p.end_lba.toLocaleString()}</td>
                           <td>{bytes(p.size_bytes)}</td>

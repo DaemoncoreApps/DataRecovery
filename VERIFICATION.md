@@ -956,4 +956,23 @@ The parser now enforces those role-specific boundaries. Two regressions move a
 CRC-valid primary or backup array to the wrong side of the usable range and
 verify fallback to the correctly placed copy. `npm run validate` passed locally
 with 32 core tests, 75 desktop tests (3 ignored), formatting, and Clippy with
-warnings denied. Hosted validation for this follow-up is pending.
+warnings denied. Hosted CI run
+[41277014866](https://github.com/DaemoncoreApps/DataRecovery/actions/runs/41277014866)
+for commit `05f2ba5212f0a0e1d9b2b056ac5b2c4d2fab33fe` also passed Windows
+validation with 32 core tests, 75 desktop tests (3 ignored), formatting, and
+Clippy with warnings denied, plus all three bounded fuzz campaigns. Its retained
+fuzz archive is
+[13071069195](https://github.com/DaemoncoreApps/DataRecovery/actions/runs/41277014866/artifacts/13071069195),
+512,458 bytes, SHA-256
+`2dbcad538ecbaccb98d29a0d9913ea4b42342edf9f3debc3ff4d5cd15983d7b8`,
+expiring 2026-11-15.
+
+The partition report now includes each used GPT entry's unique partition GUID.
+Zero and repeated identifiers remain visible in the table and produce explicit
+warnings, rather than being silently treated as valid unique IDs. Regression
+fixtures cover zero and duplicate identifiers with valid recomputed array and
+header CRCs. This follows the [UEFI GPT entry definition](https://uefi.org/specs/UEFI/2.10/05_GUID_Partition_Table_Format.html),
+which defines a unique GUID for every partition entry and zero type GUIDs for
+unused entries. The production build, 34 core tests, 75 desktop tests (3
+ignored), formatting, and Clippy with warnings denied passed locally. Hosted
+validation for this follow-up is pending.
