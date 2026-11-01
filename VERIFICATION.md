@@ -882,3 +882,24 @@ the FAT32 parser. Their retained results are artifact
 501,447 bytes, archive SHA-256
 `ce26678c815c83abca8e76e26b5d693f6a314f6f5fa6e6fb830906859f388164`,
 expiring 2026-11-15.
+
+### Shared partition parser and fuzz coverage
+
+Commit `8d3ab98b20751a931d5a934b9145fc51491fdcc` moves partition analysis into
+the reusable `ntfs-core` crate and adds a cargo-fuzz target for MBR/GPT and
+filesystem boot metadata. Hosted CI run
+[41273761530](https://github.com/DaemoncoreApps/DataRecovery/actions/runs/41273761530)
+passed all three bounded fuzz campaigns: MFT records, whole-image NTFS scans,
+and partition/boot-sector analysis. The retained result archive is
+[13070139807](https://github.com/DaemoncoreApps/DataRecovery/actions/runs/41273761530/artifacts/13070139807),
+491,666 bytes, SHA-256
+`ad6270d77f41f848a6e0a1688ce069507ef37fe440cb7155a279a40027be54dd`,
+expiring 2026-11-15. The partition target covers raw inputs up to 4 MiB and a
+synthetic MBR/exFAT scaffold whose boot geometry fields are mutated with
+checksums recomputed; it does not establish correctness against independently
+formatted or damaged real-world volumes. The same run's hosted Windows job
+passed `npm run validate`: frontend production build, 26 core tests, 75 desktop
+tests (3 ignored), Rust formatting, and Clippy with warnings denied. This
+confirms the shared parser move compiles and passes its current regression
+suite; it does not close the independent-media and production-scale validation
+gates above.
