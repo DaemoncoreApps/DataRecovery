@@ -52,7 +52,7 @@ struct ExfatBootMetadata {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Fat32BootMetadata {
+pub(crate) struct Fat32BootMetadata {
     bytes_per_sector: u16,
     sectors_per_cluster: u8,
     reserved_sectors: u16,
@@ -61,11 +61,11 @@ struct Fat32BootMetadata {
     sectors_per_fat: u32,
     root_cluster: u32,
     fsinfo_sector: u16,
-    backup_boot_sector: u16,
+    pub(crate) backup_boot_sector: u16,
     volume_serial: u32,
 }
 
-fn parse_fat32_boot_sector(
+pub(crate) fn parse_fat32_boot_sector(
     boot: &[u8],
     expected_sector_size: u32,
     partition_sectors: u64,

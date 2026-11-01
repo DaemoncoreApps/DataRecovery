@@ -103,6 +103,34 @@ impl Volume {
         }
 
         let bytes_per_sector = u16::from_le_bytes([boot[11], boot[12]]) as u32;
+        let primary_metadata = crate::partition::parse_fat32_boot_sector(
+            &boot,
+            bytes_per_sector,
+            partition_size / u64::from(bytes_per_sector.max(1)),
+        )
+        .ok_or("FAT32 primary boot metadata is inconsistent")?;
+        if primary_metadata.backup_boot_sector != 0 {
+            let backup_offset = offset
+                .checked_add(
+                    u64::from(primary_metadata.backup_boot_sector)
+                        .checked_mul(u64::from(bytes_per_sector))
+                        .ok_or("FAT32 backup boot-sector offset overflow")?,
+                )
+                .ok_or("FAT32 backup boot-sector offset overflow")?;
+            let mut backup = [0; 512];
+            source
+                .read_exact_at(backup_offset, &mut backup)
+                .map_err(|error| format!("Could not read FAT32 backup boot sector: {error}"))?;
+            let backup_metadata = crate::partition::parse_fat32_boot_sector(
+                &backup,
+                bytes_per_sector,
+                partition_size / u64::from(bytes_per_sector.max(1)),
+            )
+            .ok_or("FAT32 backup boot metadata is invalid")?;
+            if backup_metadata != primary_metadata {
+                return Err("FAT32 primary and backup boot metadata disagree".into());
+            }
+        }
         let sectors_per_cluster = boot[13];
         let reserved_sectors = u16::from_le_bytes([boot[14], boot[15]]) as u32;
         let fat_count = boot[16];
@@ -551,6 +579,8 @@ mod tests {
         image[48..50].copy_from_slice(&1_u16.to_le_bytes());
         image[50..52].copy_from_slice(&6_u16.to_le_bytes());
         image[510..512].copy_from_slice(&[0x55, 0xaa]);
+        let primary_boot = image[..512].to_vec();
+        image[6 * 512..7 * 512].copy_from_slice(&primary_boot);
         for fat_sector in [32_usize, 544] {
             let fat = fat_sector * 512;
             image[fat + 2 * 4..fat + 2 * 4 + 4].copy_from_slice(&0x0fff_ffff_u32.to_le_bytes());
@@ -669,6 +699,24 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].long_name, None);
         assert_eq!(entries[0].display_name(), "RECOVE~1.TXT");
+    }
+
+    #[test]
+    fn refuses_invalid_or_conflicting_fat32_backup_boot_metadata() {
+        let mut image = fixture();
+        image[6 * 512 + 510] ^= 1;
+        let source = SliceSource(&image);
+        assert!(Volume::open(&source, 0, source.len())
+            .unwrap_err()
+            .contains("backup boot metadata is invalid"));
+        drop(source);
+
+        let mut image = fixture();
+        image[6 * 512 + 67..6 * 512 + 71].copy_from_slice(&1_u32.to_le_bytes());
+        let source = SliceSource(&image);
+        assert!(Volume::open(&source, 0, source.len())
+            .unwrap_err()
+            .contains("metadata disagree"));
     }
 
     #[test]
