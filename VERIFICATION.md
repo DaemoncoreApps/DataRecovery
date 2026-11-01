@@ -1051,5 +1051,7 @@ images verify fragmented reads, malformed chains, live nested entries, LFN
 checksum/order fallback, deleted-LFN isolation, and invalid/conflicting backup
 sectors. `npm run validate` passed locally with 45 core tests, 75 desktop tests
 (3 ignored), frontend build, formatting, and Clippy with warnings denied.
-Hosted Windows and fuzz validation for the latest local traversal and deleted
-LFN changes is pending.
+Hosted Windows and fuzz validation for the traversal and deleted-LFN changes is
+pending on commit `da6d4d020262e45d8c79b8783647ac6d44d57ab2`; run
+[41362996205](https://github.com/DaemoncoreApps/DataRecovery/actions/runs/41362996205)
+is queued for that exact revision.
