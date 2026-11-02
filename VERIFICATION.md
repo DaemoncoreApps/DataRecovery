@@ -1062,4 +1062,6 @@ and Clippy with warnings denied. Hosted run
 passed all three parser fuzz campaigns on commit `7bf9c4202adea91c502830537280825c42a13f57`.
 The partition-image campaign now traverses a virtual FAT32 directory tree and
 attempts deleted-file mapping while mutating entry records and mirrored FAT
-metadata. The Windows validation job for that same commit remains in progress.
+metadata. Windows validation passed for that same commit, including the
+frontend production build, Rust tests, formatting, and Clippy. The complete
+workflow concluded successfully.
