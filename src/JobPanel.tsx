@@ -10,6 +10,8 @@ export function JobPanel({ job, cancel }: Props) {
   const operation =
     job.kind === "ntfs_scan"
       ? "NTFS metadata scan"
+      : job.kind === "fat32_scan"
+        ? "FAT32 directory scan"
       : job.kind === "recovery_export"
         ? "Recovery export & verification"
         : job.kind === "evidence_reopen"
@@ -19,7 +21,9 @@ export function JobPanel({ job, cancel }: Props) {
             : "SHA-256 image digest";
   const percent = job.total ? (100 * job.processed) / job.total : 0;
   const canCancel =
-    job.state === "running" && job.kind !== "case_report_export";
+    job.state === "running" &&
+    job.kind !== "case_report_export" &&
+    (job.kind !== "fat32_scan" || job.message?.startsWith("Rechecking the complete source SHA-256"));
   const status =
     job.state === "idle"
       ? "Idle"
@@ -95,6 +99,8 @@ export function JobPanel({ job, cancel }: Props) {
         <span>
           {job.kind === "ntfs_scan"
             ? `${job.discovered} candidates`
+            : job.kind === "fat32_scan"
+              ? `${job.discovered} deleted entries`
             : job.kind === "recovery_export"
               ? "Destination verification"
               : job.kind === "case_report_export"

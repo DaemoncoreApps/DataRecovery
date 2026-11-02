@@ -13,6 +13,7 @@ use tauri::{Manager, State};
 mod audit_export;
 mod case_report;
 mod destination;
+mod fat32_commands;
 #[cfg(test)]
 mod ntfs_tests;
 mod recovery;
@@ -78,6 +79,7 @@ struct AppState {
     job: Mutex<Job>,
     cancel: AtomicBool,
     scan: Mutex<Option<Arc<ScanSession>>>,
+    fat32_scan: Mutex<Option<Arc<fat32_commands::Fat32ScanCache>>>,
     generation: AtomicU64,
 }
 type Result<T> = std::result::Result<T, String>;
@@ -159,6 +161,7 @@ async fn open_image(state: State<'_, AppState>) -> Result<Option<Source>> {
         integrity_compromised: false,
     });
     *state.scan.lock().map_err(err)? = None;
+    *state.fat32_scan.lock().map_err(err)? = None;
     *job = Job::default();
     Ok(Some(info))
 }
@@ -745,11 +748,13 @@ fn set_active_case(case_id: Option<i64>, state: State<AppState>) -> Result<()> {
     let mut job = state.job.lock().map_err(err)?;
     ensure_case_change_allowed(&job)?;
     let mut scan = state.scan.lock().map_err(err)?;
+    let mut fat32_scan = state.fat32_scan.lock().map_err(err)?;
     let mut db = state.db.lock().map_err(err)?;
     let (previous, previous_audit_matched) = persist_active_case(&mut db, case_id)?;
     if case_context_changed(previous, case_id) || !previous_audit_matched {
         *current_source = None;
         *scan = None;
+        *fat32_scan = None;
         *job = Job::default();
         state.cancel.store(false, Ordering::SeqCst);
     }
@@ -768,6 +773,7 @@ fn create_case(title: String, examiner: String, state: State<AppState>) -> Resul
     let mut job = state.job.lock().map_err(err)?;
     ensure_case_change_allowed(&job)?;
     let mut scan = state.scan.lock().map_err(err)?;
+    let mut fat32_scan = state.fat32_scan.lock().map_err(err)?;
     let mut db = state.db.lock().map_err(err)?;
     let previous_active_case_value = active_case_setting_value(&db)?;
     let previous_active_case_audit_matched = active_case_state_from(&db)?.audit_matched;
@@ -789,6 +795,7 @@ fn create_case(title: String, examiner: String, state: State<AppState>) -> Resul
     tx.commit().map_err(err)?;
     *current_source = None;
     *scan = None;
+    *fat32_scan = None;
     *job = Job::default();
     state.cancel.store(false, Ordering::SeqCst);
     Ok(())
@@ -945,6 +952,7 @@ fn database(path: PathBuf) -> rusqlite::Result<Connection> {
         )));
     }
     db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; CREATE TABLE IF NOT EXISTS cases(id INTEGER PRIMARY KEY,title TEXT NOT NULL,examiner TEXT NOT NULL); CREATE TABLE IF NOT EXISTS app_settings(key TEXT PRIMARY KEY,value TEXT NOT NULL); CREATE TABLE IF NOT EXISTS evidence_sources(id INTEGER PRIMARY KEY,case_id INTEGER NOT NULL REFERENCES cases(id),original_path TEXT NOT NULL,name TEXT NOT NULL,size_bytes INTEGER NOT NULL CHECK(size_bytes>=0),filesystem TEXT NOT NULL,opened_at TEXT NOT NULL,sha256 TEXT,status TEXT NOT NULL CHECK(status IN ('open','hashed','compromised')),UNIQUE(id,case_id)); CREATE INDEX IF NOT EXISTS evidence_sources_by_case ON evidence_sources(case_id,id); CREATE TABLE IF NOT EXISTS scan_sessions(id INTEGER PRIMARY KEY,evidence_id INTEGER NOT NULL,case_id INTEGER NOT NULL REFERENCES cases(id),volume_offset TEXT NOT NULL,source_sha256 TEXT NOT NULL,completed_at TEXT NOT NULL,boot_json TEXT NOT NULL,records INTEGER NOT NULL,skipped INTEGER NOT NULL,found INTEGER NOT NULL,limited INTEGER NOT NULL,candidates_json TEXT NOT NULL,snapshot_sha256 TEXT NOT NULL,FOREIGN KEY(evidence_id,case_id) REFERENCES evidence_sources(id,case_id)); CREATE INDEX IF NOT EXISTS scan_sessions_by_case ON scan_sessions(case_id,id); CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY,timestamp TEXT NOT NULL,event TEXT NOT NULL,payload TEXT NOT NULL,previous TEXT NOT NULL,hash TEXT NOT NULL);")?;
+    db.execute_batch("CREATE TABLE IF NOT EXISTS fat32_scan_sessions(id INTEGER PRIMARY KEY,evidence_id INTEGER NOT NULL,case_id INTEGER NOT NULL REFERENCES cases(id),volume_offset TEXT NOT NULL,source_sha256 TEXT NOT NULL,completed_at TEXT NOT NULL,boot_json TEXT NOT NULL,records INTEGER NOT NULL,found INTEGER NOT NULL,deleted INTEGER NOT NULL,entries_json TEXT NOT NULL,snapshot_sha256 TEXT NOT NULL,FOREIGN KEY(evidence_id,case_id) REFERENCES evidence_sources(id,case_id)); CREATE INDEX IF NOT EXISTS fat32_scan_sessions_by_case ON fat32_scan_sessions(case_id,id);")?;
     Ok(db)
 }
 fn main() {
@@ -955,6 +963,7 @@ fn main() {
             app.manage(AppState {
                 source: Mutex::new(None),
                 scan: Mutex::new(None),
+                fat32_scan: Mutex::new(None),
                 generation: AtomicU64::new(1),
                 db: Mutex::new(database(directory.join("cases.db"))?),
                 job: Mutex::new(Job::default()),
@@ -979,6 +988,11 @@ fn main() {
             audit_export::export_audit_checkpoint,
             audit_export::verify_audit_checkpoint,
             recovery_commands::start_ntfs_scan,
+            fat32_commands::start_fat32_scan,
+            fat32_commands::fat32_scan_summary,
+            fat32_commands::fat32_scan_results,
+            fat32_commands::list_case_fat32_scan_sessions,
+            fat32_commands::archived_fat32_scan_results,
             recovery_commands::scan_summary,
             recovery_commands::list_case_scan_sessions,
             recovery_commands::archived_scan_results,
@@ -1068,7 +1082,12 @@ mod tests {
             .query_row("SELECT title FROM cases WHERE id=9", [], |row| row.get(0))
             .unwrap();
         assert_eq!(title, "legacy case");
-        for table in ["app_settings", "evidence_sources", "scan_sessions"] {
+        for table in [
+            "app_settings",
+            "evidence_sources",
+            "scan_sessions",
+            "fat32_scan_sessions",
+        ] {
             let count: i64 = db
                 .query_row(
                     "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",

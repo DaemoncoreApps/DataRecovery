@@ -18,6 +18,8 @@ import {
   type RecoveryExportVerification,
   type RecoveryPage,
   type PartitionReport,
+  type Fat32ScanSummary,
+  type Fat32Page,
 } from "./bridge";
 import { bytes } from "./format";
 
@@ -59,6 +61,11 @@ export function RecoveryPanel({ source, job, busy, run, onJob }: Props) {
   const [loadError, setLoadError] = useState("");
   const [exportVerification, setExportVerification] =
     useState<RecoveryExportVerification | null>(null);
+  const [fat32Summary, setFat32Summary] = useState<Fat32ScanSummary | null>(null);
+  const [fat32Page, setFat32Page] = useState<Fat32Page>({ total: 0, rows: [] });
+  const [fat32Query, setFat32Query] = useState("");
+  const [fat32DeletedOnly, setFat32DeletedOnly] = useState(true);
+  const [fat32PageIndex, setFat32PageIndex] = useState(0);
   const working = busy || job.state === "running";
   useEffect(() => {
     setSummary(null);
@@ -67,6 +74,9 @@ export function RecoveryPanel({ source, job, busy, run, onJob }: Props) {
     setPartitions(null);
     setOffset("0");
     setInspected(null);
+    setFat32Summary(null);
+    setFat32Page({ total: 0, rows: [] });
+    setFat32PageIndex(0);
   }, [source?.id]);
   useEffect(() => {
     if (
@@ -79,6 +89,21 @@ export function RecoveryPanel({ source, job, busy, run, onJob }: Props) {
     command<ScanSummary | null>("scan_summary")
       .then((result) => {
         if (active && result?.source_id === source.id) setSummary(result);
+      })
+      .catch((e) => {
+        if (active) setLoadError(String(e));
+      });
+    return () => {
+      active = false;
+    };
+  }, [source?.id, job.kind, job.state]);
+  useEffect(() => {
+    if (!native || !source || (job.kind === "fat32_scan" && job.state === "running"))
+      return;
+    let active = true;
+    command<Fat32ScanSummary | null>("fat32_scan_summary")
+      .then((result) => {
+        if (active && result?.source_id === source.id) setFat32Summary(result);
       })
       .catch((e) => {
         if (active) setLoadError(String(e));
@@ -108,6 +133,26 @@ export function RecoveryPanel({ source, job, busy, run, onJob }: Props) {
       active = false;
     };
   }, [summary, source?.id, pageIndex, query, onlyExportable]);
+  useEffect(() => {
+    if (!fat32Summary || !source || fat32Summary.source_id !== source.id) return;
+    let active = true;
+    command<Fat32Page>("fat32_scan_results", {
+      sourceId: source.id,
+      offset: fat32PageIndex * 50,
+      limit: 50,
+      query: fat32Query,
+      deletedOnly: fat32DeletedOnly,
+    })
+      .then((result) => {
+        if (active) setFat32Page(result);
+      })
+      .catch((e) => {
+        if (active) setLoadError(String(e));
+      });
+    return () => {
+      active = false;
+    };
+  }, [fat32Summary, source?.id, fat32PageIndex, fat32Query, fat32DeletedOnly]);
   const scan = () =>
     run(async () => {
       const n = Number(offset);
@@ -119,6 +164,17 @@ export function RecoveryPanel({ source, job, busy, run, onJob }: Props) {
       setSelected(new Set());
       setPageIndex(0);
       setInspected(null);
+      onJob(await command<Job>("job_status"));
+    });
+  const scanFat32 = () =>
+    run(async () => {
+      const n = Number(offset);
+      if (!Number.isSafeInteger(n) || n < 0)
+        throw new Error("Enter a valid byte offset, such as 0 or 0x100000.");
+      await command("start_fat32_scan", { offset: n });
+      setFat32Summary(null);
+      setFat32Page({ total: 0, rows: [] });
+      setFat32PageIndex(0);
       onJob(await command<Job>("job_status"));
     });
   const exportFiles = () =>
@@ -234,6 +290,105 @@ export function RecoveryPanel({ source, job, busy, run, onJob }: Props) {
               discarded content.
             </p>
           </>
+        )}
+      </section>
+      <section className="panel">
+        <div className="panelTitle">
+          <div>
+            <div className="panelHeading">
+              <FileSearch size={17} />
+              <h2>FAT32 directory examination</h2>
+            </div>
+            <p>Records live and deleted short-name directory entries to the active case.</p>
+          </div>
+          <span className="tag">READ ONLY · AUDITED</span>
+        </div>
+        <button
+          className="primary"
+          disabled={working || !source?.sha256}
+          onClick={scanFat32}
+        >
+          <Search size={15} />
+          Scan FAT32 directory
+        </button>
+        {!source?.sha256 && (
+          <p className="muted recoveryHashNotice">
+            Calculate and record the source SHA-256 before scanning.
+          </p>
+        )}
+        {fat32Summary && source?.id === fat32Summary.source_id && (
+          <div className="fat32Results">
+            <div className="panelTitle">
+              <div>
+                <h3>FAT32 directory entries</h3>
+                <p>
+                  {fat32Summary.entries.toLocaleString()} entries ·{" "}
+                  {fat32Summary.deleted_entries.toLocaleString()} deleted short names ·{" "}
+                  scan SC-{String(fat32Summary.scan_session_id).padStart(6, "0")}
+                </p>
+              </div>
+              <label className="checkLabel">
+                <input
+                  type="checkbox"
+                  checked={fat32DeletedOnly}
+                  onChange={(event) => {
+                    setFat32DeletedOnly(event.target.checked);
+                    setFat32PageIndex(0);
+                  }}
+                />
+                Deleted only
+              </label>
+            </div>
+            <label className="searchField">
+              <Search size={14} />
+              <input
+                aria-label="Search FAT32 directory entries"
+                placeholder="Search filename…"
+                maxLength={200}
+                value={fat32Query}
+                onChange={(event) => {
+                  setFat32Query(event.target.value);
+                  setFat32PageIndex(0);
+                }}
+              />
+            </label>
+            <div className="warning" role="status">
+              This is a directory inventory. Deleted long names are not recovered, cluster layout is not reconstructed here, and FAT32 file export is not yet available.
+            </div>
+            {fat32Page.rows.map(({ path, entry }) => (
+              <div className="case" key={entry.source_offset}>
+                <code>
+                  {entry.deleted ? "DELETED" : "LIVE"} · 0x{entry.source_offset.toString(16)}
+                </code>
+                <h3 title={path.join("/")}>
+                  {path.join("/") || entry.long_name || "(unnamed)"}
+                </h3>
+                <span>
+                  {entry.size.toLocaleString()} bytes · cluster {entry.first_cluster} · {entry.attributes.toString(16).padStart(2, "0")} attributes
+                </span>
+                <code className="muted">
+                  Raw short record · {entry.raw_record.map((byte) => byte.toString(16).padStart(2, "0")).join("")}
+                </code>
+              </div>
+            ))}
+            <div className="actions archivedPagination">
+              <button
+                disabled={fat32PageIndex === 0}
+                onClick={() => setFat32PageIndex((index) => Math.max(0, index - 1))}
+              >
+                Previous
+              </button>
+              <span>
+                {fat32Page.total.toLocaleString()} entries · page {fat32PageIndex + 1}
+              </span>
+              <button
+                disabled={(fat32PageIndex + 1) * 50 >= fat32Page.total}
+                onClick={() => setFat32PageIndex((index) => index + 1)}
+              >
+                Next
+              </button>
+            </div>
+          </div>
         )}
       </section>
       <section className="panel">

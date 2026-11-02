@@ -12,6 +12,7 @@ export interface Job {
   kind:
     | "hash"
     | "ntfs_scan"
+    | "fat32_scan"
     | "recovery_export"
     | "evidence_reopen"
     | "case_report_export";
@@ -94,6 +95,42 @@ export interface RecoveryCandidate {
 export interface RecoveryPage {
   total: number;
   rows: RecoveryCandidate[];
+}
+export interface Fat32TreeEntry {
+  path: string[];
+  entry: {
+    source_offset: number;
+    raw_record: number[];
+    short_name: number[];
+    long_name: string | null;
+    deleted: boolean;
+    attributes: number;
+    first_cluster: number;
+    size: number;
+  };
+}
+export interface Fat32Page {
+  total: number;
+  rows: Fat32TreeEntry[];
+}
+export interface Fat32ScanSummary {
+  scan_session_id: number;
+  source_id: number;
+  volume_offset: string;
+  source_sha256: string;
+  entries: number;
+  deleted_entries: number;
+}
+export interface Fat32CaseScanSession {
+  id: number;
+  evidence_id: number;
+  case_id: number;
+  volume_offset: string;
+  source_sha256: string;
+  completed_at: string;
+  records: number;
+  found: number;
+  deleted: number;
 }
 export interface RecoveryExportVerification {
   case_id: number | null;

@@ -1065,3 +1065,13 @@ attempts deleted-file mapping while mutating entry records and mirrored FAT
 metadata. Windows validation passed for that same commit, including the
 frontend production build, Rust tests, formatting, and Clippy. The complete
 workflow concluded successfully.
+
+## 2026-11-01 native FAT32 directory examination
+
+Connected the bounded read-only FAT32 directory walker to the native case workflow. Scans require an active hashed evidence source and audited active case, recheck the source hash after enumeration, and transactionally store the boot-sector metadata, raw-provenance directory snapshot, counts, snapshot digest, and corresponding audit event. Archived rows are returned only after validating the complete audit chain, snapshot digest, offsets, counts, and one-to-one row/audit relationships. Active paged results are rebound to the currently open source ID, case, and digest. Snapshot JSON is capped at 48 MiB before persistence. The UI reports that FAT32 results are inventory only, file recovery/export is not available, and cancellation becomes available during the complete-source recheck after directory enumeration.
+
+Case report schema is now `daemoncore-case-report-v2`; it includes verified FAT32 directory snapshots and source-digest comparison, and report prepare/complete audit events include FAT32 scan and directory-entry counts. This report version change is explicit so consumers can distinguish the added schema. Legacy database migration coverage checks creation of the FAT32 snapshot table.
+
+Added coverage for atomic scan/audit persistence, snapshot tampering, duplicate/orphan audit references, report inclusion, and legacy database migration. Focused tests passed. Full `npm run validate` passed locally on Windows: frontend production build, 47 core tests, 79 desktop tests (3 ignored), formatting, and Clippy with warnings denied. Rust emitted only the host's existing incremental-cache hard-link fallback warning.
+
+This does not qualify FAT32 file recovery, exFAT directories/recovery, independent formatted FAT32/exFAT images, representative large-volume performance, or the Windows installer. The app was not relaunched or repackaged in this pass, and this change is not production qualification.

@@ -1,4 +1,5 @@
 use crate::storage::BlockSource;
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
 type Result<T> = std::result::Result<T, String>;
@@ -44,7 +45,7 @@ pub enum DeletedClusterLayout {
     ContiguousAssumed,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct DirectoryEntry {
     /// Absolute source offset of the short-name record.
     pub source_offset: u64,
@@ -60,7 +61,7 @@ pub struct DirectoryEntry {
     pub size: u32,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct TreeEntry {
     pub path: Vec<String>,
     pub entry: DirectoryEntry,

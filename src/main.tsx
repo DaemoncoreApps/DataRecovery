@@ -13,6 +13,8 @@ import {
   type RecoveryPage,
   type Source,
   type Job,
+  type Fat32CaseScanSession,
+  type Fat32Page,
 } from "./bridge";
 import "./style.css";
 import { SourcePanel } from "./SourcePanel";
@@ -42,8 +44,12 @@ function App() {
     [cases, setCases] = useState<Case[]>([]),
     [caseEvidence, setCaseEvidence] = useState<CaseEvidenceRecord[]>([]),
     [caseScans, setCaseScans] = useState<CaseScanSession[]>([]),
+    [fat32CaseScans, setFat32CaseScans] = useState<Fat32CaseScanSession[]>([]),
     [archivedScanId, setArchivedScanId] = useState<number | null>(null),
     [archivedPage, setArchivedPage] = useState<RecoveryPage | null>(null),
+    [archivedFat32ScanId, setArchivedFat32ScanId] = useState<number | null>(null),
+    [archivedFat32Page, setArchivedFat32Page] = useState<Fat32Page | null>(null),
+    [archivedFat32PageIndex, setArchivedFat32PageIndex] = useState(0),
     [archivedPageIndex, setArchivedPageIndex] = useState(0),
     [activeCaseId, setActiveCaseId] = useState<number | null>(null),
     [activeCaseAuditMatched, setActiveCaseAuditMatched] = useState(true),
@@ -86,6 +92,10 @@ function App() {
     if (!native || activeCaseId === null) {
       setCaseEvidence([]);
       setCaseScans([]);
+      setFat32CaseScans([]);
+      setArchivedFat32ScanId(null);
+      setArchivedFat32Page(null);
+      setArchivedFat32PageIndex(0);
       return;
     }
     let active = true;
@@ -96,11 +106,15 @@ function App() {
       command<CaseScanSession[]>("list_case_scan_sessions", {
         caseId: activeCaseId,
       }),
+      command<Fat32CaseScanSession[]>("list_case_fat32_scan_sessions", {
+        caseId: activeCaseId,
+      }),
     ])
-      .then(([evidence, scans]) => {
+      .then(([evidence, scans, fat32Scans]) => {
         if (active) {
           setCaseEvidence(evidence);
           setCaseScans(scans);
+          setFat32CaseScans(fat32Scans);
         }
       })
       .catch((e) => {
@@ -134,8 +148,11 @@ function App() {
     setReadOffset(0);
     setCaseEvidence([]);
     setCaseScans([]);
+    setFat32CaseScans([]);
     setArchivedScanId(null);
     setArchivedPage(null);
+    setArchivedFat32ScanId(null);
+    setArchivedFat32Page(null);
     setArchivedPageIndex(0);
     setCaseReport(null);
   };
@@ -183,6 +200,19 @@ function App() {
       setArchivedPageIndex(pageIndex);
       setArchivedPage(result);
     });
+  const showArchivedFat32Results = (scanSessionId: number, pageIndex: number) =>
+    run(async () => {
+      if (activeCaseId === null) throw new Error("Select the case first.");
+      const result = await command<Fat32Page>("archived_fat32_scan_results", {
+        caseId: activeCaseId,
+        scanSessionId,
+        offset: pageIndex * 50,
+        limit: 50,
+      });
+      setArchivedFat32ScanId(scanSessionId);
+      setArchivedFat32Page(result);
+      setArchivedFat32PageIndex(pageIndex);
+    });
   const reopenArchivedSource = (scanSessionId: number) =>
     run(async () => {
       if (activeCaseId === null) throw new Error("Select the case first.");
@@ -219,6 +249,15 @@ function App() {
   const selectedArchivedEvidence = caseEvidence.find(
     (record) => record.id === selectedArchivedScan?.evidence_id,
   );
+  const selectedArchivedFat32Scan = fat32CaseScans.find(
+    (scan) => scan.id === archivedFat32ScanId,
+  );
+  const selectedArchivedFat32Evidence = caseEvidence.find(
+    (record) => record.id === selectedArchivedFat32Scan?.evidence_id,
+  );
+  const archivedFat32SourceMatchesScan =
+    selectedArchivedFat32Evidence?.status === "hashed" &&
+    selectedArchivedFat32Evidence.sha256 === selectedArchivedFat32Scan?.source_sha256;
   const archivedSourceMatchesScan =
     selectedArchivedEvidence?.status === "hashed" &&
     selectedArchivedEvidence.sha256 === selectedArchivedScan?.source_sha256;
@@ -527,6 +566,82 @@ function App() {
                   <p className="muted caseEmpty">
                     No completed scans recorded in this case.
                   </p>
+                )}
+                <div className="panelTitle">
+                  <h3>Completed FAT32 directory scans</h3>
+                  <span className="muted">{fat32CaseScans.length} SESSIONS</span>
+                </div>
+                {fat32CaseScans.length ? (
+                  fat32CaseScans.map((scan) => {
+                    const evidence = caseEvidence.find(
+                      (record) => record.id === scan.evidence_id,
+                    );
+                    return (
+                      <div className="case" key={scan.id}>
+                        <code>FAT-{String(scan.id).padStart(6, "0")}</code>
+                        <h3 title={evidence?.path ?? `Evidence record ${scan.evidence_id}`}>
+                          {scan.deleted} deleted entries
+                        </h3>
+                        <span title={`SHA-256 ${scan.source_sha256}`}>
+                          {evidence?.name ?? `Evidence ${scan.evidence_id}`} · {scan.found} total · offset {scan.volume_offset}
+                        </span>
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => showArchivedFat32Results(scan.id, 0)}
+                        >
+                          Review saved directory entries
+                        </button>
+                      </div>
+                    );
+                  })
+                ) : (
+                  <p className="muted caseEmpty">
+                    No FAT32 directory scans recorded in this case.
+                  </p>
+                )}
+                {archivedFat32ScanId !== null && archivedFat32Page && (
+                  <div className="archivedSnapshot">
+                    <div className="panelTitle">
+                      <h3>Saved FAT32 entries · FAT-{String(archivedFat32ScanId).padStart(6, "0")}</h3>
+                      <span className="tag">ARCHIVE · READ ONLY</span>
+                    </div>
+                    <div className="archivedSourceIdentity">
+                      <b>{selectedArchivedFat32Evidence?.name ?? `Evidence ${selectedArchivedFat32Scan?.evidence_id ?? "unknown"}`}</b>
+                      <span>{selectedArchivedFat32Evidence?.path ?? "Recorded source path unavailable"}</span>
+                      <code>Expected SHA-256 · {selectedArchivedFat32Scan?.source_sha256 ?? "unavailable"}</code>
+                      {!archivedFat32SourceMatchesScan && (
+                        <span className="archivedSourceWarning">
+                          Evidence is unverified or no longer matches this FAT32 scan.
+                        </span>
+                      )}
+                    </div>
+                    <p className="warning" role="status">
+                      This archived directory inventory is review-only. FAT32 file recovery and export are not yet available.
+                    </p>
+                    {archivedFat32Page.rows.map(({ path, entry }) => (
+                      <div className="case" key={entry.source_offset}>
+                        <code>{entry.deleted ? "DELETED" : "LIVE"} · 0x{entry.source_offset.toString(16)}</code>
+                        <h3 title={path.join("/")}>{path.join("/") || "(unnamed)"}</h3>
+                        <span>{entry.size.toLocaleString()} bytes · cluster {entry.first_cluster}</span>
+                      </div>
+                    ))}
+                    <div className="actions archivedPagination">
+                      <button
+                        disabled={archivedFat32PageIndex === 0}
+                        onClick={() => showArchivedFat32Results(archivedFat32ScanId, Math.max(0, archivedFat32PageIndex - 1))}
+                      >
+                        Previous
+                      </button>
+                      <span>{archivedFat32Page.total.toLocaleString()} entries · page {archivedFat32PageIndex + 1}</span>
+                      <button
+                        disabled={(archivedFat32PageIndex + 1) * 50 >= archivedFat32Page.total}
+                        onClick={() => showArchivedFat32Results(archivedFat32ScanId, archivedFat32PageIndex + 1)}
+                      >
+                        Next
+                      </button>
+                    </div>
+                  </div>
                 )}
                 {archivedScanId !== null && archivedPage && (
                   <div className="archivedSnapshot">

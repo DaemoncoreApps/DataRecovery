@@ -45,6 +45,22 @@ struct ReportScan {
 }
 
 #[derive(Serialize)]
+struct ReportFat32Scan {
+    id: i64,
+    evidence_id: i64,
+    evidence_hash_matches_current_record: bool,
+    volume_offset: String,
+    source_sha256: String,
+    completed_at: String,
+    records: u64,
+    found: usize,
+    deleted: usize,
+    snapshot_sha256: String,
+    boot: serde_json::Value,
+    entries: Vec<daemoncore_ntfs_core::fat32::TreeEntry>,
+}
+
+#[derive(Serialize)]
 struct CaseReport {
     format: &'static str,
     generated_at_unix_ms: String,
@@ -52,6 +68,7 @@ struct CaseReport {
     case: Case,
     evidence: Vec<EvidenceRecord>,
     scans: Vec<ReportScan>,
+    fat32_scans: Vec<ReportFat32Scan>,
     audit: ReportAudit,
     scope_note: &'static str,
 }
@@ -63,6 +80,8 @@ pub struct CaseReportExport {
     bytes: u64,
     scans: usize,
     candidates: usize,
+    fat32_scans: usize,
+    directory_entries: usize,
 }
 
 struct StagedFile(PathBuf);
@@ -131,6 +150,59 @@ fn case_report_from(db: &rusqlite::Connection, case_id: i64) -> Result<CaseRepor
             candidates,
         });
     }
+    let fat32_sessions = crate::fat32_commands::list_case_fat32_scan_sessions_from(db, case_id)?;
+    if scans.len() + fat32_sessions.len() > MAX_REPORT_SCANS {
+        return Err(format!(
+            "The case exceeds the supported {MAX_REPORT_SCANS}-scan report limit."
+        ));
+    }
+    let mut fat32_scans = Vec::with_capacity(fat32_sessions.len());
+    for session in fat32_sessions {
+        let evidence_record = evidence
+            .iter()
+            .find(|record| record.id == session.evidence_id)
+            .ok_or_else(|| {
+                format!(
+                    "FAT32 scan {} refers to evidence outside this case.",
+                    session.id
+                )
+            })?;
+        let (boot_json, entries_json, snapshot_sha256): (String, String, String) = db
+            .query_row(
+                "SELECT boot_json,entries_json,snapshot_sha256 FROM fat32_scan_sessions WHERE id=?1 AND case_id=?2",
+                rusqlite::params![session.id, case_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .map_err(err)?;
+        let boot = serde_json::from_str(&boot_json).map_err(|error| {
+            format!(
+                "FAT32 scan {} boot metadata is invalid: {error}",
+                session.id
+            )
+        })?;
+        let entries: Vec<daemoncore_ntfs_core::fat32::TreeEntry> =
+            serde_json::from_str(&entries_json).map_err(|error| {
+                format!(
+                    "FAT32 scan {} entry snapshot is invalid: {error}",
+                    session.id
+                )
+            })?;
+        fat32_scans.push(ReportFat32Scan {
+            id: session.id,
+            evidence_id: session.evidence_id,
+            evidence_hash_matches_current_record: evidence_record.status == "hashed"
+                && evidence_record.sha256.as_deref() == Some(session.source_sha256.as_str()),
+            volume_offset: session.volume_offset,
+            source_sha256: session.source_sha256,
+            completed_at: session.completed_at,
+            records: session.records,
+            found: session.found,
+            deleted: session.deleted,
+            snapshot_sha256,
+            boot,
+            entries,
+        });
+    }
     let audit = verify_audit_chain(db)?;
     if !audit.valid {
         return Err(format!(
@@ -140,12 +212,13 @@ fn case_report_from(db: &rusqlite::Connection, case_id: i64) -> Result<CaseRepor
     }
     let generated_at_unix_ms = audit_timestamp(SystemTime::now())?;
     let report = CaseReport {
-        format: "daemoncore-case-report-v1",
+        format: "daemoncore-case-report-v2",
         generated_at_unix_ms,
         hash_algorithm: "SHA-256",
         case,
         evidence,
         scans,
+        fat32_scans,
         audit: ReportAudit {
             chain_valid: audit.valid,
             records_checked: audit.records_checked,
@@ -153,7 +226,7 @@ fn case_report_from(db: &rusqlite::Connection, case_id: i64) -> Result<CaseRepor
             externally_anchored: false,
             note: ANCHOR_NOTE,
         },
-        scope_note: "This report contains case records and NTFS metadata-scan candidate snapshots. It does not establish recovered-file content integrity, acquisition provenance, or an external trust anchor.",
+        scope_note: "This report contains case records, NTFS candidates, and FAT32 directory-entry snapshots. It does not establish recovered-file content integrity, acquisition provenance, or an external trust anchor.",
     };
     Ok(report)
 }
@@ -217,6 +290,8 @@ fn publish_case_report(
             "bytes": bytes.len(),
             "scans": report.scans.len(),
             "candidates": report.scans.iter().map(|scan| scan.candidates.len()).sum::<usize>(),
+            "fat32_scans": report.fat32_scans.len(),
+            "directory_entries": report.fat32_scans.iter().map(|scan| scan.entries.len()).sum::<usize>(),
             "audit_head_in_report": report.audit.head_sha256,
         })
         .to_string(),
@@ -233,6 +308,12 @@ fn publish_case_report(
         bytes: bytes.len() as u64,
         scans: report.scans.len(),
         candidates: report.scans.iter().map(|scan| scan.candidates.len()).sum(),
+        fat32_scans: report.fat32_scans.len(),
+        directory_entries: report
+            .fat32_scans
+            .iter()
+            .map(|scan| scan.entries.len())
+            .sum(),
     };
     audit(
         db,
@@ -244,6 +325,8 @@ fn publish_case_report(
             "bytes": published.bytes,
             "scans": published.scans,
             "candidates": published.candidates,
+            "fat32_scans": published.fat32_scans,
+            "directory_entries": published.directory_entries,
             "audit_head_in_report": report.audit.head_sha256,
         })
         .to_string(),
@@ -319,8 +402,8 @@ pub async fn export_case_report(
             Ok(Some(report)) => {
                 job.state = "completed".into();
                 job.message = Some(format!(
-                    "Case report exported · {} scans · {} candidates",
-                    report.scans, report.candidates
+                    "Case report exported · {} scans · {} candidates · {} FAT32 scans · {} directory entries",
+                    report.scans, report.candidates, report.fat32_scans, report.directory_entries
                 ));
                 job.total = report.bytes;
                 job.processed = report.bytes;
@@ -453,7 +536,7 @@ mod tests {
             ));
         fs::create_dir(&root).unwrap();
         let destination = root.join("report.json");
-        let bytes = br#"{"format":"daemoncore-case-report-v1"}"#;
+        let bytes = br#"{"format":"daemoncore-case-report-v2"}"#;
         let staged = stage_report(&destination, bytes).unwrap();
         assert_eq!(fs::read(&staged.0).unwrap(), bytes);
         destination::publish_new(&staged.0, &destination).unwrap();
@@ -498,11 +581,12 @@ mod tests {
         assert!(current_time - generated_at < 10_000);
         assert!(report.evidence.is_empty());
         assert!(report.scans.is_empty());
+        assert!(report.fat32_scans.is_empty());
         assert!(report.audit.chain_valid);
         assert!(!report.audit.externally_anchored);
         let bytes = encode_report(&report).unwrap();
         let report: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(report["format"], "daemoncore-case-report-v1");
+        assert_eq!(report["format"], "daemoncore-case-report-v2");
         assert_eq!(report["audit"]["externally_anchored"], false);
         assert_eq!(report["case"]["title"], "Case 1");
         db.execute("UPDATE audit SET payload='tampered' WHERE id=1", [])
@@ -545,6 +629,8 @@ mod tests {
         assert_eq!(exported.sha256, expected_sha256);
         assert_eq!(exported.scans, 1);
         assert_eq!(exported.candidates, 1);
+        assert_eq!(exported.fat32_scans, 0);
+        assert_eq!(exported.directory_entries, 0);
         assert_eq!(fs::read(&path).unwrap(), bytes);
         let (prepared, completed): (String, String) = db
             .query_row(
@@ -559,6 +645,7 @@ mod tests {
         assert_eq!(completed["sha256"], expected_sha256);
         assert_eq!(completed["scans"], 1);
         assert_eq!(completed["candidates"], 1);
+        assert_eq!(completed["fat32_scans"], 0);
         let collision = match publish_case_report(&db, 1, &report, &bytes, &path) {
             Ok(_) => panic!("existing report destination was replaced"),
             Err(error) => error,
@@ -576,6 +663,63 @@ mod tests {
         assert_eq!(completed_count, 1);
         assert!(crate::verify_audit_chain(&db).unwrap().valid);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn case_report_includes_audited_fat32_directory_snapshot() {
+        let mut db = populated_case();
+        let mut raw_record = [0; 32];
+        raw_record[0] = 0xe5;
+        raw_record[11] = 0x20;
+        let entries = [daemoncore_ntfs_core::fat32::TreeEntry {
+            path: vec!["?ILE.TXT".into()],
+            entry: daemoncore_ntfs_core::fat32::DirectoryEntry {
+                source_offset: 540_672,
+                raw_record,
+                short_name: *b"?ILE    TXT",
+                long_name: None,
+                deleted: true,
+                attributes: 0x20,
+                first_cluster: 10,
+                size: 512,
+            },
+        }];
+        let boot = serde_json::json!({
+            "primary_sector_hex": "00",
+            "backup_sector_hex": null,
+            "volume_offset": 0,
+            "cluster_count": 65_525,
+            "root_cluster": 2,
+        });
+        crate::fat32_commands::persist_scan_snapshot(
+            &mut db,
+            &crate::fat32_commands::ScanSnapshot {
+                evidence_id: 2,
+                case_id: 1,
+                source_id: 9,
+                volume_offset: 0,
+                source_sha256: &"b".repeat(64),
+                boot: &boot,
+                entries: &entries,
+            },
+        )
+        .unwrap();
+
+        let report = case_report_from(&db, 1).unwrap();
+        assert_eq!(report.fat32_scans.len(), 1);
+        assert_eq!(report.fat32_scans[0].deleted, 1);
+        assert_eq!(
+            report.fat32_scans[0].entries[0].entry.source_offset,
+            540_672
+        );
+        assert!(report.fat32_scans[0].evidence_hash_matches_current_record);
+        let encoded = encode_report(&report).unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(json["format"], "daemoncore-case-report-v2");
+        assert_eq!(
+            json["fat32_scans"][0]["entries"][0]["entry"]["deleted"],
+            true
+        );
     }
 
     #[test]
