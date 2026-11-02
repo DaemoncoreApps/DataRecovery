@@ -1058,10 +1058,8 @@ isolation, conservative contiguous mapping, active-FAT selection, and
 invalid/conflicting backup sectors. `npm run validate` passed locally with 47
 core tests, 75 desktop tests (3 ignored), frontend production build, formatting,
 and Clippy with warnings denied. Hosted run
-[41363697439](https://github.com/DaemoncoreApps/DataRecovery/actions/runs/41363697439)
-passed its disk-parser fuzz job for the active-FAT mapper revision; Windows
-validation was still running at last inspection. The partition-image fuzz
-target now also traverses a virtual FAT32 directory tree and attempts deleted
-file mapping. That expanded harness awaits hosted compilation and execution on
-the next code revision; its libfuzzer C++ build cannot run with this host's
-MSVC toolchain.
+[41364446590](https://github.com/DaemoncoreApps/DataRecovery/actions/runs/41364446590)
+passed all three parser fuzz campaigns on commit `7bf9c4202adea91c502830537280825c42a13f57`.
+The partition-image campaign now traverses a virtual FAT32 directory tree and
+attempts deleted-file mapping while mutating entry records and mirrored FAT
+metadata. The Windows validation job for that same commit remains in progress.
