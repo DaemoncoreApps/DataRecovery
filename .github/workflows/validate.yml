@@ -38,8 +38,27 @@ jobs:
           cargo fetch --locked --manifest-path ntfs-core/Cargo.toml
           cargo fetch --locked --manifest-path src-tauri/Cargo.toml
           cargo fetch --locked --manifest-path src-tauri/fuzz/Cargo.toml
+      - name: Fetch pinned independent FAT32 reference fixture
+        shell: pwsh
+        run: |
+          $fixtureDir = Join-Path $env:RUNNER_TEMP "daemoncore-fat32-reference"
+          New-Item -ItemType Directory -Force -Path $fixtureDir | Out-Null
+          $imageArchive = Join-Path $fixtureDir "testdisk1.zip"
+          $dumpArchive = Join-Path $fixtureDir "testdisk1dump.zip"
+          Invoke-WebRequest -Uri "https://www.cs.virginia.edu/~cr4bd/4414/S2022/files/testdisk1.zip" -OutFile $imageArchive
+          Invoke-WebRequest -Uri "https://www.cs.virginia.edu/~cr4bd/4414/S2022/files/testdisk1dump.zip" -OutFile $dumpArchive
+          if ((Get-FileHash $imageArchive -Algorithm SHA256).Hash -ne "D89B30A9D916C8576DF9D59400FEDC1938743C496D3BA595B89A7D22423CF5C7") { throw "FAT32 reference image archive digest mismatch" }
+          if ((Get-FileHash $dumpArchive -Algorithm SHA256).Hash -ne "D9B5E06312B64332CC32330300BB1B342D3DF08E551CA979FD06C2B94F9B3061") { throw "FAT32 reference contents archive digest mismatch" }
+          Expand-Archive -LiteralPath $imageArchive -DestinationPath $fixtureDir
+          Expand-Archive -LiteralPath $dumpArchive -DestinationPath $fixtureDir
+          $image = Join-Path $fixtureDir "testdisk1.raw"
+          if ((Get-FileHash $image -Algorithm SHA256).Hash -ne "0EC8223D624784424BB6CCE3CE4C5ABC843DFC81A897BF628E9AC414C1BA48EF") { throw "Extracted FAT32 reference image digest mismatch" }
+          "DAEMONCORE_FAT32_REFERENCE_IMAGE=$image" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "DAEMONCORE_FAT32_REFERENCE_DUMP=$(Join-Path $fixtureDir 'testdisk1')" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Build and validate
         run: npm run validate
+      - name: Test independent multi-cluster FAT32 image
+        run: cargo test --manifest-path ntfs-core/Cargo.toml --offline reads_independent_multicluster_fat32_reference_image -- --ignored --nocapture
 
   disk-parser-fuzz:
     runs-on: ubuntu-24.04

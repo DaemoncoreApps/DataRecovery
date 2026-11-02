@@ -745,7 +745,12 @@ impl DeletedFileMapping {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io;
+    use sha2::{Digest, Sha256};
+    use std::{
+        fs::File,
+        io::{self, Read, Seek, SeekFrom},
+        sync::Mutex,
+    };
 
     struct SliceSource<'a>(&'a [u8]);
 
@@ -766,6 +771,37 @@ mod tests {
                     .ok_or_else(|| io::Error::from(io::ErrorKind::UnexpectedEof))?,
             );
             Ok(())
+        }
+    }
+
+    struct FileSource {
+        file: Mutex<File>,
+        size: u64,
+    }
+
+    impl FileSource {
+        fn open(path: &std::path::Path) -> Self {
+            let file = File::open(path).expect("open independent FAT32 reference image");
+            let size = file.metadata().unwrap().len();
+            Self {
+                file: Mutex::new(file),
+                size,
+            }
+        }
+    }
+
+    impl BlockSource for FileSource {
+        fn len(&self) -> u64 {
+            self.size
+        }
+
+        fn read_exact_at(&self, offset: u64, buffer: &mut [u8]) -> io::Result<()> {
+            let mut file = self
+                .file
+                .lock()
+                .map_err(|_| io::Error::other("fixture lock poisoned"))?;
+            file.seek(SeekFrom::Start(offset))?;
+            file.read_exact(buffer)
         }
     }
 
@@ -795,6 +831,121 @@ mod tests {
         image[data + 512..data + 1024].fill(b'a');
         image[data + 3 * 512..data + 4 * 512].fill(b'b');
         image
+    }
+
+    #[test]
+    #[ignore = "requires the hash-pinned University of Virginia FAT32 reference image and expected dump"]
+    fn reads_independent_multicluster_fat32_reference_image() {
+        let image_path = std::env::var_os("DAEMONCORE_FAT32_REFERENCE_IMAGE")
+            .expect("set DAEMONCORE_FAT32_REFERENCE_IMAGE to testdisk1.raw");
+        let expected_root = std::env::var_os("DAEMONCORE_FAT32_REFERENCE_DUMP")
+            .expect("set DAEMONCORE_FAT32_REFERENCE_DUMP to the extracted testdisk1 directory");
+        let source = FileSource::open(std::path::Path::new(&image_path));
+        let volume = Volume::open(&source, 0, source.len()).unwrap();
+        let entries = volume.read_tree(&source).unwrap();
+        assert!(
+            entries.len() >= 1_000,
+            "multi-cluster root directory was truncated"
+        );
+
+        let expected_root = std::path::Path::new(&expected_root);
+        for name in ["GAMECOPY.TXT", "GAMEFRAG.TXT", "CONGRATS.TXT"] {
+            let expected = std::fs::read(expected_root.join(name)).unwrap();
+            let expected_sha256 = match name {
+                "GAMECOPY.TXT" | "GAMEFRAG.TXT" => {
+                    "e46c0dd1aab2f8eff4af8da2997eb4375ed691239428f00ff17cd3e20a2bafe3"
+                }
+                "CONGRATS.TXT" => {
+                    "c68c86680b7c653d4bf9474bf95224bd52ea1e18eb0ae99bb7b591f1358b3a8a"
+                }
+                _ => unreachable!(),
+            };
+            assert_eq!(format!("{:x}", Sha256::digest(&expected)), expected_sha256);
+            let file = entries
+                .iter()
+                .find(|entry| {
+                    entry.path.len() == 1 && entry.entry.display_name().eq_ignore_ascii_case(name)
+                })
+                .unwrap_or_else(|| panic!("reference directory entry {name} missing"));
+            let mapping = volume
+                .map_file(
+                    &source,
+                    file.entry.first_cluster,
+                    u64::from(file.entry.size),
+                )
+                .unwrap();
+            let mut actual = vec![0; file.entry.size as usize];
+            volume
+                .read_file_at(&source, &mapping, 0, &mut actual)
+                .unwrap();
+            assert_eq!(actual, expected, "contents differ for {name}");
+        }
+
+        let copy = entries
+            .iter()
+            .find(|entry| {
+                entry
+                    .entry
+                    .display_name()
+                    .eq_ignore_ascii_case("GAMECOPY.TXT")
+            })
+            .unwrap();
+        let fragmented = entries
+            .iter()
+            .find(|entry| {
+                entry
+                    .entry
+                    .display_name()
+                    .eq_ignore_ascii_case("GAMEFRAG.TXT")
+            })
+            .unwrap();
+        let copy_mapping = volume
+            .map_file(
+                &source,
+                copy.entry.first_cluster,
+                u64::from(copy.entry.size),
+            )
+            .unwrap();
+        let fragmented_mapping = volume
+            .map_file(
+                &source,
+                fragmented.entry.first_cluster,
+                u64::from(fragmented.entry.size),
+            )
+            .unwrap();
+        assert!(copy_mapping
+            .clusters()
+            .windows(2)
+            .all(|pair| pair[1] == pair[0] + 1));
+        assert!(fragmented_mapping
+            .clusters()
+            .windows(2)
+            .any(|pair| pair[1] != pair[0] + 1));
+
+        let nested_expected = std::fs::read(expected_root.join("A99/CONGRATS.TXT")).unwrap();
+        let nested = entries
+            .iter()
+            .find(|entry| {
+                entry.path.len() == 2
+                    && entry.path[0].eq_ignore_ascii_case("A99")
+                    && entry
+                        .entry
+                        .display_name()
+                        .eq_ignore_ascii_case("CONGRATS.TXT")
+            })
+            .expect("nested reference file missing");
+        let mapping = volume
+            .map_file(
+                &source,
+                nested.entry.first_cluster,
+                u64::from(nested.entry.size),
+            )
+            .unwrap();
+        let mut actual = vec![0; nested.entry.size as usize];
+        volume
+            .read_file_at(&source, &mapping, 0, &mut actual)
+            .unwrap();
+        assert_eq!(actual, nested_expected);
     }
 
     fn set_fat_entry(image: &mut [u8], fat_sector: usize, cluster: usize, value: u32) {

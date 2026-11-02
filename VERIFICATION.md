@@ -1076,3 +1076,9 @@ Added coverage for atomic scan/audit persistence, snapshot tampering, duplicate/
 
 This does not qualify FAT32 file recovery, exFAT directories/recovery, independent formatted FAT32/exFAT images, representative large-volume performance, or the Windows installer. The app was not relaunched, this build was not signed or packaged, and this change is not production qualification.
 The optimized Windows Rust application also built successfully for this commit with `cargo build --manifest-path src-tauri/Cargo.toml --release --offline`. The resulting `src-tauri/target/release/daemoncore.exe` is 13,473,280 bytes, SHA-256 `77a58a7a0bff779b085bed0f98e314de902d2ad2d43bef5bfbda58504bd6c1fa` (the executable was not launched or signed).
+
+## 2026-11-01 published FAT32 reference image
+
+Added an opt-in core regression using the University of Virginia CS 4414 Spring 2022 `testdisk1.raw` image and its separate expected-file dump. The published assignment describes its multi-cluster root, nested folders, contiguous `GAMECOPY.TXT`, and noncontiguous `GAMEFRAG.TXT`; the test confirms 1,000+ root entries, reads those files and nested `A99/CONGRATS.TXT`, compares exact bytes to the separate expected dump, and checks contiguous versus fragmented cluster mappings. The local test passed against the downloaded artifacts.
+
+Pinned provenance and hashes are recorded in `src-tauri/tests/fixtures/FAT32-UVA-REFERENCE.md`. The CI workflow downloads the two source archives, verifies both archive SHA-256 values and the extracted 256,098,304-byte image hash, then runs the ignored reference regression. The raw image and expected dump are not committed. The assignment does not state formatter provenance or a separate license for the artifacts; this is useful independent reader validation, not proof of deleted-file recovery or broad media qualification.
