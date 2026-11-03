@@ -195,6 +195,33 @@ button svg {
 .workspaceNav button.selected svg {
   color: #dd6a7a;
 }
+.workspaceNav button > span:first-of-type {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.navStatus {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding: 2px 4px;
+  border: 1px solid #29333a;
+  border-radius: 3px;
+  color: #829a91;
+  font: 7px var(--mono);
+  letter-spacing: 0.35px;
+  line-height: 1.2;
+}
+.navStatus.limited {
+  color: #c2a97e;
+  border-color: #50442f;
+}
+.navStatus.planned {
+  color: #8790a0;
+  border-color: #343a45;
+}
+.workspaceNav button.selected .navStatus {
+  background: #0b0d12;
+}
 .navActiveMark {
   margin-left: auto;
   width: 4px;
@@ -1161,6 +1188,55 @@ form label {
   padding: 4px 24px 0;
   line-height: 1.65;
 }
+.capabilityPanel {
+  display: grid;
+  gap: 12px;
+  align-content: start;
+}
+.capabilityPanel > p {
+  max-width: 760px;
+  margin: 0;
+  color: #aab3c2;
+  line-height: 1.7;
+}
+.fat32RecoveryBar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 16px;
+  padding: 15px 18px;
+  border: 1px solid #62533755;
+  border-radius: 7px;
+  background: linear-gradient(110deg, #352d1d36, #17171a80);
+}
+.fat32RecoveryBar p {
+  max-width: 780px;
+  margin: 0;
+  color: #c3b99f;
+  font-size: 11px;
+  line-height: 1.7;
+}
+.fat32RecoveryBar button {
+  flex: 0 0 auto;
+}
+.fat32Select {
+  justify-content: flex-start;
+  margin-bottom: 8px;
+}
+.capabilityPanel > button,
+.capabilityActions {
+  justify-self: start;
+}
+.capabilityActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px;
+}
+.plannedTag {
+  color: #b9a986;
+  border-color: #4f4635;
+}
 .reportActions {
   display: flex;
   align-items: center;
@@ -1214,6 +1290,159 @@ form label {
   white-space: pre;
   min-height: 270px;
   background: #0c1119;
+}
+
+.hexSearchControls {
+  align-items: end;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 14px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.018);
+}
+
+.hexSearchControls label {
+  display: grid;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+
+.hexSearchControls input {
+  min-width: 180px;
+  color: var(--text);
+  text-transform: none;
+}
+
+.hexSearchHint {
+  margin: 10px 2px 0;
+  font-size: 12px;
+}
+
+.hexMatches {
+  margin-top: 18px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.hexMatches > .panelTitle {
+  padding: 12px 14px;
+  background: rgba(255, 255, 255, .025);
+}
+
+.hexMatches h3 {
+  margin: 0;
+  font-size: 13px;
+}
+
+.hexMatchList {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 1px;
+  max-height: 240px;
+  overflow: auto;
+  background: var(--line);
+}
+
+.hexMatchList button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 0;
+  color: var(--text);
+  background: var(--panel);
+  cursor: pointer;
+}
+
+.hexMatchList button:hover {
+  background: rgba(255, 42, 55, .08);
+}
+
+.hexMatchList button span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.carveResults {
+  margin-top: 22px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.carveResults > .panelTitle,
+.carveMetadata {
+  padding: 12px 14px;
+  background: rgba(255, 255, 255, .025);
+}
+
+.carveResults h3 {
+  margin: 0;
+  font-size: 13px;
+}
+
+.carveMetadata {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 8px 18px;
+  color: var(--muted);
+  font-size: 11px;
+  border-top: 1px solid var(--line);
+}
+
+.carveMetadata code {
+  overflow-wrap: anywhere;
+}
+
+.carveList {
+  max-height: 520px;
+  overflow: auto;
+}
+
+.carveRow {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(240px, 2fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 14px;
+  border-top: 1px solid var(--line);
+}
+
+.carveRow > div {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+}
+
+.carveRow > div span,
+.carveRow > code {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.carveRow > code {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@media (max-width: 900px) {
+  .carveRow {
+    grid-template-columns: 1fr auto;
+  }
+
+  .carveRow > code {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
 }
 .hexHead {
   color: #8091ad;
@@ -1697,4 +1926,91 @@ input[type="checkbox"] {
 .recoveryVerification small {
   color: var(--muted);
   line-height: 1.6;
+}
+.raidControls {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(120px, 1fr));
+  gap: 12px;
+  margin: 22px 0;
+}
+.raidControls label {
+  display: grid;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 10px;
+}
+.raidControls input,
+.raidControls select {
+  width: 100%;
+  min-height: 36px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: #0b1119;
+  color: var(--text);
+  padding: 0 10px;
+  font: 11px var(--mono);
+}
+.raidMembersHeading {
+  margin-top: 18px;
+}
+.raidMembersHeading > div > h3,
+.raidMembersHeading > div > p {
+  margin: 0;
+}
+.raidMembersHeading > div > p {
+  margin-top: 4px;
+}
+.raidMemberList {
+  display: grid;
+  gap: 7px;
+  margin: 14px 0 20px;
+}
+.raidMember {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) 32px 32px auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 48px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #0d141e;
+  padding: 7px 9px;
+}
+.raidMember > b {
+  color: var(--accent);
+  font: 10px var(--mono);
+}
+.raidMember > span {
+  min-width: 0;
+  overflow: hidden;
+  color: #aab8ca;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 10px var(--mono);
+}
+.raidMember button {
+  min-height: 28px;
+  padding: 4px 7px;
+}
+.raidPanel > .warning {
+  align-items: flex-start;
+}
+.raidPanel > .warning p {
+  line-height: 1.65;
+}
+@media (max-width: 900px) {
+  .raidControls {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 560px) {
+  .raidControls {
+    grid-template-columns: 1fr;
+  }
+  .raidMember {
+    grid-template-columns: 24px minmax(0, 1fr) 28px 28px;
+  }
+  .raidMember button:last-child {
+    grid-column: 2 / -1;
+  }
 }

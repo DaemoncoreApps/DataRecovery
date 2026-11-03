@@ -258,6 +258,10 @@ impl Volume {
         u64::from(self.bytes_per_sector) * u64::from(self.sectors_per_cluster)
     }
 
+    pub fn volume_size(&self) -> u64 {
+        self.volume_size
+    }
+
     /// Enumerate live short-name entries and validated long-name records in a
     /// directory cluster chain. Deleted entries are not inferred here.
     pub fn read_directory(
@@ -946,6 +950,51 @@ mod tests {
             .read_file_at(&source, &mapping, 0, &mut actual)
             .unwrap();
         assert_eq!(actual, nested_expected);
+    }
+
+    #[test]
+    #[ignore = "requires the independently formatted and deleted FAT32 fixture from the validation workflow"]
+    fn maps_and_reads_a_deleted_file_from_an_independent_fat32_fixture() {
+        let image_path = std::env::var_os("DAEMONCORE_FAT32_DELETED_IMAGE")
+            .expect("set DAEMONCORE_FAT32_DELETED_IMAGE to the formatted FAT32 image");
+        let expected_path = std::env::var_os("DAEMONCORE_FAT32_DELETED_EXPECTED")
+            .expect("set DAEMONCORE_FAT32_DELETED_EXPECTED to the original file contents");
+        let source = FileSource::open(std::path::Path::new(&image_path));
+        let expected = std::fs::read(expected_path).unwrap();
+        assert_eq!(expected.len(), 65_536);
+        assert_eq!(
+            format!("{:x}", Sha256::digest(&expected)),
+            "7daca2095d0438260fa849183dfc67faa459fdf4936e1bc91eec6b281b27e4c2"
+        );
+
+        let volume = Volume::open(&source, 0, source.len()).unwrap();
+        let entries = volume.read_tree_including_deleted(&source).unwrap();
+        let entry = entries
+            .iter()
+            .find(|entry| {
+                entry.entry.deleted
+                    && entry
+                        .entry
+                        .display_name()
+                        .eq_ignore_ascii_case("?ECOVER.BIN")
+            })
+            .expect("deleted short-name record missing from independent image");
+        assert_eq!(entry.entry.raw_record[0], 0xe5);
+        assert_eq!(u64::from(entry.entry.size), expected.len() as u64);
+
+        let deleted = volume
+            .map_deleted_file_contiguous(
+                &source,
+                entry.entry.first_cluster,
+                u64::from(entry.entry.size),
+            )
+            .unwrap();
+        assert_eq!(deleted.layout(), DeletedClusterLayout::ContiguousAssumed);
+        let mut actual = vec![0; expected.len()];
+        volume
+            .read_file_at(&source, deleted.mapping(), 0, &mut actual)
+            .unwrap();
+        assert_eq!(actual, expected);
     }
 
     fn set_fat_entry(image: &mut [u8], fat_sector: usize, cluster: usize, value: u32) {

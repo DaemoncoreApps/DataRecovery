@@ -36,19 +36,19 @@ fn u64_at(b: &[u8], o: usize) -> Option<u64> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 // Backup VolumeFlags and PercentInUse may be stale, so omit them from copy comparison.
-struct ExfatBootMetadata {
-    bytes_per_sector: u32,
-    sectors_per_cluster: u64,
-    partition_offset: u64,
-    volume_length: u64,
-    fat_offset: u64,
-    fat_length: u64,
-    cluster_heap_offset: u64,
-    cluster_count: u64,
-    root_cluster: u32,
-    number_of_fats: u8,
-    revision: u16,
-    volume_serial: u32,
+pub(crate) struct ExfatBootMetadata {
+    pub(crate) bytes_per_sector: u32,
+    pub(crate) sectors_per_cluster: u64,
+    pub(crate) partition_offset: u64,
+    pub(crate) volume_length: u64,
+    pub(crate) fat_offset: u64,
+    pub(crate) fat_length: u64,
+    pub(crate) cluster_heap_offset: u64,
+    pub(crate) cluster_count: u64,
+    pub(crate) root_cluster: u32,
+    pub(crate) number_of_fats: u8,
+    pub(crate) revision: u16,
+    pub(crate) volume_serial: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -222,7 +222,7 @@ fn exfat_boot_checksum(region: &[u8], bytes_per_sector: usize) -> Option<u32> {
     Some(checksum)
 }
 
-fn parse_exfat_boot_region(
+pub(crate) fn parse_exfat_boot_region(
     region: &[u8],
     expected_sector_size: u32,
     partition_sectors: u64,
@@ -245,7 +245,7 @@ fn parse_exfat_boot_region(
     }
     for sector_index in 1_usize..=8 {
         let end = (sector_index + 1).checked_mul(sector_size)?;
-        if region.get(end.checked_sub(4)?..end)? != [0xaa, 0x55, 0, 0] {
+        if region.get(end.checked_sub(4)?..end)? != [0, 0, 0x55, 0xaa] {
             return None;
         }
     }
@@ -949,7 +949,7 @@ mod tests {
         boot[510..512].copy_from_slice(&[0x55, 0xaa]);
         for sector_index in 1..=8 {
             let end = (sector_index + 1) * sector_size;
-            region[end - 4..end].copy_from_slice(&[0xaa, 0x55, 0, 0]);
+            region[end - 4..end].copy_from_slice(&[0, 0, 0x55, 0xaa]);
         }
         write_exfat_boot_checksum(&mut region, sector_size);
         region
@@ -1129,7 +1129,7 @@ mod tests {
     #[test]
     fn validates_exfat_main_and_backup_boot_regions() {
         let region = exfat_boot_region(512);
-        assert_eq!(exfat_boot_checksum(&region, 512), Some(0x1197_4f12));
+        assert_eq!(exfat_boot_checksum(&region, 512), Some(0x1197_5462));
         let image = mbr_with_exfat(&region, &region);
         let report = analyze(&mut Cursor::new(image.clone()), image.len() as u64).unwrap();
         let hint = report.partitions[0].filesystem_hint.as_deref().unwrap();

@@ -66,6 +66,7 @@ export function RecoveryPanel({ source, job, busy, run, onJob }: Props) {
   const [fat32Query, setFat32Query] = useState("");
   const [fat32DeletedOnly, setFat32DeletedOnly] = useState(true);
   const [fat32PageIndex, setFat32PageIndex] = useState(0);
+  const [fat32Selected, setFat32Selected] = useState<Set<number>>(new Set());
   const working = busy || job.state === "running";
   useEffect(() => {
     setSummary(null);
@@ -77,6 +78,7 @@ export function RecoveryPanel({ source, job, busy, run, onJob }: Props) {
     setFat32Summary(null);
     setFat32Page({ total: 0, rows: [] });
     setFat32PageIndex(0);
+    setFat32Selected(new Set());
   }, [source?.id]);
   useEffect(() => {
     if (
@@ -175,7 +177,18 @@ export function RecoveryPanel({ source, job, busy, run, onJob }: Props) {
       setFat32Summary(null);
       setFat32Page({ total: 0, rows: [] });
       setFat32PageIndex(0);
+      setFat32Selected(new Set());
       onJob(await command<Job>("job_status"));
+    });
+  const exportFat32Files = () =>
+    run(async () => {
+      if (!source || !fat32Summary || fat32Selected.size === 0) return;
+      const started = await command<boolean>("export_fat32_deleted", {
+        sourceId: source.id,
+        scanSessionId: fat32Summary.scan_session_id,
+        entryOffsets: [...fat32Selected],
+      });
+      if (started) onJob(await command<Job>("job_status"));
     });
   const exportFiles = () =>
     run(async () => {
@@ -352,11 +365,41 @@ export function RecoveryPanel({ source, job, busy, run, onJob }: Props) {
                 }}
               />
             </label>
-            <div className="warning" role="status">
-              This is a directory inventory. Deleted long names are not recovered, cluster layout is not reconstructed here, and FAT32 file export is not yet available.
+            <div className="fat32RecoveryBar">
+              <p role="note">
+                Deleted FAT32 entries do not retain their former cluster chain. Export is attempted only when the declared contiguous cluster range is still free in the active FAT or all mirrored FAT copies. A prior fragmented file may therefore be reconstructed incorrectly; the package records this assumption and does not claim content integrity. Overlap checks apply to the entries selected for this export only.
+              </p>
+              <button
+                className="primary"
+                disabled={!native || working || fat32Selected.size === 0}
+                onClick={exportFat32Files}
+              >
+                Export selected · {fat32Selected.size}
+              </button>
             </div>
             {fat32Page.rows.map(({ path, entry }) => (
               <div className="case" key={entry.source_offset}>
+                {entry.deleted &&
+                  (entry.attributes & 0x10) === 0 &&
+                  (entry.attributes & 0x08) === 0 &&
+                  entry.size > 0 && (
+                    <label className="checkLabel fat32Select">
+                      <input
+                        type="checkbox"
+                        checked={fat32Selected.has(entry.source_offset)}
+                        onChange={() =>
+                          setFat32Selected((current) => {
+                            const next = new Set(current);
+                            if (next.has(entry.source_offset)) next.delete(entry.source_offset);
+                            else if (next.size < 1000) next.add(entry.source_offset);
+                            return next;
+                          })
+                        }
+                        aria-label={`Select ${path.join("/")} for contiguous-assumed FAT32 recovery`}
+                      />
+                      Eligible to attempt
+                    </label>
+                  )}
                 <code>
                   {entry.deleted ? "DELETED" : "LIVE"} · 0x{entry.source_offset.toString(16)}
                 </code>
@@ -396,13 +439,13 @@ export function RecoveryPanel({ source, job, busy, run, onJob }: Props) {
           <div>
             <div className="panelHeading">
               <ShieldCheck size={17} />
-              <h2>Verify a recovery export</h2>
+              <h2>Verify an output package</h2>
             </div>
             <p>Recheck the output files, inventory, and completion record.</p>
           </div>
           <button disabled={!native || working} onClick={verifyExport}>
             <ShieldCheck size={15} />
-            Verify export folder
+            Verify package folder
           </button>
         </div>
         {exportVerification && (

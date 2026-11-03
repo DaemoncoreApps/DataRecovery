@@ -1,10 +1,12 @@
 #![no_main]
 
 use daemoncore_ntfs_core::{
-    fat32::Volume as Fat32Volume, partition::analyze, storage::BlockSource,
+    exfat::Volume as ExfatVolume, fat32::Volume as Fat32Volume, partition::analyze,
+    storage::BlockSource,
 };
 use libfuzzer_sys::fuzz_target;
 use std::io::{self, Cursor};
+use std::sync::OnceLock;
 
 const SECTOR_SIZE: usize = 512;
 const EXFAT_REGION_SIZE: usize = SECTOR_SIZE * 12;
@@ -185,6 +187,210 @@ fn update_exfat_checksum(region: &mut [u8]) {
     }
 }
 
+fn exfat_entry_set_checksum(entries: &[[u8; 32]]) -> u16 {
+    let mut checksum = 0u16;
+    for (record_index, record) in entries.iter().enumerate() {
+        for (byte_index, byte) in record.iter().enumerate() {
+            if record_index == 0 && matches!(byte_index, 2 | 3) {
+                continue;
+            }
+            checksum = checksum.rotate_right(1).wrapping_add(u16::from(*byte));
+        }
+    }
+    checksum
+}
+
+fn exfat_checksum32(bytes: &[u8]) -> u32 {
+    bytes.iter().fold(0, |checksum, byte| {
+        checksum.rotate_right(1).wrapping_add(u32::from(*byte))
+    })
+}
+
+fn exfat_volume_fixture() -> Vec<u8> {
+    const SECTOR: usize = 512;
+    const IMAGE_SECTORS: usize = 2048;
+    const FAT_OFFSET: usize = 24;
+    const FAT_SECTORS: usize = 16;
+    const HEAP_OFFSET: usize = 40;
+    let mut image = vec![0; IMAGE_SECTORS * SECTOR];
+
+    for boot_start in [0, 12 * SECTOR] {
+        let region = &mut image[boot_start..boot_start + 12 * SECTOR];
+        let boot = &mut region[..SECTOR];
+        boot[..3].copy_from_slice(&[0xeb, 0x76, 0x90]);
+        boot[3..11].copy_from_slice(b"EXFAT   ");
+        boot[72..80].copy_from_slice(&(IMAGE_SECTORS as u64).to_le_bytes());
+        boot[80..84].copy_from_slice(&(FAT_OFFSET as u32).to_le_bytes());
+        boot[84..88].copy_from_slice(&(FAT_SECTORS as u32).to_le_bytes());
+        boot[88..92].copy_from_slice(&(HEAP_OFFSET as u32).to_le_bytes());
+        boot[92..96].copy_from_slice(&((IMAGE_SECTORS - HEAP_OFFSET) as u32).to_le_bytes());
+        boot[96..100].copy_from_slice(&2_u32.to_le_bytes());
+        boot[104..106].copy_from_slice(&0x0100_u16.to_le_bytes());
+        boot[108] = 9;
+        boot[110] = 1;
+        boot[112] = 0xff;
+        boot[510..512].copy_from_slice(&[0x55, 0xaa]);
+        for sector in 1..=8 {
+            let end = (sector + 1) * SECTOR;
+            region[end - 4..end].copy_from_slice(&[0, 0, 0x55, 0xaa]);
+        }
+        update_exfat_checksum(region);
+    }
+
+    let fat_start = FAT_OFFSET * SECTOR;
+    for cluster in 2..=5 {
+        let offset = fat_start + cluster * 4;
+        image[offset..offset + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+    }
+
+    let mut upcase = Vec::with_capacity(250);
+    for unit in 0..97_u16 {
+        upcase.extend_from_slice(&unit.to_le_bytes());
+    }
+    for unit in b'A' as u16..=b'Z' as u16 {
+        upcase.extend_from_slice(&unit.to_le_bytes());
+    }
+    upcase.extend_from_slice(&0xffff_u16.to_le_bytes());
+    upcase.extend_from_slice(&65_413_u16.to_le_bytes());
+
+    let mut root = [0u8; SECTOR];
+    root[0] = 0x81;
+    root[20..24].copy_from_slice(&4_u32.to_le_bytes());
+    root[24..32].copy_from_slice(&251_u64.to_le_bytes());
+    root[32] = 0x82;
+    root[36..40].copy_from_slice(&exfat_checksum32(&upcase).to_le_bytes());
+    root[52..56].copy_from_slice(&3_u32.to_le_bytes());
+    root[56..64].copy_from_slice(&(upcase.len() as u64).to_le_bytes());
+
+    let primary = &mut root[64..96];
+    primary[0] = 0x85;
+    primary[1] = 2;
+    primary[4..6].copy_from_slice(&0x20_u16.to_le_bytes());
+    let stream = &mut root[96..128];
+    stream[0] = 0xc0;
+    stream[1] = 1;
+    stream[3] = 8;
+    stream[8..16].copy_from_slice(&4_u64.to_le_bytes());
+    stream[20..24].copy_from_slice(&5_u32.to_le_bytes());
+    stream[24..32].copy_from_slice(&4_u64.to_le_bytes());
+    let filename = &mut root[128..160];
+    filename[0] = 0xc1;
+    for (index, unit) in "ROOT.TXT".encode_utf16().enumerate() {
+        filename[2 + index * 2..4 + index * 2].copy_from_slice(&unit.to_le_bytes());
+    }
+    let mut name_hash = 0u16;
+    for unit in "ROOT.TXT".encode_utf16() {
+        for byte in unit.to_le_bytes() {
+            name_hash = name_hash.rotate_right(1).wrapping_add(u16::from(byte));
+        }
+    }
+    root[100..102].copy_from_slice(&name_hash.to_le_bytes());
+    let entries: Vec<[u8; 32]> = root[64..160]
+        .chunks_exact(32)
+        .map(|entry| entry.try_into().unwrap())
+        .collect();
+    root[66..68].copy_from_slice(&exfat_entry_set_checksum(&entries).to_le_bytes());
+
+    let heap = HEAP_OFFSET * SECTOR;
+    image[heap..heap + SECTOR].copy_from_slice(&root);
+    image[heap + SECTOR..heap + SECTOR + upcase.len()].copy_from_slice(&upcase);
+    image[heap + 2 * SECTOR] = 0b0000_1111;
+    image[heap + 3 * SECTOR..heap + 3 * SECTOR + 4].copy_from_slice(b"DATA");
+    image
+}
+
+fn fuzz_exfat_volume(data: &[u8]) {
+    static VALID_FIXTURE: OnceLock<Vec<u8>> = OnceLock::new();
+    const SECTOR: usize = 512;
+    const FAT_START: usize = 24 * SECTOR;
+    const HEAP_START: usize = 40 * SECTOR;
+    const ROOT_LENGTH: usize = SECTOR;
+    const BITMAP_LENGTH: usize = 251;
+    const UPCASE_LENGTH: usize = 250;
+    let fixture = VALID_FIXTURE.get_or_init(|| {
+        let image = exfat_volume_fixture();
+        let source = Cursor::new(image.as_slice());
+        let size = source.get_ref().len() as u64;
+        let volume = ExfatVolume::open(&source, 0, size)
+            .expect("generated exFAT fuzz fixture must be valid");
+        assert_eq!(
+            volume
+                .read_tree(&source)
+                .expect("generated exFAT root directory must be valid")
+                .len(),
+            1
+        );
+        image
+    });
+    let mut image = fixture.clone();
+    let mut root_changed = false;
+    let mut upcase_changed = false;
+
+    for chunk in data.chunks_exact(4).take(256) {
+        let position = usize::from(u16::from_le_bytes([chunk[1], chunk[2]]));
+        let mask = chunk[3];
+        match chunk[0] % 5 {
+            0 => {
+                image[HEAP_START + position % ROOT_LENGTH] ^= mask;
+                root_changed = true;
+            }
+            1 => image[FAT_START + position % (16 * SECTOR)] ^= mask,
+            2 => image[HEAP_START + 2 * SECTOR + position % BITMAP_LENGTH] ^= mask,
+            3 => {
+                image[HEAP_START + SECTOR + position % UPCASE_LENGTH] ^= mask;
+                upcase_changed = true;
+            }
+            _ => {
+                let boot_offset = position % SECTOR;
+                image[boot_offset] ^= mask;
+                image[12 * SECTOR + boot_offset] ^= mask;
+            }
+        }
+    }
+
+    if upcase_changed {
+        let checksum =
+            exfat_checksum32(&image[HEAP_START + SECTOR..HEAP_START + SECTOR + UPCASE_LENGTH]);
+        image[HEAP_START + 36..HEAP_START + 40].copy_from_slice(&checksum.to_le_bytes());
+    }
+    if root_changed && image[HEAP_START + 96] == 0xc0 && image[HEAP_START + 128] == 0xc1 {
+        let name_length = usize::from(image[HEAP_START + 99]).min(15);
+        let mut name_hash = 0u16;
+        for index in 0..name_length {
+            let offset = HEAP_START + 130 + index * 2;
+            let mut unit = u16::from_le_bytes([image[offset], image[offset + 1]]);
+            if (b'a' as u16..=b'z' as u16).contains(&unit) {
+                unit -= 0x20;
+            }
+            for byte in unit.to_le_bytes() {
+                name_hash = name_hash.rotate_right(1).wrapping_add(u16::from(byte));
+            }
+        }
+        image[HEAP_START + 100..HEAP_START + 102].copy_from_slice(&name_hash.to_le_bytes());
+    }
+    if root_changed && image[HEAP_START + 64] == 0x85 && image[HEAP_START + 65] <= 2 {
+        let count = usize::from(image[HEAP_START + 65]);
+        let end = HEAP_START + 64 + (count + 1) * 32;
+        if end <= HEAP_START + ROOT_LENGTH {
+            let entries: Vec<[u8; 32]> = image[HEAP_START + 64..end]
+                .chunks_exact(32)
+                .map(|entry| entry.try_into().unwrap())
+                .collect();
+            let checksum = exfat_entry_set_checksum(&entries);
+            image[HEAP_START + 66..HEAP_START + 68].copy_from_slice(&checksum.to_le_bytes());
+        }
+    }
+    for boot_start in [0, 12 * SECTOR] {
+        update_exfat_checksum(&mut image[boot_start..boot_start + 12 * SECTOR]);
+    }
+
+    let size = image.len() as u64;
+    let source = Cursor::new(image);
+    if let Ok(volume) = ExfatVolume::open(&source, 0, size) {
+        let _ = volume.read_tree(&source);
+    }
+}
+
 fn partitioned_exfat_image(data: &[u8]) -> Vec<u8> {
     let mut image = vec![0; IMAGE_SECTORS * SECTOR_SIZE];
     image[510..512].copy_from_slice(&[0x55, 0xaa]);
@@ -290,6 +496,7 @@ fuzz_target!(|data: &[u8]| {
     }
 
     fuzz_fat32_tree(data);
+    fuzz_exfat_volume(data);
 
     if data.len() >= SECTOR_SIZE {
         let _ = analyze(&mut Cursor::new(data), data.len() as u64);

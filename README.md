@@ -107,6 +107,13 @@ export is not digitally signed or externally anchored.
   control yet; the verifier holds read-only file handles and no-delete-share directory
   handles (up to 4,096 directories) during verification, but cannot take an atomic
   filesystem snapshot. It does not provide an external signature or trust anchor.
+- FAT32 examination can export selected deleted short-name entries only when their
+  assumed contiguous cluster range remains free in the active or mirrored FAT copies.
+  Recovery packages include the source and scan identity, raw directory-record digest,
+  layout assumption, per-file result, destination hashes, checksums, and completion
+  state. Overlap checks cover the selected entries only. FAT32 does not preserve a
+  deleted file's former chain, so fragmented files can be reconstructed incorrectly;
+  destination hash verification does not establish original-content integrity.
 
 ## Current limits
 
@@ -132,9 +139,23 @@ and scan identifiers. Archived candidates can be paged and reviewed after restar
 they remain read-only snapshots and cannot be exported until the source is reopened
 and a fresh scan is completed.
 
-FAT32/exFAT recovery, carving, physical-device acquisition, RAID, report generation,
-editable persistent settings, advanced hex analysis and Microsoft Store release
-remain pending. The current Tauri Store route uses a signed EXE or MSI installer
+FAT32 live/deleted short-entry review and exFAT live-directory inventory are available
+in limited scope. General FAT32 allocation-history analysis, deleted-LFN recovery,
+and exFAT deleted-file recovery remain pending; exFAT inventory requires independent
+volume-fixture validation before forensic qualification. Physical-device acquisition and operator-configured RAID 0/1/full-member RAID 5
+reconstruction are available in limited scope: member identity, layout, degraded-array
+handling, and hardware qualification remain explicit release gates. PNG carving
+validates chunk CRCs and decodes complete images; JPEG carving validates bounded
+marker/scan structure and decodes pixels; BMP carving checks header, geometry,
+and pixel-array bounds. All three formats can export selected candidates to
+audited, checksummed packages; carving cannot infer original names, deletion state,
+or allocation, and the recovery workspace can verify those packages' inventories, output hashes,
+and completion markers. PDF/Office formats and archive-time candidate review
+remain pending. FAT32
+deleted-file export is limited to a contiguous-cluster assumption and cannot establish
+original-content integrity. Report generation is available as unsigned, unanchored
+JSON v4 with case-linked acquisition/RAID audit records; PDF/HTML/CSV exports, editable persistent settings, advanced hex analysis, and
+Microsoft Store release remain pending. The current Tauri Store route uses a signed EXE or MSI installer
 linked from an unpackaged app listing; this project currently builds an unsigned
 NSIS EXE and does not produce MSIX. Store signing, updater policy and submission
 are not configured. See CAPABILITIES.md and ENGINEERING.md for release gates.

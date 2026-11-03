@@ -1,5 +1,114 @@
 # Recovery validation — 2026-10-31
 
+## Full-volume exFAT parser fuzz coverage — 2026-11-02
+
+Extended the bounded partition-image fuzz target beyond exFAT boot-region
+recognition. Each fuzz input now exercises `Volume::open` and, when opening
+succeeds, the live directory-tree walker against a generated valid minimal
+exFAT volume. Mutations target the boot region, FAT chains, root entry sets,
+allocation bitmap, and up-case bytes; dependent boot, entry-set, and up-case
+checksums are recomputed where needed so malformed cases can reach deeper
+validation stages. The existing hosted 120-second `partition_image` campaign
+will run this expanded harness and retain its evolving corpus and artifacts.
+No hosted result exists for this change yet. This checks parser robustness;
+it does not establish media compatibility or recovery accuracy.
+
+## Independent FAT32 deleted-file package export — 2026-11-02
+
+Extended the independent FAT32 fixture workflow through the native recovery
+package writer and verifier. The Linux job formats, copies, and deletes the
+fixture with `dosfstools` and `mtools`; Sleuth Kit (`fls`/`icat`) must list the
+deleted entry and recover bytes equal to the original 65,536-byte file (SHA-256
+`7daca2095d0438260fa849183dfc67faa459fdf4936e1bc91eec6b281b27e4c2`). It
+uploads the image and expected contents as a short-lived artifact. The Windows
+job verifies both hashes, then the app-level test rediscovers the deleted
+short entry, exports it using the production FAT32 package path, runs the
+native package verifier, and compares output byte for byte with the
+independent expected content. The hosted test has not run yet; this adds the
+executable qualification to CI but is not evidence of a passing hosted result.
+It covers one contiguous deleted-file case and does not validate historical
+fragmentation, deleted long names, or general FAT32 forensic compatibility.
+
+## Case report recovery-operation provenance — 2026-11-02
+
+Case report schema v6 now includes case-scoped, hash-chained audit events for
+NTFS, FAT32, and carving exports, plus successful package verification. The
+export summary and prepared/completed report audit records include the
+recovery-operation count. A regression verifies NTFS and carving export events
+for the report's case are included, another case's FAT32 export is excluded,
+and the emitted event retains its audit-record hash. Reports continue to state
+that audit records are locally chained copies, not independent proof of the
+operator's acquisition conditions or recovered-file integrity. Packaged report
+generation remains to be exercised in the native UI.
+
+## Physical acquisition selected-device binding — 2026-11-02
+
+Physical acquisition now receives the complete device row selected in the UI.
+After the operator chooses a destination, the native layer opens the requested
+device and compares its number, geometry, and full reported Windows storage
+descriptor with that selected row. It refuses to start if the device was
+replaced or any reported identity/geometry field changed while the dialog was
+open. Regression tests accept an unchanged descriptor and reject changed
+serial and disk geometry. This closes the stale-device-number case when the
+device exposes distinguishing identity fields; it cannot establish identity
+when the hardware reports none, and it does not replace write-blocker or
+physical-device qualification.
+
+## Independent real-image file-carving validation — 2026-11-02
+
+The Windows validation workflow now runs the PNG/JPEG carver over the
+hash-pinned 50 MiB exFAT reference image described below. It requires exact
+matches for upstream `IMG_1054.JPG` (689,275 bytes,
+`76204f90870d97c2d462c58e113f8a90f2edf4b6fbd95ac2f0f876bb4e61b311`) and
+`debian.png` (83,972 bytes,
+`a331c17e8e1c28e734937353b633708b8e0c0816ee5ff1926e89cff957a68f08`). The
+check validates byte recovery from a real independently generated filesystem
+image against known source-file hashes; it does not determine deletion status,
+original path metadata, or performance on large images. Local focused test
+passed in 19.74 seconds. Hosted result remains pending until the workflow runs.
+Fixture sources and licensing notes are in
+[`src-tauri/tests/fixtures/README.md`](src-tauri/tests/fixtures/README.md).
+
+## Independent exFAT volume validation — 2026-11-02
+
+- Added a reproducible CI job for the independent exFAT image published by
+  [eribertomota/forensics-samples](https://github.com/eribertomota/forensics-samples)
+  at commit `b938bbea0d8bec5c1795433cf6227bedd9623532`. The archive SHA-256 is
+  `6aa8868301b0288cd3f9d751c1779fd79570f7cb1bb9568d70d0a27d74c00d70`; the
+  decompressed 50 MiB image SHA-256 is
+  `98d518601199a32054158bb3a759e12b554fd2ebcc5960541caf9e1a907198d0`.
+  The upstream README identifies filesystem images as MIT licensed and asks
+  users to preserve its 2019-2020 copyright notice; the image is downloaded in
+  CI and not redistributed in this repository.
+- The first independent run failed and exposed two parser defects: the eight
+  Extended Boot Sectors were checked against the wrong byte sequence, and a
+  valid up-case table ending with the literal U+FFFF identity mapping was
+  interpreted as a truncated compression marker. Both behaviors are corrected
+  against the [Microsoft exFAT specification](https://learn.microsoft.com/en-us/windows/win32/fileio/exfat-specification).
+- The fixture-specific test now opens the partition at byte offset 1,048,576,
+  validates both boot copies, allocation bitmap, up-case table, entry sets,
+  and allocated streams, then checks all 22 documented live paths and confirms
+  deleted directories (`audio2`, `movie2`, `pic2`, `text2`) are not reported as
+  live. The focused test passed locally against the hash-verified image. The
+  full `npm run validate` then passed the frontend build, Rust format checks,
+  54 core tests, 109 desktop tests, and Clippy with warnings denied (six
+  environment/fixture-dependent tests are ignored by the base suite). The
+  independent exFAT image test is a separate focused run and is enabled in the
+  new hosted workflow job; its hosted result is still pending.
+- Physical device geometry parsing now requires all 32 bytes through the end
+  of the `DISK_GEOMETRY_EX.DiskSize` field and checks agreement with the length
+  IOCTL, sector bounds, and sector alignment. Two unit tests cover the exact
+  31/32-byte truncation boundary plus inconsistent size/sector and truncated
+  length responses. The focused tests and Windows Clippy check passed locally;
+  no physical device was accessed during validation.
+- The Reports screen now clears its prior export result when the active case or
+  case-audit match changes. `CaseReportExport` includes the case ID and the UI
+  only presents a result for that same active case. The report publication test
+  asserts the returned case ID. `npm run validate` passed after these changes:
+  frontend build, Rust formatting, 54 core tests, 111 desktop tests, and Clippy
+  with warnings denied; three environment/fixture-dependent tests in each
+  suite remain ignored. Native UI report generation is still not smoke tested.
+
 ## Current workspace validation and fuzz evidence
 
 - Archived case scans now have an explicit **Verify and reopen source** action.
@@ -1082,3 +1191,131 @@ The optimized Windows Rust application also built successfully for this commit w
 Added an opt-in core regression using the University of Virginia CS 4414 Spring 2022 `testdisk1.raw` image and its separate expected-file dump. The published assignment describes its multi-cluster root, nested folders, contiguous `GAMECOPY.TXT`, and noncontiguous `GAMEFRAG.TXT`; the test confirms 1,000+ root entries, reads those files and nested `A99/CONGRATS.TXT`, compares exact bytes to the separate expected dump, and checks contiguous versus fragmented cluster mappings. The local test passed against the downloaded artifacts.
 
 Pinned provenance and hashes are recorded in `src-tauri/tests/fixtures/FAT32-UVA-REFERENCE.md`. The CI workflow downloads the two source archives, verifies both archive SHA-256 values and the extracted 256,098,304-byte image hash, then runs the ignored reference regression. The raw image and expected dump are not committed. The assignment does not state formatter provenance or a separate license for the artifacts; this is useful independent reader validation, not proof of deleted-file recovery or broad media qualification.
+## 2026-11-02 limited FAT32 deleted-file export
+
+Connected selected FAT32 deleted short-name entries to the existing destination safety checks, recovery package writer, audit log, progress/cancellation monitor, and recovery-package verifier. Export requires the currently hashed source and the exact active scan, re-reads and compares each selected directory record, uses only a contiguous cluster range whose current allocation entries are free, rejects overlapping ranges among the selected entries, rehashes the full source before and after the export, stages files as new partials, verifies destination SHA-256 before no-replace publication, and writes manifest/inventory/summary/checksum/completion files. The manifest records the raw directory-record digest and explicitly marks the cluster layout as contiguous-assumed. The UI warns that FAT32 discards deleted chain history, that fragmented files may be reconstructed incorrectly, and that selected-set overlap checking is not exhaustive across unselected deleted entries. The existing package verifier now validates FAT32-specific geometry and provenance claims.
+
+Three deterministic native regressions pass: exact bytes are recovered into a package accepted by the independent package verifier; a candidate whose clusters are allocated is not exported and yields a partial package; and two selected deleted entries that claim overlapping free clusters are both rejected. `npm run validate` passed on Windows with the frontend production build, 47 core tests (2 ignored), 82 desktop tests (3 ignored), formatting, and Clippy with warnings denied. Rust emitted the existing incremental-cache hard-link fallback warnings only.
+
+This is limited FAT32 deleted short-name recovery, not general FAT32 recovery. The exporter has not yet been exercised with an independently formatted/deleted image or through the packaged native UI; the separate ignored mtools/Sleuth Kit regression currently validates core cluster mapping only. It does not recover deleted long names, reconstruct historical fragmented chains, or establish original file-content integrity. exFAT recovery, signature carving, physical-device acquisition, RAID reconstruction, independently anchored reports, and production qualification remain open.
+
+## 2026-11-02 audited hex pattern search
+
+Expanded the read-only Hex Inspector from single-page byte reads to operator-scoped hexadecimal pattern searches. Searches require a previously hashed evidence source, validate the requested range against image bounds, cap each operation at 1 GiB and 10,000 reported matches, and use a linear-time matcher across 1 MiB read boundaries. The audit chain records the source/range, pattern digest, match count, digest of the complete ordered offset list, and up to the first 100 offsets. A changed source is marked compromised. The UI presents result offsets as direct links to the 512-byte hex view.
+
+Two native regressions cover overlapping matches, a pattern split at the read-block boundary, invalid patterns, and out-of-bounds ranges. `npm run validate` passed on Windows with the frontend production build, 47 core tests (2 ignored), 84 desktop tests (3 ignored), formatting, and Clippy with warnings denied. This validates the search implementation against synthetic data; it is not a packaged UI smoke test or large-image performance qualification. Search cancellation/resume, annotations, comparison, and export are still open.
+
+## 2026-11-02 validated PNG carving and case-report v3
+
+Added a whole-image PNG carving path that requires the active evidence record to have a persisted SHA-256. The scanner hashes the complete source while reporting real byte progress and honoring cancellation, detects PNG signatures across read-block boundaries, bounds each candidate to 128 MiB and each chunk to 64 MiB, validates chunk CRCs and PNG chunk order, and decodes the image with a 256 MiB decoded-output limit. It retains up to 10,000 candidates while continuing source coverage, marks a capped candidate set incomplete, and does not claim the file was deleted or recover its original path or metadata. Completed scans persist their candidate JSON, source digest, coverage count, and snapshot hash transactionally with the chained audit event; report generation cross-checks those records and now emits `daemoncore-case-report-v3` with carving snapshots.
+
+Selected candidates can be exported to a different physical disk. Export rechecks the complete source digest, revalidates each PNG against the scan record, writes offset-derived names to a new package using no-replace publication, hashes staged and published bytes, and records a completion marker plus a checksummed inventory. Synthetic regressions exercise decoded PNG detection across the 1 MiB scan boundary, CRC corruption rejection, cancellation without partial results, no-replace export and hashes, and audited report inclusion.
+
+## 2026-11-02 PNG carving package verification
+
+Extended the native recovery-package verifier to recognize signature-carving packages. It validates the strict manifest schema and source/candidate metadata, requires inventory rows to match selected offsets and source digests, checks successful output size and hashes, rejects missing or unlisted files, verifies the checksum-list digest and completion state, and requires the before/after source digest to agree for completed exports. The existing recovery workspace folder-verification action now accepts these carving packages as well as filesystem recovery packages. The carver integration test verifies a newly exported PNG package, then changes the recovered output and confirms verification fails.
+
+`npm run validate` passed on Windows: frontend build, 47 core tests (2 ignored), 89 desktop tests (3 ignored), formatting, and Clippy with warnings denied. Remaining carving work includes PDF/JPEG/Office formats, unallocated-region classification, deleted-file determination, original metadata reconstruction, independent carving corpora, and representative large-image performance. The UI was built but not run in the packaged native application; this validation does not qualify a production release.
+
+## 2026-11-02 bounded BMP carving
+
+Extended the full-image scanner to recognize BMP files alongside PNG. BMP validation is deliberately structural: it accepts supported Windows DIB headers, bounds file size and pixel count, validates dimensions/planes/bit depth/compression, checks row-stride and pixel-array arithmetic, and requires palette/mask metadata and declared pixels to fit the file. It does not decode BMP pixels, and unsupported compression or headers are rejected. BMP candidates retain offsets, lengths, and SHA-256 through persisted scans, reports, export manifests, and native package verification.
+
+The synthetic regression places a BMP signature across the 1 MiB scan boundary, verifies export bytes and the native package, and rejects zero-width and truncated files. `npm run validate` passed on Windows with the frontend build, 47 core tests (2 ignored), 90 desktop tests (3 ignored), formatting, and Clippy with warnings denied. This adds one bounded format; it does not qualify external carving performance or broader format coverage.
+
+## 2026-11-02 physical-device identity and acquisition lifecycle
+
+The Windows Disk Imaging panel is connected to raw physical-device acquisition. Device enumeration reads drive geometry and queries the bounded Windows storage-device descriptor for vendor, product, revision, serial, and bus type. Missing or malformed identity data is disclosed in the device row and retained as an identity-query limitation in the manifest; `PhysicalDriveN` is not presented as a stable identity. Acquisition requires an audited active case, operator attestation of an offline source and validated hardware write blocker, and a destination proven to be on a different physical disk. Complete images are hashed on write and re-read, then registered as case evidence and activated; read-error images contain zero-filled unreadable ranges and are explicitly marked partial and not activated. Audit events bind the device descriptor and acquisition outcome. The built-in package verifier re-hashes the image, validates the manifest/checksum/completion relationship, checks ordered aligned error ranges against image geometry, and rejects missing or unlisted package entries. The Disk Imaging panel exposes this verifier and indicates while image and package records are being checked.
+
+Eight focused Windows tests passed for descriptor parsing and malformed offsets, complete package bytes and hashes, partial-image error mapping/zero fill, cancellation cleanup, complete/partial package verification, rejection of a modified image, extra package files, and forged out-of-bounds error ranges with rebuilt checksums. `npm run validate` passed on Windows with the frontend production build, 47 core tests (2 ignored), 98 desktop tests (3 ignored), formatting, and Clippy with warnings denied. These synthetic tests do not exercise real device IOCTLs, hot-plug races, an external write blocker, destination disk topology on representative hardware, crash recovery, or an independently implemented acquisition-package verifier. Physical acquisition is not production-qualified.
+
+## 2026-11-02 operator-configured RAID 0/1 reconstruction
+
+The RAID Reconstruction sidebar route is connected to a bounded native workflow. Operators select member images and their logical order, data offset, sector size, and (for RAID 0) stripe size. The engine rejects duplicate members, unsupported levels/geometries, unequal member data regions, and RAID 1 members whose selected regions do not match exactly. It opens source images read only, hashes members before and after reconstruction, writes a derived `image.raw` into a staging package, reads back and hashes the output, writes manifest/checksum/completion records, and publishes without replacing an existing package. The command requires an audit-matched active case and a destination separate from every member, audits start/cancel/failure/publication, then registers the output as case evidence. Package verification checks manifest geometry, output digest, checksums, completion, and exact inventory; successful verification is recorded as `raid_package_verified`.
+
+Four synthetic tests cover RAID 0 member order and stripe layout plus package tamper detection, matching and mismatching RAID 1 data, and cancellation cleanup. `npm run validate` passed for this slice: frontend production build, 47 core tests (2 ignored), 102 desktop tests (3 ignored), formatting checks, and Clippy with warnings denied. This is not physical-array qualification: metadata auto-detection, RAID 4/5/6 parity, degraded/stale mirror selection, independent implementation comparisons, packaged native UI smoke, and representative array validation remain open. The feature is limited and is not production-qualified.
+
+## 2026-11-02 report imaging and RAID provenance
+
+Case report v4 now includes the case's physical-device acquisition and RAID audit events with audit record ID, timestamp, event name, record hash, and original JSON payload. It scopes inclusion by the payload's case ID and has limits of 2,000 included events, 1 MiB per event, and 16 MiB combined operation payload. The Reports screen describes this scope and the limitation: these copied local audit records do not independently prove device identity, write-blocker conditions, array geometry, or recovery correctness. This closes the prior report gap where imaging/RAID work could occur without appearing in the case report, but report signatures/external anchoring and independent hardware/array qualification remain open.
+
+The focused case-report suite passes 7 tests, including a new regression that includes acquisition/RAID events for the selected case and excludes another case's operation. `npm run validate` passed on Windows after the change: frontend production build, 47 core tests (2 ignored), 105 desktop tests (3 ignored), formatting checks, and Clippy with warnings denied. No new packaged UI smoke test has been performed.
+
+## 2026-11-02 bounded JPEG carving and verified export
+
+The full-image scanner now recognizes JPEG SOI markers, parses bounded marker segments and entropy-coded scans through EOI, rejects malformed/truncated structures, and requires successful JPEG pixel decoding before registering a candidate. Width/height limits, decoded-output limits, 128 MiB candidate bounds, and a 1,000-scan cap constrain work. The JPEG candidate retains exact offset, encoded length, and SHA-256. Selected export revalidates the source candidate and decoder result, then publishes into the same no-replace hashed package flow; the native verifier accepts the JPEG-specific validation claim and `.jpg` name.
+
+
+## 2026-11-02 acquisition terminal audit outcomes
+
+Physical imaging now records hash-chained terminal events for cancellation, capture failure, and failures after package publication. Post-publication failures include the image digest, package path, read-error count, and whether publication itself was audited, distinguishing a case-registration problem from a publication-audit problem. If the blocking worker terminates unexpectedly, the event explicitly states that publication state is unknown. If writing these events also fails, the command returns that audit failure with the original error and sets the job to failed rather than reporting cancellation/success. Case reports include these terminal events.
+
+A native regression writes cancellation, failure, and finalization-failure events through the production event recorder and verifies the resulting audit chain. `npm run validate` passed on Windows: frontend build, 47 core tests (2 ignored), 106 desktop tests (3 ignored), formatting checks, and Clippy with warnings denied. Hardware acquisition and post-publication failure injection remain untested on physical devices.
+
+## 2026-11-02 exFAT live directory analysis
+
+The core now validates exFAT main/backup boot regions, active FAT and allocation bitmap metadata, the compressed up-case table, entry-set checksums, filename hashes, and allocated streams before enumerating live files and directories. It handles zero-length directories and contiguous directory allocations while retaining source offsets and raw entry sets. The Filesystem Analysis screen accepts a volume byte offset, runs the native read-only inventory, rehashes the complete source before committing, and stores the snapshot and audit event. Case Management now lists completed exFAT scans and provides read-only archived paging after verifying the audit chain, snapshot digest, and matching audit record. Case report v5 includes exFAT snapshots and verifies their digest/audit association. This is live directory inventory only: deleted exFAT recovery, independent exFAT media validation, damaged-volume fuzzing, and packaged native UI verification remain incomplete.
+
+The controlled synthetic exFAT image test opens a valid volume and reads a root file entry; focused tests also cover compressed up-case decoding, malformed tables, checksums, end markers, and empty directories. Backend regressions verify archived snapshots and reject modified content and orphan audit records. `npm run validate` passed on Windows after the initial integration: frontend build, 53 core tests (2 ignored), 107 desktop tests (3 ignored), formatting checks, and Clippy with warnings denied. This does not qualify the implementation for forensic casework until independent media fixtures and packaged operation tests pass.
+
+## 2026-11-02 archived exFAT scan review
+
+Case Management now loads audited exFAT scan sessions on case selection and renders read-only, paginated entry snapshots with the recorded source digest and evidence-match status. The backend verifies the complete audit chain, matches every persisted snapshot to exactly one audit record, recomputes snapshot digests, and refuses orphan audit records or tampered database contents before returning a saved page. Regression tests cover valid archive listing, snapshot tampering, and orphan records. `npm run validate` passed after this change: frontend build, 53 core tests (2 ignored), 109 desktop tests (3 ignored), formatting checks, and Clippy with warnings denied. This still needs independent exFAT media and packaged native UI qualification.
+
+
+## BMP pixel decoding hardening — 2026-11-02
+
+BMP carving now requires a successful pixel decode after header, geometry,
+mask, palette, and pixel-array bounds checks. The decoder reads through a
+bounded source-range reader, limits dimensions to 32,768 pixels per side, and
+rejects decoded buffers above 256 MiB before allocation. Source I/O errors
+propagate as scan failures instead of being treated as invalid candidates. A
+regression fixture with valid geometry but missing bitfield masks is rejected;
+the existing valid BMP scan-boundary/export/package-verification test remains
+the positive path. Older persisted BMP snapshots retain compatibility with
+their original validation label; export revalidates their bytes through the new
+decoder. A Pillow 11.3.0-generated 16 × 12 BMP fixture is independently
+decoded by Pillow and checked by the carver against an exact 630-byte
+length and SHA-256. The missing-bitfield and independent-fixture focused
+tests passed; Windows `npm run validate` passed with 116 desktop tests and 5 intentionally ignored. This
+closes the BMP decode gap, but broader BMP corpus and performance
+qualification remain open.
+
+
+## Full-member RAID 5 parity validation — 2026-11-02
+
+RAID Reconstruction now supports operator-configured full-member RAID 5 using the
+left-symmetric layout. Every stripe row identifies the rotating parity member,
+places data in logical order beginning after parity, recomputes XOR parity, and
+refuses publication if parity differs. This does not rebuild a missing member or
+identify on-disk vendor metadata; the operator must provide the correct member
+order, data offset, sector size, and stripe size.
+
+The mapping matches Linux MD's reference formula: parity index is
+`data_disks - (stripe_row mod raid_disks)`, and left-symmetric data starts after
+the parity member. The package manifest records this layout and parity check. The
+recovery package verifier checks RAID 5 member count, geometry, stripe size, output
+size, and layout declaration. Synthetic regressions cover a complete three-row parity rotation,
+logical data order, exact output size, progress totals, package verification, parity
+mismatch rejection, and removal of unpublished staging output. Independent array
+fixture validation is now part of the Windows/Linux workflow: Linux MD creates a
+loop-backed array, writes and reads a known logical image, and pins its SHA-256.
+Windows CI reconstructs from the captured member data and compares exact bytes.
+The first hosted workflow run is still required to establish that gate as passing. The
+fixture validates data layout only; it strips metadata outside the captured
+component extents. Vendor metadata discovery and degraded reconstruction remain
+open.
+
+## Disk acquisition sector-level retry
+
+Failed 1 MiB reads now retry three times, then split into smaller sector-aligned
+reads down through the device-reported sector size. Only sectors still
+unreadable after retries are zero-filled and recorded; adjacent failures with
+the same error are coalesced. Windows `ERROR_NOT_READY`, `ERROR_DEV_NOT_EXIST`,
+`ERROR_DEVICE_UNREACHABLE`, and `ERROR_DEVICE_NOT_CONNECTED` stop acquisition and remove unpublished
+staging data rather than treating a disconnected source as unreadable media
+([Microsoft error codes](https://learn.microsoft.com/en-us/windows/win32/debug/system-error-codes--0-499/), [device error codes](https://learn.microsoft.com/en-us/windows/win32/debug/system-error-codes--1000-1299/)). Regressions verify
+readable sectors around a bad sector are preserved, the bad sector is mapped
+precisely, a disconnected source publishes no image, and the package verifier
+accepts the updated acquisition-method declaration. These simulated faults do
+not qualify physical media behavior or write-blocker hardware.

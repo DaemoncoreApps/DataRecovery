@@ -13,9 +13,15 @@ export interface Job {
     | "hash"
     | "ntfs_scan"
     | "fat32_scan"
+    | "exfat_scan"
+    | "fat32_recovery_export"
+    | "carving_scan"
+    | "carving_export"
     | "recovery_export"
     | "evidence_reopen"
-    | "case_report_export";
+    | "case_report_export"
+    | "disk_acquisition"
+    | "raid_reconstruction";
   discovered: number;
   message: string | null;
   output_directory: string | null;
@@ -24,6 +30,17 @@ export interface Job {
   total: number;
   sha256: string | null;
   error: string | null;
+}
+export interface PhysicalDevice {
+  number: number;
+  size_bytes: number;
+  bytes_per_sector: number;
+  vendor: string | null;
+  product: string | null;
+  revision: string | null;
+  serial_number: string | null;
+  bus_type: number | null;
+  identity_error: string | null;
 }
 export interface NtfsBoot {
   offset: number;
@@ -113,6 +130,40 @@ export interface Fat32Page {
   total: number;
   rows: Fat32TreeEntry[];
 }
+export interface ExfatTreeEntry {
+  path: string[];
+  entry: {
+    source_offset: number;
+    raw_entries: number[][];
+    name: string;
+    attributes: number;
+    first_cluster: number;
+    valid_data_length: number;
+    data_length: number;
+    no_fat_chain: boolean;
+    name_hash: number;
+  };
+}
+export interface ExfatPage {
+  total: number;
+  rows: ExfatTreeEntry[];
+}
+export interface ExfatScanSummary {
+  scan_session_id: number;
+  source_id: number;
+  source_sha256: string;
+  volume_offset: string;
+  entries: number;
+}
+export interface ExfatCaseScanSession {
+  id: number;
+  evidence_id: number;
+  case_id: number;
+  volume_offset: string;
+  source_sha256: string;
+  completed_at: string;
+  records: number;
+}
 export interface Fat32ScanSummary {
   scan_session_id: number;
   source_id: number;
@@ -132,7 +183,24 @@ export interface Fat32CaseScanSession {
   found: number;
   deleted: number;
 }
+export interface CarvedCandidate {
+  id: number;
+  offset: number;
+  length: number;
+  format: string;
+  sha256: string;
+  validation: string;
+}
+export interface CarvePage {
+  scan_session_id: number;
+  total: number;
+  scanned_bytes: number;
+  source_sha256: string;
+  candidates_limited: boolean;
+  rows: CarvedCandidate[];
+}
 export interface RecoveryExportVerification {
+  package_type: string;
   case_id: number | null;
   evidence_record_id: number | null;
   scan_session_id: number | null;
@@ -150,11 +218,20 @@ export interface Case {
   integrity: "audit_matched" | "legacy_unverified";
 }
 export interface CaseReportExport {
+  case_id: number;
   path: string;
   sha256: string;
   bytes: number;
   scans: number;
   candidates: number;
+  fat32_scans: number;
+  directory_entries: number;
+  exfat_scans: number;
+  exfat_entries: number;
+  carve_scans: number;
+  carved_candidates: number;
+  imaging_and_raid_operations: number;
+  recovery_operations: number;
 }
 export interface ActiveCaseState {
   case_id: number | null;

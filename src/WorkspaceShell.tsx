@@ -24,29 +24,29 @@ const groups = [
   {
     label: "Workspace",
     items: [
-      ["Dashboard", Activity],
-      ["Image Workspace", HardDrive],
-      ["Case Management", FolderOpen],
+      ["Dashboard", Activity, "LIVE"],
+      ["Image Workspace", HardDrive, "LIVE"],
+      ["Case Management", FolderOpen, "LIVE"],
     ],
   },
   {
     label: "Analysis",
     items: [
-      ["Deep Scan", Search],
-      ["Partition Analysis", Layers],
-      ["Filesystem Analysis", Database],
-      ["File Carving", FileSearch],
-      ["Hex Inspector", Hexagon],
+      ["Deep Scan", Search, "LIMITED"],
+      ["Partition Analysis", Layers, "LIVE"],
+      ["Filesystem Analysis", Database, "LIMITED"],
+      ["File Carving", FileSearch, "LIMITED"],
+      ["Hex Inspector", Hexagon, "LIVE"],
     ],
   },
   {
     label: "Evidence",
     items: [
-      ["Disk Imaging", Boxes],
-      ["RAID Reconstruction", Network],
-      ["Recovery Workspace", Files],
-      ["Evidence Vault", ShieldCheck],
-      ["Reports", FileSearch],
+      ["Disk Imaging", Boxes, "LIMITED"],
+      ["RAID Reconstruction", Network, "LIMITED"],
+      ["Recovery Workspace", Files, "LIMITED"],
+      ["Evidence Vault", ShieldCheck, "LIMITED"],
+      ["Reports", FileSearch, "LIMITED"],
     ],
   },
 ] as const;
@@ -80,16 +80,18 @@ export function WorkspaceShell({
           {groups.map((group) => (
             <div className="navGroup" key={group.label}>
               <div className="navLabel">{group.label}</div>
-              {group.items.map(([name, Icon]) => (
+              {group.items.map(([name, Icon, status]) => (
                 <button
                   key={name}
                   className={page === name ? "selected" : ""}
-                  aria-label={name}
+                  aria-label={`${name}, ${status.toLowerCase()} capability`}
                   aria-current={page === name ? "page" : undefined}
                   onClick={() => setPage(name)}
+                  title={`${name} · ${status.toLowerCase()} capability`}
                 >
                   <Icon size={16} strokeWidth={1.7} />
                   <span>{name}</span>
+                  <span className={`navStatus ${status.toLowerCase()}`}>{status}</span>
                   {page === name && <span className="navActiveMark" />}
                 </button>
               ))}

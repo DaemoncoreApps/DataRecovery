@@ -15,6 +15,9 @@ import {
   type Job,
   type Fat32CaseScanSession,
   type Fat32Page,
+  type ExfatPage,
+  type ExfatCaseScanSession,
+  type CarvePage,
 } from "./bridge";
 import "./style.css";
 import { SourcePanel } from "./SourcePanel";
@@ -24,6 +27,8 @@ import { AuditPanel } from "./AuditPanel";
 import { WorkspaceShell } from "./WorkspaceShell";
 import { Overview } from "./Overview";
 import { RecoveryPanel } from "./RecoveryPanel";
+import { DiskImagingPanel } from "./DiskImagingPanel";
+import { RaidPanel } from "./RaidPanel";
 import { bytes } from "./format";
 const emptyJob: Job = {
   kind: "hash",
@@ -45,18 +50,31 @@ function App() {
     [caseEvidence, setCaseEvidence] = useState<CaseEvidenceRecord[]>([]),
     [caseScans, setCaseScans] = useState<CaseScanSession[]>([]),
     [fat32CaseScans, setFat32CaseScans] = useState<Fat32CaseScanSession[]>([]),
+    [exfatCaseScans, setExfatCaseScans] = useState<ExfatCaseScanSession[]>([]),
     [archivedScanId, setArchivedScanId] = useState<number | null>(null),
     [archivedPage, setArchivedPage] = useState<RecoveryPage | null>(null),
     [archivedFat32ScanId, setArchivedFat32ScanId] = useState<number | null>(null),
     [archivedFat32Page, setArchivedFat32Page] = useState<Fat32Page | null>(null),
+    [archivedExfatScanId, setArchivedExfatScanId] = useState<number | null>(null),
+    [archivedExfatPage, setArchivedExfatPage] = useState<ExfatPage | null>(null),
+    [archivedExfatPageIndex, setArchivedExfatPageIndex] = useState(0),
+    [exfatPage, setExfatPage] = useState<ExfatPage | null>(null),
+    [filesystemOffset, setFilesystemOffset] = useState("0"),
+    [exfatPageIndex, setExfatPageIndex] = useState(0),
     [archivedFat32PageIndex, setArchivedFat32PageIndex] = useState(0),
     [archivedPageIndex, setArchivedPageIndex] = useState(0),
     [activeCaseId, setActiveCaseId] = useState<number | null>(null),
     [activeCaseAuditMatched, setActiveCaseAuditMatched] = useState(true),
     [caseReport, setCaseReport] = useState<CaseReportExport | null>(null),
+    [carvePage, setCarvePage] = useState<CarvePage | null>(null),
+    [carvePageIndex, setCarvePageIndex] = useState(0),
+    [selectedCarves, setSelectedCarves] = useState<number[]>([]),
     [title, setTitle] = useState(""),
     [examiner, setExaminer] = useState(""),
     [offset, setOffset] = useState("0"),
+    [searchPattern, setSearchPattern] = useState(""),
+    [searchLength, setSearchLength] = useState("1048576"),
+    [hexMatches, setHexMatches] = useState<number[] | null>(null),
     [data, setData] = useState<number[]>([]),
     [readOffset, setReadOffset] = useState(0),
     [busy, setBusy] = useState(false);
@@ -89,13 +107,20 @@ function App() {
     }
   }, []);
   useEffect(() => {
+    setCaseReport(null);
+  }, [activeCaseId, activeCaseAuditMatched]);
+  useEffect(() => {
     if (!native || activeCaseId === null) {
       setCaseEvidence([]);
       setCaseScans([]);
       setFat32CaseScans([]);
+      setExfatCaseScans([]);
       setArchivedFat32ScanId(null);
       setArchivedFat32Page(null);
       setArchivedFat32PageIndex(0);
+      setArchivedExfatScanId(null);
+      setArchivedExfatPage(null);
+      setArchivedExfatPageIndex(0);
       return;
     }
     let active = true;
@@ -109,12 +134,16 @@ function App() {
       command<Fat32CaseScanSession[]>("list_case_fat32_scan_sessions", {
         caseId: activeCaseId,
       }),
+      command<ExfatCaseScanSession[]>("list_case_exfat_scan_sessions", {
+        caseId: activeCaseId,
+      }),
     ])
-      .then(([evidence, scans, fat32Scans]) => {
+      .then(([evidence, scans, fat32Scans, exfatScans]) => {
         if (active) {
           setCaseEvidence(evidence);
           setCaseScans(scans);
           setFat32CaseScans(fat32Scans);
+          setExfatCaseScans(exfatScans);
         }
       })
       .catch((e) => {
@@ -139,20 +168,52 @@ function App() {
     }, 700);
     return () => clearInterval(id);
   }, []);
+  useEffect(() => {
+    if (
+      !native ||
+      page !== "File Carving" ||
+      job.kind !== "carving_scan" ||
+      job.state !== "completed" ||
+      !source
+    )
+      return;
+    command<CarvePage>("carve_results", {
+      sourceId: source.id,
+      offset: carvePageIndex * 100,
+      limit: 100,
+    })
+      .then(setCarvePage)
+      .catch((e) => setError(String(e)));
+  }, [native, page, job.kind, job.state, source?.id, carvePageIndex]);
+  useEffect(() => {
+    if (!native || page !== "Filesystem Analysis" || job.kind !== "exfat_scan" || job.state !== "completed" || !source) return;
+    command<ExfatPage>("exfat_scan_results", { sourceId: source.id, offset: exfatPageIndex * 50, limit: 50 })
+      .then(setExfatPage)
+      .catch((e) => setError(String(e)));
+  }, [native, page, job.kind, job.state, source?.id, exfatPageIndex]);
   const clearActiveEvidenceView = () => {
     sourceGeneration.current += 1;
     setSource(null);
     setJob(emptyJob);
     setData([]);
+    setCarvePage(null);
+    setCarvePageIndex(0);
+    setSelectedCarves([]);
     setOffset("0");
     setReadOffset(0);
     setCaseEvidence([]);
     setCaseScans([]);
     setFat32CaseScans([]);
+    setExfatCaseScans([]);
+    setExfatPage(null);
+    setExfatPageIndex(0);
     setArchivedScanId(null);
     setArchivedPage(null);
     setArchivedFat32ScanId(null);
     setArchivedFat32Page(null);
+    setArchivedExfatScanId(null);
+    setArchivedExfatPage(null);
+    setArchivedExfatPageIndex(0);
     setArchivedPageIndex(0);
     setCaseReport(null);
   };
@@ -167,7 +228,11 @@ function App() {
         sourceGeneration.current += 1;
         setSource(s);
         setData([]);
+        setHexMatches(null);
         setJob(emptyJob);
+        setCarvePage(null);
+        setCarvePageIndex(0);
+        setSelectedCarves([]);
         setPage("Image Workspace");
       }
     });
@@ -186,6 +251,54 @@ function App() {
       const d = await command<number[]>("read_hex", { offset: n, length: 512 });
       setData(d);
       setReadOffset(n);
+    });
+  const searchHex = () =>
+    run(async () => {
+      const startOffset = Number(offset);
+      const scanLength = Number(searchLength);
+      if (!Number.isSafeInteger(startOffset) || startOffset < 0)
+        throw new Error("Enter a nonnegative decimal or 0x hexadecimal start offset.");
+      if (!Number.isSafeInteger(scanLength) || scanLength < 1 || scanLength > 1024 * 1024 * 1024)
+        throw new Error("Search length must be from 1 byte through 1 GiB.");
+      const matches = await command<number[]>("search_hex", {
+        patternHex: searchPattern,
+        startOffset,
+        scanLength,
+      });
+      setHexMatches(matches);
+    });
+  const inspectHexOffset = (value: number) =>
+    run(async () => {
+      setOffset(String(value));
+      const d = await command<number[]>("read_hex", { offset: value, length: 512 });
+      setData(d);
+      setReadOffset(value);
+    });
+  const startCarving = () =>
+    run(async () => {
+      setCarvePage(null);
+      setCarvePageIndex(0);
+      setSelectedCarves([]);
+      await command("start_file_carving");
+      setJob(await command<Job>("job_status"));
+    });
+  const inspectCarvedOffset = (value: number) =>
+    run(async () => {
+      const d = await command<number[]>("read_hex", { offset: value, length: 512 });
+      setData(d);
+      setOffset(String(value));
+      setReadOffset(value);
+      setPage("Hex Inspector");
+    });
+  const exportCarved = () =>
+    run(async () => {
+      if (!source || selectedCarves.length === 0)
+        throw new Error("Select at least one carved candidate.");
+      await command("export_carved_selected", {
+        sourceId: source.id,
+        ids: selectedCarves,
+      });
+      setJob(await command<Job>("job_status"));
     });
   const showArchivedResults = (scanSessionId: number, pageIndex: number) =>
     run(async () => {
@@ -213,6 +326,19 @@ function App() {
       setArchivedFat32Page(result);
       setArchivedFat32PageIndex(pageIndex);
     });
+  const showArchivedExfatResults = (scanSessionId: number, pageIndex: number) =>
+    run(async () => {
+      if (activeCaseId === null) throw new Error("Select the case first.");
+      const result = await command<ExfatPage>("archived_exfat_scan_results", {
+        caseId: activeCaseId,
+        scanSessionId,
+        offset: pageIndex * 50,
+        limit: 50,
+      });
+      setArchivedExfatScanId(scanSessionId);
+      setArchivedExfatPage(result);
+      setArchivedExfatPageIndex(pageIndex);
+    });
   const reopenArchivedSource = (scanSessionId: number) =>
     run(async () => {
       if (activeCaseId === null) throw new Error("Select the case first.");
@@ -223,6 +349,10 @@ function App() {
       sourceGeneration.current += 1;
       setSource(reopened);
       setData([]);
+      setHexMatches(null);
+      setCarvePage(null);
+      setCarvePageIndex(0);
+      setSelectedCarves([]);
       setJob(emptyJob);
       setArchivedScanId(null);
       setArchivedPage(null);
@@ -255,6 +385,15 @@ function App() {
   const selectedArchivedFat32Evidence = caseEvidence.find(
     (record) => record.id === selectedArchivedFat32Scan?.evidence_id,
   );
+  const selectedArchivedExfatScan = exfatCaseScans.find(
+    (scan) => scan.id === archivedExfatScanId,
+  );
+  const selectedArchivedExfatEvidence = caseEvidence.find(
+    (record) => record.id === selectedArchivedExfatScan?.evidence_id,
+  );
+  const archivedExfatSourceMatchesScan =
+    selectedArchivedExfatEvidence?.status === "hashed" &&
+    selectedArchivedExfatEvidence.sha256 === selectedArchivedExfatScan?.source_sha256;
   const archivedFat32SourceMatchesScan =
     selectedArchivedFat32Evidence?.status === "hashed" &&
     selectedArchivedFat32Evidence.sha256 === selectedArchivedFat32Scan?.source_sha256;
@@ -336,6 +475,12 @@ function App() {
           {sourcePanel}
           {jobPanel}
         </>
+      ) : page === "Disk Imaging" ? (
+        <>
+          <DiskImagingPanel job={job} busy={busy} canAcquire={activeCaseId !== null && activeCaseAuditMatched} run={run} onSource={setSource} onJob={setJob} />
+          {sourcePanel}
+          {jobPanel}
+        </>
       ) : page === "Partition Analysis" ? (
         <PartitionPanel
           key={source?.id}
@@ -354,15 +499,79 @@ function App() {
           />
           {jobPanel}
         </>
+      ) : page === "Deep Scan" || page === "Filesystem Analysis" ? (
+        <>
+          <section className="capabilityPanel panel">
+            <div className="panelTitle">
+              <h2>{page === "Deep Scan" ? "Metadata scan" : "Filesystem review"}</h2>
+              <span className="tag">SUPPORTED FORMATS ONLY</span>
+            </div>
+            <p>
+              {page === "Deep Scan"
+                ? "The available scan reads supported NTFS metadata and rechecks the source digest before accepting results. It is not signature-based file carving."
+                : "Review NTFS metadata, inventory FAT32 directories, or validate live exFAT directory entries against the allocation bitmap and source hash."}
+            </p>
+            <button className="primary" onClick={() => setPage("Recovery Workspace")}>
+              Open supported scan tools <ChevronRight size={14} />
+            </button>
+          </section>
+          <RecoveryPanel
+            source={source}
+            job={job}
+            busy={busy}
+            run={run}
+            onJob={setJob}
+          />
+          {page === "Filesystem Analysis" && (
+            <section className="panel filesystemPanel">
+              <div className="panelTitle">
+                <h2>exFAT directory analysis</h2>
+                <span className="tag">READ ONLY · SOURCE VERIFIED</span>
+              </div>
+              <p>Validates the main and backup boot regions, allocation bitmap, up-case table, entry-set checksums, and allocated file streams. Results are an inventory of live entries; deleted exFAT recovery is not supported here.</p>
+              <div className="actions">
+                <label>Volume byte offset <input value={filesystemOffset} onChange={(event) => setFilesystemOffset(event.target.value)} placeholder="0 or 0x..." /></label>
+                <button className="primary" disabled={!source?.sha256 || busy || job.state === "running"} onClick={() => void run(async () => {
+                  const parsedOffset = filesystemOffset.trim().toLowerCase().startsWith("0x") ? Number.parseInt(filesystemOffset.trim().slice(2), 16) : Number(filesystemOffset);
+                  if (!Number.isSafeInteger(parsedOffset) || parsedOffset < 0) throw new Error("Enter a valid nonnegative decimal or 0x hexadecimal volume offset.");
+                  setExfatPage(null);
+                  setExfatPageIndex(0);
+                  await command("start_exfat_scan", { offset: parsedOffset });
+                  setJob(await command<Job>("job_status"));
+                })}>Analyze exFAT volume</button>
+              </div>
+              {!source?.sha256 && <p className="muted">Calculate the source SHA-256 before starting filesystem analysis.</p>}
+              {job.kind === "exfat_scan" && job.state === "completed" && exfatPage && (
+                <>
+                  <div className="panelTitle"><h3>{exfatPage.total.toLocaleString()} verified live entries</h3><span className="muted">PAGE {exfatPageIndex + 1}</span></div>
+                  {exfatPage.rows.map(({ path, entry }) => (
+                    <div className="case" key={entry.source_offset}>
+                      <code>0x{entry.source_offset.toString(16).padStart(12, "0")}</code>
+                      <h3 title={path.join("/")}>{path.join("/")}</h3>
+                      <span>{entry.data_length.toLocaleString()} bytes · cluster {entry.first_cluster || "—"} · {entry.attributes & 0x10 ? "directory" : "file"}{entry.no_fat_chain ? " · contiguous allocation" : ""}</span>
+                    </div>
+                  ))}
+                  {!exfatPage.total && <p className="muted">The volume is valid and contains no live file entries.</p>}
+                  <div className="actions archivedPagination">
+                    <button disabled={exfatPageIndex === 0} onClick={() => setExfatPageIndex((index) => Math.max(0, index - 1))}>Previous</button>
+                    <span>{exfatPage.total.toLocaleString()} entries</span>
+                    <button disabled={(exfatPageIndex + 1) * 50 >= exfatPage.total} onClick={() => setExfatPageIndex((index) => index + 1)}>Next</button>
+                  </div>
+                </>
+              )}
+            </section>
+          )}
+          {jobPanel}
+        </>
       ) : page === "Evidence Vault" ? (
         <AuditPanel run={(read) => run(read)} busy={busy} />
       ) : page === "Hex Inspector" ? (
         <section className="panel">
           <div className="panelTitle">
-            <h2>Read-only hex inspector</h2>
-            <span className="muted">512 BYTES / PAGE</span>
+            <h2>Hex inspector</h2>
+            <span className="muted">READ ONLY · 512 BYTES / VIEW</span>
           </div>
-          <div className="actions">
+          <div className="actions hexControls">
             <label>
               Byte offset{" "}
               <input
@@ -375,6 +584,35 @@ function App() {
               Read range
             </button>
           </div>
+          <div className="actions hexSearchControls">
+            <label>
+              Hex byte pattern{" "}
+              <input value={searchPattern} onChange={(e) => setSearchPattern(e.target.value)} placeholder="4D 5A 90 00" spellCheck={false} />
+            </label>
+            <label>
+              Search bytes{" "}
+              <input value={searchLength} onChange={(e) => setSearchLength(e.target.value)} inputMode="numeric" />
+            </label>
+            <button className="primary" disabled={!source?.sha256 || busy} onClick={searchHex}>Search image range</button>
+          </div>
+          {hexMatches !== null && hexMatches.length > 0 && (
+            <div className="hexMatches">
+              <div className="panelTitle"><h3>{hexMatches.length.toLocaleString()} matching offsets</h3><span className="muted">AUDITED SEARCH</span></div>
+              <div className="hexMatchList">
+                {hexMatches.map((match) => (
+                  <button key={match} onClick={() => void inspectHexOffset(match)} disabled={busy}>
+                    <code>0x{match.toString(16).padStart(12, "0")}</code><span>Inspect</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+          {hexMatches !== null && hexMatches.length === 0 && (
+            <p className="muted hexSearchHint">No matches in the selected range.</p>
+          )}
+          {hexMatches === null && (
+            <p className="muted hexSearchHint">{source?.sha256 ? "Search an operator-selected range (up to 1 GiB). Each operation and its result digest are recorded in the case audit log. Patterns accept hexadecimal bytes with optional spaces." : "Calculate the source SHA-256 before searching evidence bytes."}</p>
+          )}
           <div className="hex">
             <div className="hexHead">OFFSET HEXADECIMAL ASCII</div>
             {Array.from({ length: Math.ceil(data.length / 16) }, (_, r) => {
@@ -643,6 +881,56 @@ function App() {
                     </div>
                   </div>
                 )}
+                <div className="panelTitle">
+                  <h3>Completed exFAT directory scans</h3>
+                  <span className="muted">{exfatCaseScans.length} SESSIONS</span>
+                </div>
+                {exfatCaseScans.length ? (
+                  exfatCaseScans.map((scan) => {
+                    const evidence = caseEvidence.find((record) => record.id === scan.evidence_id);
+                    return (
+                      <div className="case" key={scan.id}>
+                        <code>EXF-{String(scan.id).padStart(6, "0")}</code>
+                        <h3 title={evidence?.path ?? `Evidence record ${scan.evidence_id}`}>{scan.records} live entries</h3>
+                        <span title={`SHA-256 ${scan.source_sha256}`}>
+                          {evidence?.name ?? `Evidence ${scan.evidence_id}`} · volume offset {scan.volume_offset}
+                        </span>
+                        <button type="button" disabled={busy} onClick={() => showArchivedExfatResults(scan.id, 0)}>
+                          Review saved directory entries
+                        </button>
+                      </div>
+                    );
+                  })
+                ) : (
+                  <p className="muted caseEmpty">No exFAT directory scans recorded in this case.</p>
+                )}
+                {archivedExfatScanId !== null && archivedExfatPage && (
+                  <div className="archivedSnapshot">
+                    <div className="panelTitle">
+                      <h3>Saved exFAT entries · EXF-{String(archivedExfatScanId).padStart(6, "0")}</h3>
+                      <span className="tag">ARCHIVE · READ ONLY</span>
+                    </div>
+                    <div className="archivedSourceIdentity">
+                      <b>{selectedArchivedExfatEvidence?.name ?? `Evidence ${selectedArchivedExfatScan?.evidence_id ?? "unknown"}`}</b>
+                      <span>{selectedArchivedExfatEvidence?.path ?? "Recorded source path unavailable"}</span>
+                      <code>Expected SHA-256 · {selectedArchivedExfatScan?.source_sha256 ?? "unavailable"}</code>
+                      {!archivedExfatSourceMatchesScan && <span className="archivedSourceWarning">Evidence is unverified or no longer matches this exFAT scan.</span>}
+                    </div>
+                    <p className="warning" role="status">This archived exFAT inventory is read-only and lists live entries only; it does not recover deleted exFAT files.</p>
+                    {archivedExfatPage.rows.map(({ path, entry }) => (
+                      <div className="case" key={entry.source_offset}>
+                        <code>0x{entry.source_offset.toString(16).padStart(12, "0")}</code>
+                        <h3 title={path.join("/")}>{path.join("/")}</h3>
+                        <span>{entry.data_length.toLocaleString()} bytes · cluster {entry.first_cluster || "—"} · {entry.attributes & 0x10 ? "directory" : "file"}</span>
+                      </div>
+                    ))}
+                    <div className="actions archivedPagination">
+                      <button disabled={archivedExfatPageIndex === 0} onClick={() => showArchivedExfatResults(archivedExfatScanId, Math.max(0, archivedExfatPageIndex - 1))}>Previous</button>
+                      <span>{archivedExfatPage.total.toLocaleString()} entries · page {archivedExfatPageIndex + 1}</span>
+                      <button disabled={(archivedExfatPageIndex + 1) * 50 >= archivedExfatPage.total} onClick={() => showArchivedExfatResults(archivedExfatScanId, archivedExfatPageIndex + 1)}>Next</button>
+                    </div>
+                  </div>
+                )}
                 {archivedScanId !== null && archivedPage && (
                   <div className="archivedSnapshot">
                     <div className="panelTitle">
@@ -762,13 +1050,17 @@ function App() {
           <div className="reportIntro">
             <p>
               Export the active case register, verified evidence metadata,
-              completed NTFS scan summaries, and candidate snapshots in one
+              completed NTFS scans, FAT32 directory scans, PNG/BMP/JPEG carving
+              snapshots, hash-chained imaging/RAID records, and recovery export
+              and package verification records in one
               portable JSON file.
             </p>
             <p className="muted">
               The report checks the local audit chain and records its head hash.
-              It is not signed or externally anchored, and it does not certify
-              recovered file contents or acquisition provenance.
+              It is not signed or externally anchored. Operation entries
+              reproduce operator and tool audit records; they do not independently
+              prove device identity, write blocking, array geometry, or recovery
+              correctness.
             </p>
           </div>
           <div className="reportActions">
@@ -800,14 +1092,88 @@ function App() {
               </span>
             )}
           </div>
-          {caseReport && (
+          {caseReport && caseReport.case_id === activeCaseId && (
             <div className="reportResult">
-              <b>Report exported · {caseReport.scans} scans · {caseReport.candidates} candidates</b>
+              <b>Report exported · {caseReport.scans} NTFS scans · {caseReport.candidates} NTFS candidates · {caseReport.fat32_scans} FAT32 scans / {caseReport.directory_entries} entries · {caseReport.exfat_scans} exFAT scans / {caseReport.exfat_entries} entries · {caseReport.carve_scans} carving scans · {caseReport.carved_candidates} carved candidates · {caseReport.imaging_and_raid_operations} imaging/RAID events · {caseReport.recovery_operations} recovery export/verification events</b>
               <span>{caseReport.path}</span>
               <code>SHA-256 · {caseReport.sha256}</code>
             </div>
           )}
         </section>
+      ) : page === "File Carving" ? (
+        <>
+          <section className="panel">
+            <div className="panelTitle">
+              <h2>Validated file carving</h2>
+              <span className="tag">PNG + BMP + JPEG · FULL IMAGE</span>
+            </div>
+            <p className="muted">
+              Searches the complete, SHA-256-verified image. PNG candidates pass chunk CRC checks and image decoding; JPEG candidates pass bounded marker parsing and pixel decoding; BMP candidates pass header, geometry, pixel-array, and bounded pixel-decode checks. Carving does not restore original names, paths, timestamps, or allocation state, or prove a file was deleted.
+            </p>
+            <div className="actions">
+              <button className="primary" disabled={!source?.sha256 || busy || job.state === "running"} onClick={startCarving}>
+                Scan image for supported file types
+              </button>
+              {!source?.sha256 && <span className="muted">Open evidence and calculate its SHA-256 first.</span>}
+            </div>
+            {carvePage && (
+              <div className="carveResults">
+                <div className="panelTitle">
+                  <h3>{carvePage.total.toLocaleString()} validated candidates</h3>
+                  <div className="actions">
+                    <span className="muted">SCAN #{carvePage.scan_session_id}</span>
+                    <button className="primary" disabled={!selectedCarves.length || selectedCarves.length > 1000 || busy || job.state === "running"} onClick={exportCarved}>
+                      Export selected ({selectedCarves.length})
+                    </button>
+                  </div>
+                </div>
+                <div className="carveMetadata">
+                  <span>Scanned {bytes(carvePage.scanned_bytes)}</span>
+                  <code title={carvePage.source_sha256}>Source SHA-256 · {carvePage.source_sha256}</code>
+                </div>
+                {carvePage.candidates_limited && <div className="warning">Candidate display reached the 10,000-item cap. The scan completed, but its candidate list is incomplete.</div>}
+                {carvePage.rows.length > 0 ? (
+                  <div className="carveList">
+                    {carvePage.rows.map((candidate) => (
+                      <div className="carveRow" key={candidate.id}>
+                        <div>
+                          <input
+                            type="checkbox"
+                            aria-label={`Select ${candidate.format} at offset 0x${candidate.offset.toString(16)}`}
+                            checked={selectedCarves.includes(candidate.id)}
+                            disabled={busy || job.state === "running" || (!selectedCarves.includes(candidate.id) && selectedCarves.length >= 1000)}
+                            onChange={(event) => setSelectedCarves((current) => event.target.checked ? [...new Set([...current, candidate.id])] : current.filter((id) => id !== candidate.id))}
+                          />
+                          <b>{candidate.format}</b><span>Offset 0x{candidate.offset.toString(16)}</span><span>{bytes(candidate.length)}</span>
+                        </div>
+                        <code title={candidate.sha256}>SHA-256 · {candidate.sha256}</code>
+                        <button onClick={() => void inspectCarvedOffset(candidate.offset)} disabled={busy}>Inspect bytes</button>
+                      </div>
+                    ))}
+                  </div>
+                ) : <div className="empty"><h3>No validated files found</h3><p>No supported file candidates were produced for this image.</p></div>}
+                <div className="actions">
+                  <button disabled={busy || carvePageIndex === 0} onClick={() => setCarvePageIndex((index) => Math.max(0, index - 1))}>Previous</button>
+                  <span className="muted">Page {carvePageIndex + 1} of {Math.max(1, Math.ceil(carvePage.total / 100))}</span>
+                  <button disabled={busy || (carvePageIndex + 1) * 100 >= carvePage.total} onClick={() => setCarvePageIndex((index) => index + 1)}>Next</button>
+                </div>
+              </div>
+            )}
+          </section>
+          {jobPanel}
+        </>
+      ) : page === "RAID Reconstruction" ? (
+        <>
+          <RaidPanel
+            job={job}
+            busy={busy}
+            canReconstruct={activeCaseId !== null && activeCaseAuditMatched}
+            run={run}
+            onJob={setJob}
+            onSource={setSource}
+          />
+          {jobPanel}
+        </>
       ) : (
         <section className="panel">
           <div className="panelTitle">
@@ -818,12 +1184,9 @@ function App() {
             <LockKeyhole size={32} />
             <h3>This capability is not implemented yet</h3>
             <p>
-              {page === "Disk Imaging"
-                ? "Image acquisition and destination verification are planned. Existing image hashing is available below."
-                : "This release supports raw image loading, hex reads, image hashing, and a local case register."}
+              This route is not available in this build. No operation or forensic result is generated here.
               <br />
-              No recovery or validation results are generated for unsupported
-              operations.
+              Use the available workspaces for supported evidence operations.
             </p>
             <button onClick={() => setPage("Image Workspace")}>
               Open evidence workspace <ChevronRight size={14} />

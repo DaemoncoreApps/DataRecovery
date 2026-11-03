@@ -21,9 +21,43 @@ concurrency:
 jobs:
   windows-validation:
     runs-on: windows-2025
+    needs: [fat32-deleted-recovery-validation, raid5-reference-validation]
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - name: Download independently verified FAT32 deleted-file fixture
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: daemoncore-fat32-deleted-reference
+          path: ${{ runner.temp }}\daemoncore-fat32-deleted-reference
+      - name: Download Linux MD RAID 5 reference fixture
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: daemoncore-raid5-reference
+          path: ${{ runner.temp }}\daemoncore-raid5-reference
+      - name: Verify transferred FAT32 fixture hashes
+        shell: pwsh
+        run: |
+          $fixtureDir = Join-Path $env:RUNNER_TEMP "daemoncore-fat32-deleted-reference"
+          $image = Join-Path $fixtureDir "deleted-fat32.img"
+          $expected = Join-Path $fixtureDir "RECOVER.BIN.expected"
+          $imageDigest = (Get-Content (Join-Path $fixtureDir "deleted-fat32.img.sha256") -TotalCount 1).Split(' ')[0]
+          if ((Get-FileHash $image -Algorithm SHA256).Hash.ToLowerInvariant() -ne $imageDigest) { throw "Transferred FAT32 image digest mismatch" }
+          if ((Get-FileHash $expected -Algorithm SHA256).Hash.ToLowerInvariant() -ne "7daca2095d0438260fa849183dfc67faa459fdf4936e1bc91eec6b281b27e4c2") { throw "FAT32 expected content digest mismatch" }
+      - name: Verify transferred RAID 5 reference fixture hashes
+        shell: pwsh
+        run: |
+          $fixtureDir = Join-Path $env:RUNNER_TEMP "daemoncore-raid5-reference"
+          $expectedFiles = @("member0.raw", "member1.raw", "member2.raw", "logical-image.raw")
+          foreach ($line in Get-Content (Join-Path $fixtureDir "SHA256SUMS")) {
+            if ($line -notmatch '^([0-9a-f]{64})\s+(.+)$') { throw "Malformed RAID 5 reference checksum line" }
+            $digest = $Matches[1]
+            $name = $Matches[2]
+            if ($name -notin $expectedFiles) { throw "Unexpected RAID 5 reference fixture file: $name" }
+            $actual = (Get-FileHash (Join-Path $fixtureDir $name) -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actual -ne $digest) { throw "RAID 5 reference fixture hash mismatch: $name" }
+          }
+          "DAEMONCORE_RAID5_REFERENCE_DIR=$fixtureDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
         with:
           node-version: 22
@@ -57,8 +91,129 @@ jobs:
           "DAEMONCORE_FAT32_REFERENCE_DUMP=$(Join-Path $fixtureDir 'testdisk1')" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Build and validate
         run: npm run validate
+      - name: Reconstruct independent Linux MD RAID 5 reference array
+        env:
+          DAEMONCORE_RAID5_REFERENCE_DIR: ${{ runner.temp }}\daemoncore-raid5-reference
+        run: cargo test --manifest-path src-tauri/Cargo.toml --offline reconstructs_independent_linux_md_raid5_reference_array -- --ignored --nocapture
       - name: Test independent multi-cluster FAT32 image
         run: cargo test --manifest-path ntfs-core/Cargo.toml --offline reads_independent_multicluster_fat32_reference_image -- --ignored --nocapture
+      - name: Test deleted-file package export against independent bytes
+        env:
+          DAEMONCORE_FAT32_DELETED_IMAGE: ${{ runner.temp }}\daemoncore-fat32-deleted-reference\deleted-fat32.img
+          DAEMONCORE_FAT32_DELETED_EXPECTED: ${{ runner.temp }}\daemoncore-fat32-deleted-reference\RECOVER.BIN.expected
+        run: cargo test --manifest-path src-tauri/Cargo.toml --offline exports_deleted_file_from_independent_fat32_image_against_sleuthkit_bytes -- --ignored --nocapture
+      - name: Fetch pinned exFAT image and carving reference files
+        shell: pwsh
+        run: |
+          $fixtureDir = Join-Path $env:RUNNER_TEMP "daemoncore-exfat-reference"
+          New-Item -ItemType Directory -Force -Path $fixtureDir | Out-Null
+          $base = "https://raw.githubusercontent.com/eribertomota/forensics-samples/b938bbea0d8bec5c1795433cf6227bedd9623532"
+          $archive = Join-Path $fixtureDir "fs.exfat.xz"
+          $image = Join-Path $fixtureDir "fs.exfat.raw"
+          Invoke-WebRequest -Uri "$base/fs.exfat.xz" -OutFile $archive
+          if ((Get-FileHash $archive -Algorithm SHA256).Hash -ne "6AA8868301B0288CD3F9D751C1779FD79570F7CB1BB9568D70D0A27D74C00D70") { throw "exFAT reference archive digest mismatch" }
+          py -3 -c "import lzma,pathlib; pathlib.Path(r'$image').write_bytes(lzma.decompress(pathlib.Path(r'$archive').read_bytes()))"
+          if ((Get-FileHash $image -Algorithm SHA256).Hash -ne "98D518601199A32054158BB3A759E12B554FD2EBCC5960541CAF9E1A907198D0") { throw "exFAT reference image digest mismatch" }
+          $jpeg = Join-Path $fixtureDir "IMG_1054.JPG"
+          $png = Join-Path $fixtureDir "debian.png"
+          Invoke-WebRequest -Uri "$base/original-files/pic1/IMG_1054.JPG" -OutFile $jpeg
+          Invoke-WebRequest -Uri "$base/original-files/pic1/debian.png" -OutFile $png
+          if ((Get-FileHash $jpeg -Algorithm SHA256).Hash -ne "76204F90870D97C2D462C58E113F8A90F2EDF4B6FBD95AC2F0F876BB4E61B311") { throw "JPEG carving reference digest mismatch" }
+          if ((Get-FileHash $png -Algorithm SHA256).Hash -ne "A331C17E8E1C28E734937353B633708B8E0C0816EE5FF1926E89CFF957A68F08") { throw "PNG carving reference digest mismatch" }
+          "DAEMONCORE_CARVING_REFERENCE_IMAGE=$image" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Test carving against independent exFAT file contents
+        run: cargo test --manifest-path src-tauri/Cargo.toml --offline carves_independent_exfat_image_files_against_upstream_hashes -- --ignored --nocapture
+
+  raid5-reference-validation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - name: Install Linux MD and loop-device tooling
+        run: |
+          sudo DEBIAN_FRONTEND=noninteractive apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install --yes mdadm
+          mdadm --version
+          uname -a
+      - name: Create and verify a Linux MD RAID 5 reference array
+        shell: bash
+        run: sudo bash ./src-tauri/tests/fixtures/make-raid5-reference-fixture.sh "$RUNNER_TEMP/daemoncore-raid5-reference"
+      - name: Upload Linux MD RAID 5 reference fixture
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: daemoncore-raid5-reference
+          path: |
+            ${{ runner.temp }}/daemoncore-raid5-reference/member0.raw
+            ${{ runner.temp }}/daemoncore-raid5-reference/member1.raw
+            ${{ runner.temp }}/daemoncore-raid5-reference/member2.raw
+            ${{ runner.temp }}/daemoncore-raid5-reference/logical-image.raw
+            ${{ runner.temp }}/daemoncore-raid5-reference/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 1
+
+  fat32-deleted-recovery-validation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - name: Install independent FAT32 and forensic tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes dosfstools mtools sleuthkit
+          dpkg-query -W -f='${Package} ${Version}\n' dosfstools mtools sleuthkit
+          mcopy --version
+          fls -V
+          icat -V
+      - name: Format, delete, and independently verify the fixture
+        run: bash ./src-tauri/tests/fixtures/make-fat32-deleted-fixture.sh "$RUNNER_TEMP/fat32-deleted-fixture"
+      - name: Test deleted-file mapping against independent bytes
+        env:
+          DAEMONCORE_FAT32_DELETED_IMAGE: ${{ runner.temp }}/fat32-deleted-fixture/deleted-fat32.img
+          DAEMONCORE_FAT32_DELETED_EXPECTED: ${{ runner.temp }}/fat32-deleted-fixture/RECOVER.BIN.expected
+        run: cargo test --locked --manifest-path ntfs-core/Cargo.toml maps_and_reads_a_deleted_file_from_an_independent_fat32_fixture -- --ignored --nocapture
+      - name: Record and upload independently verified deleted-file fixture
+        shell: bash
+        run: |
+          sha256sum "$RUNNER_TEMP/fat32-deleted-fixture/deleted-fat32.img" > "$RUNNER_TEMP/fat32-deleted-fixture/deleted-fat32.img.sha256"
+      - name: Upload independently verified deleted-file fixture
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: daemoncore-fat32-deleted-reference
+          path: |
+            ${{ runner.temp }}/fat32-deleted-fixture/deleted-fat32.img
+            ${{ runner.temp }}/fat32-deleted-fixture/deleted-fat32.img.sha256
+            ${{ runner.temp }}/fat32-deleted-fixture/RECOVER.BIN.expected
+          if-no-files-found: error
+          retention-days: 1
+
+  exfat-reference-validation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - name: Install xz utilities and Rust
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes xz-utils
+          rustup toolchain install stable --profile minimal
+      - name: Fetch and verify independent exFAT reference image
+        shell: bash
+        run: |
+          set -euo pipefail
+          fixture_dir="$RUNNER_TEMP/daemoncore-exfat-reference"
+          mkdir -p "$fixture_dir"
+          archive="$fixture_dir/fs.exfat.xz"
+          image="$fixture_dir/fs.exfat.raw"
+          curl --fail --location --silent --show-error \
+            "https://raw.githubusercontent.com/eribertomota/forensics-samples/b938bbea0d8bec5c1795433cf6227bedd9623532/fs.exfat.xz" \
+            --output "$archive"
+          echo "6aa8868301b0288cd3f9d751c1779fd79570f7cb1bb9568d70d0a27d74c00d70  $archive" | sha256sum --check
+          xz --decompress --keep "$archive"
+          mv "$fixture_dir/fs.exfat" "$image"
+          echo "98d518601199a32054158bb3a759e12b554fd2ebcc5960541caf9e1a907198d0  $image" | sha256sum --check
+          echo "DAEMONCORE_EXFAT_REFERENCE_IMAGE=$image" >> "$GITHUB_ENV"
+      - name: Validate independent exFAT volume inventory
+        run: cargo test --locked --manifest-path ntfs-core/Cargo.toml reads_independent_exfat_reference_image_inventory -- --ignored --nocapture
 
   disk-parser-fuzz:
     runs-on: ubuntu-24.04

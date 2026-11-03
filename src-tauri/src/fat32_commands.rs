@@ -298,7 +298,7 @@ pub fn start_fat32_scan(offset: u64, app: tauri::AppHandle, state: State<AppStat
                                 job.state = "completed".into();
                                 job.discovered = deleted_entries;
                                 job.message = Some(format!(
-                                    "{entry_count} directory entries recorded; {deleted_entries} are deleted short-name records. File recovery export is not available yet."
+                                    "{entry_count} directory entries recorded; {deleted_entries} are deleted short-name records."
                                 ));
                             }
                             Err(error) => {
@@ -343,9 +343,273 @@ pub fn start_fat32_scan(offset: u64, app: tauri::AppHandle, state: State<AppStat
                     job.error = Some(error.to_string());
                 }
             }
-        }
+        };
     });
     Ok(())
+}
+
+#[tauri::command]
+pub async fn export_fat32_deleted(
+    source_id: u64,
+    scan_session_id: i64,
+    entry_offsets: Vec<u64>,
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<bool> {
+    if entry_offsets.is_empty() || entry_offsets.len() > 1000 {
+        return Err("Select between 1 and 1,000 deleted FAT32 files.".into());
+    }
+    let scan = state
+        .fat32_scan
+        .lock()
+        .map_err(err)?
+        .as_ref()
+        .ok_or("Run a FAT32 directory scan first.")?
+        .clone();
+    if scan.source_id != source_id || scan.persistent_id != scan_session_id {
+        return Err("The FAT32 selection does not belong to the current scan.".into());
+    }
+    let (image, evidence_record_id) = {
+        let source = state.source.lock().map_err(err)?;
+        let evidence = source.as_ref().ok_or("Open the source image first.")?;
+        if evidence.integrity_compromised
+            || evidence.info.id != source_id
+            || evidence.info.case_id != scan.case_id
+            || evidence.info.sha256.as_deref() != Some(scan.source_sha256.as_str())
+        {
+            return Err("The source no longer matches the verified FAT32 scan. Reopen and rehash it before exporting.".into());
+        }
+        (evidence.image.clone(), evidence.info.evidence_record_id)
+    };
+    let mut unique_offsets = std::collections::BTreeSet::new();
+    let requested_count = entry_offsets.len();
+    let mut selected = Vec::with_capacity(requested_count);
+    let mut required = 0_u64;
+    for offset in entry_offsets {
+        if !unique_offsets.insert(offset) {
+            return Err("A FAT32 directory record was selected more than once.".into());
+        }
+    }
+    for entry in &scan.entries {
+        if !unique_offsets.contains(&entry.entry.source_offset) {
+            continue;
+        }
+        if !entry.entry.deleted
+            || entry.entry.is_directory()
+            || entry.entry.is_volume_label()
+            || entry.entry.size == 0
+        {
+            return Err(format!(
+                "{} is not a nonempty deleted FAT32 file entry.",
+                entry.entry.display_name()
+            ));
+        }
+        required = required
+            .checked_add(u64::from(entry.entry.size))
+            .ok_or("FAT32 recovery size overflow")?;
+        selected.push(entry.clone());
+    }
+    if selected.len() != requested_count {
+        return Err("A selected FAT32 record is not part of this scan.".into());
+    }
+    if state.job.lock().map_err(err)?.state == "running" {
+        return Err("Wait for the active operation before exporting.".into());
+    }
+    let folder = tauri::async_runtime::spawn_blocking(|| {
+        rfd::FileDialog::new()
+            .set_title("Recover FAT32 files to a different physical disk")
+            .pick_folder()
+    })
+    .await
+    .map_err(err)?;
+    let Some(folder) = folder else {
+        return Ok(false);
+    };
+    let source_path = image.path.to_string_lossy().into_owned();
+    let destination_result = tauri::async_runtime::spawn_blocking({
+        let image_path = image.path.clone();
+        move || crate::destination::check_destination(&image_path, &folder, required)
+    })
+    .await
+    .map_err(err)?;
+    let destination = match destination_result {
+        Ok(path) => path,
+        Err(reason) => {
+            audit(
+                &*state.db.lock().map_err(err)?,
+                "fat32_recovery_export_rejected",
+                &serde_json::json!({
+                    "case_id": scan.case_id,
+                    "evidence_record_id": evidence_record_id,
+                    "scan_session_id": scan.persistent_id,
+                    "source_id": source_id,
+                    "source_sha256": scan.source_sha256,
+                    "reason": reason,
+                    "selected_offsets": unique_offsets,
+                })
+                .to_string(),
+            )
+            .map_err(err)?;
+            return Err(reason);
+        }
+    };
+    let current = state.source.lock().map_err(err)?;
+    if current.as_ref().is_none_or(|current| {
+        current.info.id != source_id
+            || current.integrity_compromised
+            || current.info.sha256.as_deref() != Some(scan.source_sha256.as_str())
+    }) {
+        return Err("The evidence source changed while selecting the recovery destination.".into());
+    }
+    image.verify_unchanged().map_err(err)?;
+    let mut job = state.job.lock().map_err(err)?;
+    if job.state == "running" {
+        return Err("Another operation started while selecting the destination.".into());
+    }
+    let selected_audit = selected
+        .iter()
+        .map(|tree_entry| {
+            serde_json::json!({
+                "source_offset": tree_entry.entry.source_offset,
+                "raw_record_sha256": format!("{:x}", Sha256::digest(tree_entry.entry.raw_record)),
+                "name": tree_entry.entry.display_name(),
+                "size": tree_entry.entry.size,
+                "first_cluster": tree_entry.entry.first_cluster,
+                "recovery_assumption": "contiguous_assumed_free_clusters",
+            })
+        })
+        .collect::<Vec<_>>();
+    {
+        let db = state.db.lock().map_err(err)?;
+        if crate::require_audited_active_case(&db)? != scan.case_id {
+            return Err(
+                "Select the audited case recorded by this FAT32 scan before exporting.".into(),
+            );
+        }
+        audit(
+            &db,
+            "fat32_recovery_export_started",
+            &serde_json::json!({
+                "case_id": scan.case_id,
+                "evidence_record_id": evidence_record_id,
+                "scan_session_id": scan.persistent_id,
+                "source_id": source_id,
+                "source_path": source_path,
+                "source_sha256": scan.source_sha256,
+                "volume_offset": scan.volume_offset,
+                "destination": destination,
+                "selected": selected_audit,
+            })
+            .to_string(),
+        )
+        .map_err(err)?;
+    }
+    state.cancel.store(false, Ordering::SeqCst);
+    *job = Job {
+        state: "running".into(),
+        kind: "fat32_recovery_export".into(),
+        message: Some("Checking that candidate clusters are free, extracting with a contiguous-cluster assumption, then rechecking source and output hashes".into()),
+        ..Job::default()
+    };
+    drop(job);
+    drop(current);
+
+    std::thread::spawn(move || {
+        let state = app.state::<AppState>();
+        let result = crate::guarded(|| {
+            crate::recovery::export_fat32_to(
+                image.as_ref(),
+                scan.volume_offset,
+                &selected,
+                &destination,
+                crate::recovery::SourceIdentity {
+                    case_id: scan.case_id,
+                    evidence_record_id,
+                    scan_session_id: scan.persistent_id,
+                    id: source_id,
+                    path: &source_path,
+                    sha256: &scan.source_sha256,
+                },
+                &state.cancel,
+                |processed, total| {
+                    if let Ok(mut job) = state.job.lock() {
+                        job.processed = processed;
+                        job.total = total;
+                    }
+                },
+            )
+        })
+        .and_then(|summary| {
+            image.verify_unchanged().map_err(err)?;
+            Ok(summary)
+        });
+        if let Err(error) = &result {
+            if error.contains("Source SHA-256 changed")
+                || error.contains("Evidence image changed during examination")
+            {
+                if let Ok(mut source) = state.source.lock() {
+                    if let Some(source) =
+                        source.as_mut().filter(|source| source.info.id == source_id)
+                    {
+                        source.info.sha256 = None;
+                        source.integrity_compromised = true;
+                    }
+                }
+            }
+        }
+        if let Ok(mut job) = state.job.lock() {
+            match result {
+                Ok(summary) => {
+                    job.state = if summary.cancelled {
+                        "cancelled"
+                    } else if summary.failed > 0 {
+                        "failed"
+                    } else {
+                        "completed"
+                    }
+                    .into();
+                    job.discovered = summary.exported;
+                    job.output_directory = Some(summary.directory.clone());
+                    job.message = Some(format!(
+                        "{} FAT32 files exported and destination-hash verified; {} failed. Cluster mapping is contiguous-assumed; original content integrity was not established.",
+                        summary.exported, summary.failed
+                    ));
+                    if summary.failed > 0 {
+                        job.error = Some("Some FAT32 candidates were not exportable; see inventory.jsonl for per-file reasons.".into());
+                    }
+                }
+                Err(error) => {
+                    job.state = if state.cancel.load(Ordering::SeqCst) {
+                        "cancelled"
+                    } else {
+                        "failed"
+                    }
+                    .into();
+                    job.error = Some(error);
+                }
+            }
+            if let Ok(db) = state.db.lock() {
+                if let Err(error) = audit(
+                    &db,
+                    "fat32_recovery_export_finished",
+                    &serde_json::json!({
+                        "case_id": scan.case_id,
+                        "evidence_record_id": evidence_record_id,
+                        "scan_session_id": scan.persistent_id,
+                        "source_id": source_id,
+                        "source_sha256": scan.source_sha256,
+                        "selected": selected_audit,
+                        "job": &*job,
+                    })
+                    .to_string(),
+                ) {
+                    job.state = "failed".into();
+                    job.error = Some(error.to_string());
+                }
+            }
+        };
+    });
+    Ok(true)
 }
 
 #[tauri::command]

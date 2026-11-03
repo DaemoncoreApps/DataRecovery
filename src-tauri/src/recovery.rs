@@ -1,12 +1,13 @@
 use crate::ntfs::DirectoryComponent;
 use crate::{
-    destination,
+    destination, err,
     ntfs::{self, Candidate, ScanResult, Stream},
     storage::BlockSource,
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::{
+    collections::{BTreeMap, BTreeSet},
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     path::{Path, PathBuf},
@@ -529,9 +530,678 @@ pub fn export_to(
     Ok(summary)
 }
 
+struct Fat32ExportContext<'a> {
+    source: &'a dyn BlockSource,
+    volume: &'a daemoncore_ntfs_core::fat32::Volume,
+    directory: &'a Path,
+    cancel: &'a AtomicBool,
+}
+
+fn extract_fat32_one(
+    context: &Fat32ExportContext<'_>,
+    deleted: &daemoncore_ntfs_core::fat32::DeletedFileMapping,
+    entry: &daemoncore_ntfs_core::fat32::DirectoryEntry,
+    relative_name: &str,
+    mut progress: impl FnMut(u64),
+) -> Result<(String, bool), String> {
+    if !entry.deleted || entry.is_directory() || entry.is_volume_label() || entry.size == 0 {
+        return Err("Only nonempty deleted FAT32 file entries can be exported.".into());
+    }
+    let (parent, filename) = ensure_output_parent(context.directory, relative_name)?;
+    let final_path = parent.join(&filename);
+    let partial = PartialOutput(parent.join(format!(".{filename}.partial")));
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&partial.0)
+        .map_err(|error| {
+            format!(
+                "Could not create staged output {}: {error}",
+                partial.0.display()
+            )
+        })?;
+    let mut buffer = vec![0; 1024 * 1024];
+    let mut position = 0_u64;
+    let mut digest = Sha256::new();
+    let mut all_zero = true;
+    while position < u64::from(entry.size) {
+        if context.cancel.load(Ordering::Relaxed) {
+            return Err("Export cancelled".into());
+        }
+        let count = (u64::from(entry.size) - position).min(buffer.len() as u64) as usize;
+        context.volume.read_file_at(
+            context.source,
+            deleted.mapping(),
+            position,
+            &mut buffer[..count],
+        )?;
+        file.write_all(&buffer[..count]).map_err(|error| {
+            format!(
+                "Could not write staged output {}: {error}",
+                partial.0.display()
+            )
+        })?;
+        digest.update(&buffer[..count]);
+        all_zero &= buffer[..count].iter().all(|byte| *byte == 0);
+        position += count as u64;
+        progress(count as u64);
+    }
+    file.sync_all().map_err(|error| {
+        format!(
+            "Could not flush staged output {}: {error}",
+            partial.0.display()
+        )
+    })?;
+    drop(file);
+
+    let expected = format!("{:x}", digest.finalize());
+    let mut verify = File::open(&partial.0).map_err(err)?;
+    let mut actual = Sha256::new();
+    loop {
+        if context.cancel.load(Ordering::Relaxed) {
+            return Err("Export cancelled".into());
+        }
+        let count = verify.read(&mut buffer).map_err(err)?;
+        if count == 0 {
+            break;
+        }
+        actual.update(&buffer[..count]);
+        progress(count as u64);
+    }
+    if format!("{:x}", actual.finalize()) != expected {
+        return Err("Destination verification failed; partial output was discarded".into());
+    }
+    drop(verify);
+    destination::publish_new(&partial.0, &final_path).map_err(|error| {
+        format!(
+            "Could not publish verified output {}: {error}",
+            final_path.display()
+        )
+    })?;
+    Ok((expected, all_zero))
+}
+
+pub fn export_fat32_to(
+    source: &dyn BlockSource,
+    volume_offset: u64,
+    selected: &[daemoncore_ntfs_core::fat32::TreeEntry],
+    destination: &Path,
+    identity: SourceIdentity<'_>,
+    cancel: &AtomicBool,
+    mut progress: impl FnMut(u64, u64),
+) -> Result<ExportSummary, String> {
+    let volume = daemoncore_ntfs_core::fat32::Volume::open(
+        source,
+        volume_offset,
+        source.len().saturating_sub(volume_offset),
+    )?;
+    let current_entries = volume
+        .read_tree_including_deleted(source)?
+        .into_iter()
+        .map(|tree_entry| (tree_entry.entry.source_offset, tree_entry))
+        .collect::<BTreeMap<_, _>>();
+    let mut selected_offsets = BTreeSet::new();
+    let entries: Vec<daemoncore_ntfs_core::fat32::TreeEntry> = selected
+        .iter()
+        .map(|tree_entry| {
+            let entry = &tree_entry.entry;
+            let source_offset = entry.source_offset;
+            if !selected_offsets.insert(source_offset)
+                || !entry.deleted
+                || entry.is_directory()
+                || entry.is_volume_label()
+                || entry.size == 0
+            {
+                return Err(
+                    "A selected FAT32 entry is duplicated or is not a recoverable file record."
+                        .into(),
+                );
+            }
+            let current = current_entries
+                .get(&source_offset)
+                .ok_or("A selected FAT32 record is no longer present in the source image.")?;
+            if current.entry.raw_record != entry.raw_record
+                || !current.entry.deleted
+                || current.entry.size != entry.size
+                || current.entry.first_cluster != entry.first_cluster
+                || current.entry.is_directory()
+                || current.entry.is_volume_label()
+            {
+                return Err(
+                    "A selected FAT32 record changed or is no longer a deleted file entry.".into(),
+                );
+            }
+            Ok(current.clone())
+        })
+        .collect::<Result<_, String>>()?;
+    if entries.is_empty() || entries.len() > 1000 {
+        return Err("Select between 1 and 1,000 deleted FAT32 files.".into());
+    }
+    let selected_clusters = entries
+        .iter()
+        .try_fold(0_u64, |total, item| {
+            total.checked_add(u64::from(item.entry.size).div_ceil(volume.cluster_size()))
+        })
+        .ok_or("FAT32 recovery cluster count overflow")?;
+    if selected_clusters > 1_000_000 {
+        return Err("Selected FAT32 files exceed the 1,000,000-cluster recovery limit.".into());
+    }
+    let mappings = entries
+        .iter()
+        .map(|item| {
+            volume.map_deleted_file_contiguous(
+                source,
+                item.entry.first_cluster,
+                u64::from(item.entry.size),
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut cluster_owners: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
+    for (index, mapping) in mappings.iter().enumerate() {
+        if let Ok(mapping) = mapping {
+            for cluster in mapping.mapping().clusters() {
+                cluster_owners.entry(*cluster).or_default().push(index);
+            }
+        }
+    }
+    let mut overlaps = vec![false; mappings.len()];
+    for owners in cluster_owners.values().filter(|owners| owners.len() > 1) {
+        for owner in owners {
+            overlaps[*owner] = true;
+        }
+    }
+    let expected_total = selected
+        .iter()
+        .try_fold(0_u64, |total, item| {
+            total.checked_add(u64::from(item.entry.size).checked_mul(2)?)
+        })
+        .ok_or("Export size overflow")?;
+    let total = expected_total
+        .checked_add(source.len().checked_mul(2).ok_or("Export size overflow")?)
+        .ok_or("Export size overflow")?;
+    let mut processed = 0_u64;
+    progress(processed, total);
+    let before = hash_source(source, cancel, |count| {
+        processed = processed.saturating_add(count);
+        progress(processed, total);
+    })?
+    .ok_or("Export cancelled before source verification; no recovery folder was created.")?;
+    if before != identity.sha256 {
+        return Err("Source SHA-256 changed before FAT32 export. No recovery folder was created; reopen and investigate the image.".into());
+    }
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(err)?
+        .as_nanos();
+    let directory = destination.join(format!("DaemonCore-Recovery-{stamp}"));
+    fs::create_dir(&directory).map_err(err)?;
+    let extract_context = Fat32ExportContext {
+        source,
+        volume: &volume,
+        directory: &directory,
+        cancel,
+    };
+    let selected_records = entries
+        .iter()
+        .map(|tree_entry| {
+            let entry = &tree_entry.entry;
+            let record = entry.source_offset;
+            serde_json::json!({
+                "record": record,
+                "name": entry.display_name(),
+                "parent_record": 5,
+                "parent_sequence": null,
+                "parent_path": null,
+                "filename_references": [],
+                "output_name": safe_name(record, &entry.display_name()),
+                "path_restored": false,
+                "size": entry.size,
+                "storage": "contiguous_assumed",
+                "allocation": "free_contiguous_clusters",
+                "record_sha256": format!("{:x}", Sha256::digest(entry.raw_record)),
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut manifest = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(directory.join("manifest.json"))
+        .map_err(err)?;
+    serde_json::to_writer_pretty(
+        &mut manifest,
+        &serde_json::json!({
+            "tool": "DaemonCore Data Recovery",
+            "version": env!("CARGO_PKG_VERSION"),
+            "hash_algorithm": "SHA-256",
+            "export_started_unix_ns": stamp.to_string(),
+            "source": {
+                "case_id": identity.case_id,
+                "evidence_record_id": identity.evidence_record_id,
+                "scan_session_id": identity.scan_session_id,
+                "session_id": identity.id,
+                "path": identity.path,
+                "size": source.len(),
+                "sha256_before_export": identity.sha256,
+            },
+            "volume": {
+                "filesystem": "FAT32",
+                "volume_offset": volume_offset,
+                "volume_size": volume.volume_size(),
+                "cluster_size": volume.cluster_size(),
+                "cluster_count": volume.cluster_count(),
+                "root_cluster": volume.root_cluster(),
+                "deleted_file_layout": "contiguous_assumed_only_when_candidate_clusters_are_free",
+                "selected_cluster_overlap_check": "selected_entries_only_other_deleted_entries_may_reference_the_same_clusters",
+            },
+            "selected_records": selected_records,
+            "state": "incomplete_until_completion_marker_exists",
+            "content_validation": "Export verification compares the reconstructed stream with destination bytes. Original file content integrity is not established."
+        }),
+    )
+    .map_err(err)?;
+    manifest.sync_all().map_err(err)?;
+    let mut inventory = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(directory.join("inventory.jsonl"))
+        .map_err(err)?;
+    let mut summary = ExportSummary {
+        directory: directory.to_string_lossy().into_owned(),
+        exported: 0,
+        failed: 0,
+        cancelled: false,
+    };
+    for (index, tree_entry) in entries.iter().enumerate() {
+        if cancel.load(Ordering::Relaxed) {
+            summary.cancelled = true;
+            break;
+        }
+        let entry = &tree_entry.entry;
+        let name = entry.display_name();
+        let output_name = safe_name(entry.source_offset, &name);
+        let result = if overlaps[index] {
+            Err("Selected deleted entries overlap the same assumed cluster range; neither was exported.".into())
+        } else {
+            match &mappings[index] {
+                Ok(mapping) => {
+                    extract_fat32_one(&extract_context, mapping, entry, &output_name, |count| {
+                        processed = processed.saturating_add(count);
+                        progress(processed, total);
+                    })
+                }
+                Err(error) => Err(error.clone()),
+            }
+        };
+        let item = match result {
+            Ok((sha256, all_zero)) => {
+                summary.exported += 1;
+                serde_json::json!({
+                    "record": entry.source_offset,
+                    "parent_record": 5,
+                    "parent_sequence": null,
+                    "original_name": name,
+                    "filename_references": [],
+                    "output_name": output_name,
+                    "path_restored": false,
+                    "size": entry.size,
+                    "sha256": sha256,
+                    "all_zero": all_zero,
+                    "status": "destination_hash_verified",
+                    "error": null,
+                    "content_validation": "not performed",
+                })
+            }
+            Err(error) => {
+                summary.failed += 1;
+                serde_json::json!({
+                    "record": entry.source_offset,
+                    "parent_record": 5,
+                    "parent_sequence": null,
+                    "original_name": name,
+                    "filename_references": [],
+                    "output_name": null,
+                    "path_restored": false,
+                    "size": entry.size,
+                    "sha256": null,
+                    "all_zero": null,
+                    "status": "failed",
+                    "error": error,
+                    "content_validation": "not performed",
+                })
+            }
+        };
+        serde_json::to_writer(&mut inventory, &item).map_err(err)?;
+        inventory.write_all(b"\n").map_err(err)?;
+        inventory.sync_all().map_err(err)?;
+    }
+    drop(inventory);
+    if cancel.load(Ordering::Relaxed) {
+        summary.cancelled = true;
+        let mut final_summary = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(directory.join("summary.json"))
+            .map_err(err)?;
+        serde_json::to_writer_pretty(&mut final_summary, &summary).map_err(err)?;
+        final_summary.sync_all().map_err(err)?;
+        drop(final_summary);
+        write_checksums(&directory)?;
+        write_completion_marker(&directory, &summary)?;
+        return Ok(summary);
+    }
+    let after = hash_source(source, cancel, |count| {
+        processed = processed.saturating_add(count);
+        progress(processed, total);
+    })?
+    .ok_or(
+        "Source integrity recheck was cancelled; the recovery folder has no completion marker.",
+    )?;
+    if after != identity.sha256 {
+        return Err("Source SHA-256 changed during FAT32 export. The recovery folder has no completion marker; quarantine this working copy and investigate the change.".into());
+    }
+    let mut final_summary = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(directory.join("summary.json"))
+        .map_err(err)?;
+    serde_json::to_writer_pretty(&mut final_summary, &summary).map_err(err)?;
+    final_summary.sync_all().map_err(err)?;
+    drop(final_summary);
+    write_checksums(&directory)?;
+    write_completion_marker(&directory, &summary)?;
+    Ok(summary)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::storage::MemorySource;
+
+    fn fat32_deleted_fixture() -> (MemorySource, Vec<u8>) {
+        const SECTOR: usize = 512;
+        const TOTAL_SECTORS: usize = 66_581;
+        const DATA_SECTOR: usize = 1056;
+        let mut image = vec![0; TOTAL_SECTORS * SECTOR];
+        let mut boot = [0; SECTOR];
+        boot[..3].copy_from_slice(&[0xeb, 0x58, 0x90]);
+        boot[11..13].copy_from_slice(&(SECTOR as u16).to_le_bytes());
+        boot[13] = 1;
+        boot[14..16].copy_from_slice(&32_u16.to_le_bytes());
+        boot[16] = 2;
+        boot[21] = 0xf8;
+        boot[32..36].copy_from_slice(&(TOTAL_SECTORS as u32).to_le_bytes());
+        boot[36..40].copy_from_slice(&512_u32.to_le_bytes());
+        boot[44..48].copy_from_slice(&2_u32.to_le_bytes());
+        boot[48..50].copy_from_slice(&1_u16.to_le_bytes());
+        boot[50..52].copy_from_slice(&6_u16.to_le_bytes());
+        boot[67..71].copy_from_slice(&0xdcdc_0201_u32.to_le_bytes());
+        boot[82..90].copy_from_slice(b"FAT32   ");
+        boot[510..512].copy_from_slice(&[0x55, 0xaa]);
+        image[..SECTOR].copy_from_slice(&boot);
+        image[6 * SECTOR..7 * SECTOR].copy_from_slice(&boot);
+
+        for fat_sector in [32, 544] {
+            let root_entry = fat_sector * SECTOR + 2 * 4;
+            image[root_entry..root_entry + 4].copy_from_slice(&0x0fff_ffff_u32.to_le_bytes());
+        }
+
+        let record_offset = DATA_SECTOR * SECTOR;
+        image[record_offset] = 0xe5;
+        image[record_offset + 1..record_offset + 8].copy_from_slice(b"ECOVER ");
+        image[record_offset + 8..record_offset + 11].copy_from_slice(b"BIN");
+        image[record_offset + 11] = 0x20;
+        image[record_offset + 26..record_offset + 28].copy_from_slice(&3_u16.to_le_bytes());
+        let expected = (0..65_536).map(|byte| byte as u8).collect::<Vec<_>>();
+        image[DATA_SECTOR * SECTOR + SECTOR..DATA_SECTOR * SECTOR + SECTOR + expected.len()]
+            .copy_from_slice(&expected);
+        image[record_offset + 28..record_offset + 32]
+            .copy_from_slice(&(expected.len() as u32).to_le_bytes());
+        (MemorySource(image), expected)
+    }
+
+    fn recovery_test_directory(label: &str) -> PathBuf {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join("test-temp")
+            .join(format!("{label}-{}-{stamp}", std::process::id()));
+        fs::create_dir_all(&directory).unwrap();
+        directory
+    }
+
+    #[test]
+    fn fat32_export_builds_a_verifiable_package_with_contiguous_assumption() {
+        let (source, expected) = fat32_deleted_fixture();
+        let volume = daemoncore_ntfs_core::fat32::Volume::open(&source, 0, source.len()).unwrap();
+        let entry = volume
+            .read_tree_including_deleted(&source)
+            .unwrap()
+            .into_iter()
+            .find(|tree_entry| tree_entry.entry.deleted)
+            .unwrap();
+        let digest = hash_source(&source, &AtomicBool::new(false), |_| {})
+            .unwrap()
+            .unwrap();
+        let root = recovery_test_directory("fat32-export");
+        let summary = export_fat32_to(
+            &source,
+            0,
+            &[entry.clone()],
+            &root,
+            SourceIdentity {
+                case_id: 1,
+                evidence_record_id: 1,
+                scan_session_id: 1,
+                id: 1,
+                path: "controlled-fat32.img",
+                sha256: &digest,
+            },
+            &AtomicBool::new(false),
+            |_, _| {},
+        )
+        .unwrap();
+        assert_eq!(summary.exported, 1);
+        assert_eq!(summary.failed, 0);
+        let package = PathBuf::from(&summary.directory);
+        let verification = crate::recovery_verify::verify_package(&package).unwrap();
+        assert_eq!(verification.state, "complete");
+        assert_eq!(verification.exported, 1);
+        assert_eq!(
+            fs::read(package.join(safe_name(
+                entry.entry.source_offset,
+                &entry.entry.display_name(),
+            )))
+            .unwrap(),
+            expected
+        );
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(package.join("manifest.json")).unwrap()).unwrap();
+        assert_eq!(
+            manifest["volume"]["deleted_file_layout"],
+            "contiguous_assumed_only_when_candidate_clusters_are_free"
+        );
+        assert_eq!(
+            manifest["selected_records"][0]["storage"],
+            "contiguous_assumed"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires an independently formatted and deleted FAT32 image cross-checked with Sleuth Kit"]
+    fn exports_deleted_file_from_independent_fat32_image_against_sleuthkit_bytes() {
+        let image_path = std::env::var_os("DAEMONCORE_FAT32_DELETED_IMAGE")
+            .expect("set DAEMONCORE_FAT32_DELETED_IMAGE to the independent FAT32 image");
+        let expected_path = std::env::var_os("DAEMONCORE_FAT32_DELETED_EXPECTED")
+            .expect("set DAEMONCORE_FAT32_DELETED_EXPECTED to the original file bytes");
+        let image_path = PathBuf::from(image_path);
+        let expected = fs::read(expected_path).expect("read independently retained original bytes");
+        assert_eq!(expected.len(), 65_536);
+        assert_eq!(
+            format!("{:x}", Sha256::digest(&expected)),
+            "7daca2095d0438260fa849183dfc67faa459fdf4936e1bc91eec6b281b27e4c2"
+        );
+
+        let source = crate::storage::Image::open(&image_path).expect("open independent image");
+        let volume = daemoncore_ntfs_core::fat32::Volume::open(&source, 0, source.len()).unwrap();
+        let entry = volume
+            .read_tree_including_deleted(&source)
+            .unwrap()
+            .into_iter()
+            .find(|tree_entry| {
+                tree_entry.entry.deleted
+                    && tree_entry
+                        .entry
+                        .display_name()
+                        .eq_ignore_ascii_case("?ECOVER.BIN")
+            })
+            .expect("deleted FAT32 entry found in independent fixture");
+        assert_eq!(entry.entry.size as usize, expected.len());
+
+        let digest = hash_source(&source, &AtomicBool::new(false), |_| {})
+            .unwrap()
+            .expect("hash complete independent image");
+        let source_path = image_path.to_string_lossy().into_owned();
+        let root = recovery_test_directory("fat32-independent-export");
+        let summary = export_fat32_to(
+            &source,
+            0,
+            &[entry.clone()],
+            &root,
+            SourceIdentity {
+                case_id: 1,
+                evidence_record_id: 1,
+                scan_session_id: 1,
+                id: 1,
+                path: &source_path,
+                sha256: &digest,
+            },
+            &AtomicBool::new(false),
+            |_, _| {},
+        )
+        .expect("export the independently validated deleted entry");
+
+        assert_eq!(summary.exported, 1);
+        assert_eq!(summary.failed, 0);
+        let package = PathBuf::from(&summary.directory);
+        let verified = crate::recovery_verify::verify_package(&package)
+            .expect("native recovery package verifier accepts the export");
+        assert_eq!(verified.state, "complete");
+        assert_eq!(verified.exported, 1);
+        let recovered = fs::read(package.join(safe_name(
+            entry.entry.source_offset,
+            &entry.entry.display_name(),
+        )))
+        .expect("read packaged recovered bytes");
+        assert_eq!(recovered, expected);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn fat32_export_refuses_clusters_that_are_no_longer_free() {
+        let (mut source, _) = fat32_deleted_fixture();
+        for fat_sector in [32, 544] {
+            let entry = fat_sector * 512 + 3 * 4;
+            source.0[entry..entry + 4].copy_from_slice(&0x0fff_ffff_u32.to_le_bytes());
+        }
+        let volume = daemoncore_ntfs_core::fat32::Volume::open(&source, 0, source.len()).unwrap();
+        let entry = volume
+            .read_tree_including_deleted(&source)
+            .unwrap()
+            .into_iter()
+            .find(|tree_entry| tree_entry.entry.deleted)
+            .unwrap();
+        let digest = hash_source(&source, &AtomicBool::new(false), |_| {})
+            .unwrap()
+            .unwrap();
+        let root = recovery_test_directory("fat32-overwritten-export");
+        let summary = export_fat32_to(
+            &source,
+            0,
+            &[entry],
+            &root,
+            SourceIdentity {
+                case_id: 1,
+                evidence_record_id: 1,
+                scan_session_id: 1,
+                id: 1,
+                path: "controlled-fat32.img",
+                sha256: &digest,
+            },
+            &AtomicBool::new(false),
+            |_, _| {},
+        )
+        .unwrap();
+        assert_eq!(summary.exported, 0);
+        assert_eq!(summary.failed, 1);
+        let package = PathBuf::from(&summary.directory);
+        let verification = crate::recovery_verify::verify_package(&package).unwrap();
+        assert_eq!(verification.state, "partial");
+        assert_eq!(verification.exported, 0);
+        assert_eq!(verification.failed, 1);
+        assert_eq!(fs::read_dir(&package).unwrap().count(), 5);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn fat32_export_rejects_overlapping_selected_deleted_entries() {
+        let (mut source, _) = fat32_deleted_fixture();
+        let record_offset = 1056 * 512 + 32;
+        source.0[record_offset] = 0xe5;
+        source.0[record_offset + 1..record_offset + 8].copy_from_slice(b"OTHER  ");
+        source.0[record_offset + 8..record_offset + 11].copy_from_slice(b"BIN");
+        source.0[record_offset + 11] = 0x20;
+        source.0[record_offset + 26..record_offset + 28].copy_from_slice(&3_u16.to_le_bytes());
+        source.0[record_offset + 28..record_offset + 32].copy_from_slice(&65_536_u32.to_le_bytes());
+        let volume = daemoncore_ntfs_core::fat32::Volume::open(&source, 0, source.len()).unwrap();
+        let entries = volume
+            .read_tree_including_deleted(&source)
+            .unwrap()
+            .into_iter()
+            .filter(|tree_entry| tree_entry.entry.deleted)
+            .collect::<Vec<_>>();
+        assert_eq!(entries.len(), 2);
+        let digest = hash_source(&source, &AtomicBool::new(false), |_| {})
+            .unwrap()
+            .unwrap();
+        let root = recovery_test_directory("fat32-overlap-export");
+        let summary = export_fat32_to(
+            &source,
+            0,
+            &entries,
+            &root,
+            SourceIdentity {
+                case_id: 1,
+                evidence_record_id: 1,
+                scan_session_id: 1,
+                id: 1,
+                path: "controlled-fat32.img",
+                sha256: &digest,
+            },
+            &AtomicBool::new(false),
+            |_, _| {},
+        )
+        .unwrap();
+        assert_eq!(summary.exported, 0);
+        assert_eq!(summary.failed, 2);
+        let package = PathBuf::from(&summary.directory);
+        let verification = crate::recovery_verify::verify_package(&package).unwrap();
+        assert_eq!(verification.state, "partial");
+        assert_eq!(verification.failed, 2);
+        let inventory = fs::read_to_string(package.join("inventory.jsonl")).unwrap();
+        assert_eq!(
+            inventory
+                .matches("overlap the same assumed cluster range")
+                .count(),
+            2
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn output_names_cannot_escape_or_be_windows_devices() {
         assert_eq!(safe_name(16, "../CON:stream"), "000000000016__CON_stream");

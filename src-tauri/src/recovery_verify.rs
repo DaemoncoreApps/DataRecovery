@@ -20,9 +20,12 @@ const MAX_INVENTORY_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_CHECKSUMS_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_EXPORT_RELATIVE_PATH_UTF16: usize = 1024;
 const MAX_FILENAME_REFERENCES: usize = 1024;
+const MAX_ACQUISITION_ERROR_MAP_BYTES: u64 = 128 * 1024 * 1024;
+const MAX_ACQUISITION_ERROR_RANGES: usize = 100_000;
 
 #[derive(Debug, Serialize)]
 pub struct RecoveryExportVerification {
+    pub package_type: String,
     pub case_id: Option<i64>,
     pub evidence_record_id: Option<i64>,
     pub scan_session_id: Option<i64>,
@@ -115,6 +118,156 @@ struct InventoryRecord {
     status: String,
     error: Option<String>,
     content_validation: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CarveManifest {
+    tool: String,
+    version: String,
+    package_type: String,
+    hash_algorithm: String,
+    created_unix_ns: String,
+    source: CarveSource,
+    selected_candidates: Vec<CarveCandidate>,
+    recovery_scope: String,
+    completion: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CarveSource {
+    case_id: i64,
+    evidence_record_id: i64,
+    scan_session_id: i64,
+    source_id: u64,
+    path: String,
+    size: u64,
+    sha256_before_export: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CarveCandidate {
+    offset: u64,
+    length: u64,
+    format: String,
+    sha256: String,
+    validation: String,
+    output_name: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CarveInventory {
+    scan_session_id: i64,
+    offset: u64,
+    length: u64,
+    format: String,
+    output_name: Option<String>,
+    source_sha256: String,
+    output_sha256: Option<String>,
+    validation: String,
+    status: String,
+    error: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CarveSummary {
+    directory: String,
+    exported: usize,
+    failed: usize,
+    cancelled: bool,
+    source_sha256_after: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AcquisitionManifest {
+    tool: String,
+    version: String,
+    package_type: String,
+    case_id: i64,
+    created_unix_ns: String,
+    device_number: u32,
+    device_identity: crate::acquisition::PhysicalDevice,
+    source_size_bytes: u64,
+    bytes_per_sector: u32,
+    retries_per_range: u8,
+    hardware_write_blocker_attested: bool,
+    acquisition_method: String,
+    image_name: String,
+    image_sha256: String,
+    read_error_ranges: usize,
+    limitations: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AcquisitionCompletion {
+    state: String,
+    image_sha256: String,
+    checksums_sha256: String,
+    read_error_ranges: usize,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AcquisitionReadError {
+    offset: u64,
+    length: u64,
+    attempts: u8,
+    error: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RaidManifest {
+    tool: String,
+    version: String,
+    package_type: String,
+    case_id: i64,
+    created_unix_ns: String,
+    level: String,
+    member_order_is_operator_supplied: bool,
+    members: Vec<RaidMemberManifest>,
+    data_offset_bytes: u64,
+    bytes_per_sector: u32,
+    stripe_size_bytes: Option<u64>,
+    reconstructed_size_bytes: u64,
+    image_name: String,
+    image_sha256: String,
+    layout_method: String,
+    limitations: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RaidMemberManifest {
+    order: usize,
+    path: String,
+    image_size_bytes: u64,
+    image_sha256: String,
+    data_offset_bytes: u64,
+    data_size_bytes: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RaidCompletion {
+    state: String,
+    image_sha256: String,
+    checksums_sha256: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CarveCompletion {
+    state: String,
+    checksums_sha256: String,
+    source_sha256_before: String,
+    source_sha256_after: Option<String>,
 }
 
 fn read_bounded(
@@ -362,9 +515,616 @@ fn enumerate_entries(
     Ok((files, directories))
 }
 
+fn verify_carve_package(
+    directory: &Path,
+    entries: BTreeSet<String>,
+    directories: BTreeSet<String>,
+    locks: &mut crate::safe_file::ReadLocks,
+) -> Result<RecoveryExportVerification> {
+    let manifest_bytes = read_bounded(directory, "manifest.json", MAX_METADATA_BYTES, locks)?;
+    let inventory_bytes = read_bounded(directory, "inventory.jsonl", MAX_INVENTORY_BYTES, locks)?;
+    let summary_bytes = read_bounded(directory, "summary.json", MAX_METADATA_BYTES, locks)?;
+    let checksums_bytes = read_bounded(directory, "checksums.sha256", MAX_CHECKSUMS_BYTES, locks)?;
+    let completion_bytes = read_bounded(directory, "completion.json", MAX_METADATA_BYTES, locks)?;
+    let manifest: CarveManifest = serde_json::from_slice(&manifest_bytes)
+        .map_err(|error| format!("Invalid carving manifest: {error}"))?;
+    let summary: CarveSummary = serde_json::from_slice(&summary_bytes)
+        .map_err(|error| format!("Invalid carving summary: {error}"))?;
+    let completion: CarveCompletion = serde_json::from_slice(&completion_bytes)
+        .map_err(|error| format!("Invalid carving completion marker: {error}"))?;
+    let created = manifest
+        .created_unix_ns
+        .parse::<u128>()
+        .map_err(|_| "Invalid carving package timestamp.")?;
+    if manifest.tool != "DaemonCore Data Recovery"
+        || manifest.version.is_empty()
+        || manifest.package_type != "signature_carving"
+        || manifest.hash_algorithm != "SHA-256"
+        || !matches!(manifest.recovery_scope.as_str(),
+            "PNG file bytes were carved from a raw image and decoded. Original filename, directory, timestamps, allocation state, and deletion status are unknown."
+                | "Supported file bytes were carved from a raw image and validated using their format-specific checks. Original filename, directory, timestamps, allocation state, and deletion status are unknown.")
+        || manifest.completion != "Treat this package as incomplete unless completion.json exists and verifies."
+        || created == 0
+        || manifest.source.case_id <= 0
+        || manifest.source.evidence_record_id <= 0
+        || manifest.source.scan_session_id <= 0
+        || manifest.source.source_id == 0
+        || manifest.source.path.is_empty()
+        || manifest.source.size == 0
+        || !validate_hex_digest(&manifest.source.sha256_before_export)
+        || manifest.selected_candidates.is_empty()
+        || manifest.selected_candidates.len() > 1000
+    {
+        return Err("Unsupported or inconsistent carving manifest metadata.".into());
+    }
+
+    let canonical = directory.canonicalize().map_err(err)?;
+    let summary_directory = PathBuf::from(&summary.directory)
+        .canonicalize()
+        .map_err(|error| format!("Carving summary directory is invalid: {error}"))?;
+    if canonical != summary_directory {
+        return Err("Carving summary refers to a different output directory.".into());
+    }
+
+    let mut selected = BTreeMap::new();
+    for candidate in &manifest.selected_candidates {
+        let extension = match candidate.format.as_str() {
+            "PNG" if candidate.validation == "PNG chunks and CRCs valid; image decoded" => "png",
+            "BMP"
+                if matches!(
+                    candidate.validation.as_str(),
+                    "BMP pixels decoded; bounded dimensions and allocation valid"
+                        | "BMP header, geometry, and pixel bounds valid"
+                ) =>
+            {
+                "bmp"
+            }
+            "JPEG"
+                if candidate.validation
+                    == "JPEG decoded; dimensions and allocation bounds valid" =>
+            {
+                "jpg"
+            }
+            _ => {
+                return Err(
+                    "Carving manifest contains an unsupported format validation claim.".into(),
+                )
+            }
+        };
+        let expected_name = format!("carved-{:016x}.{extension}", candidate.offset);
+        if candidate.length == 0
+            || candidate
+                .offset
+                .checked_add(candidate.length)
+                .is_none_or(|end| end > manifest.source.size)
+            || !validate_hex_digest(&candidate.sha256)
+            || candidate.output_name != expected_name
+            || selected.insert(candidate.offset, candidate).is_some()
+        {
+            return Err("Carving manifest contains invalid or duplicate candidates.".into());
+        }
+    }
+
+    let mut inventory = Vec::new();
+    if !inventory_bytes.is_empty() {
+        for line in inventory_bytes
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty())
+        {
+            let record: CarveInventory = serde_json::from_slice(line)
+                .map_err(|error| format!("Invalid carving inventory record: {error}"))?;
+            inventory.push(record);
+            if inventory.len() > 1000 {
+                return Err("Carving inventory exceeds the selected-candidate limit.".into());
+            }
+        }
+        if inventory_bytes.last() != Some(&b'\n')
+            || inventory_bytes[..inventory_bytes.len() - 1]
+                .split(|byte| *byte == b'\n')
+                .any(|line| line.is_empty())
+        {
+            return Err("Carving inventory has malformed line endings.".into());
+        }
+    }
+
+    let mut seen = BTreeSet::new();
+    let mut outputs = BTreeSet::new();
+    let mut exported = 0usize;
+    let mut failed = 0usize;
+    for record in &inventory {
+        let candidate = selected
+            .get(&record.offset)
+            .ok_or("Carving inventory contains a candidate absent from the manifest.")?;
+        if record.scan_session_id != manifest.source.scan_session_id
+            || record.format != candidate.format
+            || record.validation != candidate.validation
+            || record.source_sha256.is_empty()
+            || !validate_hex_digest(&record.source_sha256)
+            || !seen.insert(record.offset)
+        {
+            return Err("Carving inventory contains duplicate or unsupported records.".into());
+        }
+        if record.length != candidate.length
+            || record.source_sha256 != candidate.sha256
+            || record
+                .output_name
+                .as_deref()
+                .is_some_and(|name| name != candidate.output_name)
+        {
+            return Err("Carving inventory does not match the selected-candidate manifest.".into());
+        }
+        match record.status.as_str() {
+            "exported" => {
+                if record.output_name.as_deref() != Some(candidate.output_name.as_str())
+                    || record.output_sha256.as_deref() != Some(candidate.sha256.as_str())
+                    || record.error.is_some()
+                    || !outputs.insert(candidate.output_name.clone())
+                {
+                    return Err("Exported carving inventory record is inconsistent.".into());
+                }
+                exported += 1;
+            }
+            "failed" => {
+                if record.output_sha256.is_some() || record.error.is_none() {
+                    return Err("Failed carving inventory record is inconsistent.".into());
+                }
+                failed += 1;
+            }
+            _ => return Err("Carving inventory contains an unsupported status.".into()),
+        }
+    }
+
+    let checksums = parse_checksums(&checksums_bytes)?;
+    let mut expected_checksums = BTreeSet::from([
+        "manifest.json".to_owned(),
+        "inventory.jsonl".to_owned(),
+        "summary.json".to_owned(),
+    ]);
+    expected_checksums.extend(outputs.iter().cloned());
+    if checksums.keys().cloned().collect::<BTreeSet<_>>() != expected_checksums {
+        return Err("Carving checksum manifest does not match package contents.".into());
+    }
+    let mut expected_entries = expected_checksums;
+    expected_entries.insert("checksums.sha256".into());
+    expected_entries.insert("completion.json".into());
+    if entries != expected_entries || !directories.is_empty() {
+        return Err("Carving package has missing, nested, or unlisted entries.".into());
+    }
+    for (name, expected_hash) in &checksums {
+        let (actual_hash, size) = hash_regular_file(&directory.join(name), locks)?;
+        if &actual_hash != expected_hash {
+            return Err(format!("Carving package checksum mismatch: {name}"));
+        }
+        if outputs.contains(name) {
+            let record = inventory
+                .iter()
+                .find(|record| record.output_name.as_deref() == Some(name.as_str()))
+                .ok_or("Carved output is absent from inventory.")?;
+            if size != record.length
+                || record.output_sha256.as_deref() != Some(actual_hash.as_str())
+            {
+                return Err(format!(
+                    "Carved output does not match its inventory record: {name}"
+                ));
+            }
+        }
+    }
+
+    let expected_state = if summary.cancelled || summary.failed > 0 {
+        "partial"
+    } else {
+        "complete"
+    };
+    let source_after_matches =
+        summary.source_sha256_after.as_deref() == completion.source_sha256_after.as_deref();
+    if summary.exported != exported
+        || summary.failed != failed
+        || exported + failed != inventory.len()
+        || inventory.len() > manifest.selected_candidates.len()
+        || (!summary.cancelled && inventory.len() != manifest.selected_candidates.len())
+        || completion.state != expected_state
+        || completion.checksums_sha256 != format!("{:x}", Sha256::digest(&checksums_bytes))
+        || completion.source_sha256_before != manifest.source.sha256_before_export
+        || !source_after_matches
+        || (summary.cancelled && summary.source_sha256_after.is_some())
+        || (!summary.cancelled
+            && summary.source_sha256_after.as_deref()
+                != Some(manifest.source.sha256_before_export.as_str()))
+    {
+        return Err("Carving inventory, summary, and completion state do not agree.".into());
+    }
+
+    crate::safe_file::require_plain_directory(directory).map_err(err)?;
+    if enumerate_entries(directory, locks)? != (entries, directories) {
+        return Err("Carving package contents changed during verification.".into());
+    }
+    Ok(RecoveryExportVerification {
+        package_type: "signature_carving".into(),
+        case_id: Some(manifest.source.case_id),
+        evidence_record_id: Some(manifest.source.evidence_record_id),
+        scan_session_id: Some(manifest.source.scan_session_id),
+        records: inventory.len(),
+        exported,
+        failed,
+        cancelled: summary.cancelled,
+        state: completion.state,
+        checksums_sha256: format!("{:x}", Sha256::digest(&checksums_bytes)),
+    })
+}
+
+fn verify_acquisition_package(
+    directory: &Path,
+    entries: BTreeSet<String>,
+    directories: BTreeSet<String>,
+    manifest_bytes: &[u8],
+    locks: &mut crate::safe_file::ReadLocks,
+) -> Result<RecoveryExportVerification> {
+    if !directories.is_empty() {
+        return Err("Physical acquisition packages cannot contain subdirectories.".into());
+    }
+    let completion_bytes = read_bounded(directory, "completion.json", MAX_METADATA_BYTES, locks)?;
+    let checksums_bytes = read_bounded(directory, "checksums.sha256", MAX_CHECKSUMS_BYTES, locks)?;
+    let manifest: AcquisitionManifest = serde_json::from_slice(manifest_bytes)
+        .map_err(|error| format!("Invalid acquisition manifest: {error}"))?;
+    let completion: AcquisitionCompletion = serde_json::from_slice(&completion_bytes)
+        .map_err(|error| format!("Invalid acquisition completion marker: {error}"))?;
+    let created = manifest
+        .created_unix_ns
+        .parse::<u128>()
+        .map_err(|_| "Invalid acquisition timestamp.")?;
+    if manifest.tool != "DaemonCore Data Recovery"
+        || manifest.version.is_empty()
+        || manifest.package_type != "physical_device_acquisition"
+        || created == 0
+        || manifest.case_id <= 0
+        || manifest.device_number != manifest.device_identity.number
+        || manifest.source_size_bytes == 0
+        || manifest.device_identity.size_bytes != manifest.source_size_bytes
+        || manifest.bytes_per_sector < 512
+        || !manifest.bytes_per_sector.is_power_of_two()
+        || manifest.device_identity.bytes_per_sector != manifest.bytes_per_sector
+        || !manifest
+            .source_size_bytes
+            .is_multiple_of(u64::from(manifest.bytes_per_sector))
+        || manifest.retries_per_range != 3
+        || !manifest.hardware_write_blocker_attested
+        || !matches!(
+            manifest.acquisition_method.as_str(),
+            "Windows raw physical-drive read through a handle opened without write access"
+                | "Windows raw physical-drive read through a handle opened without write access; failed ranges are retried with binary subdivision through the reported sector size"
+        )
+        || manifest.image_name != "image.raw"
+        || !validate_hex_digest(&manifest.image_sha256)
+        || manifest.read_error_ranges > MAX_ACQUISITION_ERROR_RANGES
+        || manifest.limitations.is_empty()
+    {
+        return Err("Unsupported or inconsistent acquisition manifest metadata.".into());
+    }
+
+    let completion_state = if manifest.read_error_ranges == 0 {
+        "complete"
+    } else {
+        "partial"
+    };
+    if completion.state != completion_state
+        || completion.image_sha256 != manifest.image_sha256
+        || completion.read_error_ranges != manifest.read_error_ranges
+        || completion.checksums_sha256 != format!("{:x}", Sha256::digest(&checksums_bytes))
+    {
+        return Err("Acquisition completion marker does not match the manifest.".into());
+    }
+
+    let checksums = parse_checksums(&checksums_bytes)?;
+    let expected_names = BTreeSet::from([
+        "image.raw".to_owned(),
+        "manifest.json".to_owned(),
+        "read-errors.jsonl".to_owned(),
+    ]);
+    if checksums.keys().cloned().collect::<BTreeSet<_>>() != expected_names {
+        return Err("Acquisition checksum list does not match expected package files.".into());
+    }
+    let mut expected_entries = expected_names;
+    expected_entries.insert("checksums.sha256".into());
+    expected_entries.insert("completion.json".into());
+    if entries != expected_entries {
+        return Err("Acquisition package has missing or unlisted files.".into());
+    }
+
+    let (image_hash, image_length) = hash_regular_file(&directory.join("image.raw"), locks)?;
+    if image_length != manifest.source_size_bytes || image_hash != manifest.image_sha256 {
+        return Err("Acquisition image size or SHA-256 does not match its manifest.".into());
+    }
+    for name in ["manifest.json", "read-errors.jsonl"] {
+        let (digest, _) = hash_regular_file(&directory.join(name), locks)?;
+        if checksums.get(name) != Some(&digest) {
+            return Err(format!("Acquisition checksum mismatch: {name}"));
+        }
+    }
+    if checksums.get("image.raw") != Some(&image_hash) {
+        return Err("Acquisition checksum mismatch: image.raw".into());
+    }
+    verify_acquisition_error_map(directory, &manifest, &checksums, locks)?;
+    crate::safe_file::require_plain_directory(directory).map_err(err)?;
+    if enumerate_entries(directory, locks)? != (expected_entries, BTreeSet::new()) {
+        return Err("Acquisition package contents changed during verification.".into());
+    }
+    Ok(RecoveryExportVerification {
+        package_type: "physical_device_acquisition".into(),
+        case_id: Some(manifest.case_id),
+        evidence_record_id: None,
+        scan_session_id: None,
+        records: 1,
+        exported: 1,
+        failed: manifest.read_error_ranges,
+        cancelled: false,
+        state: completion.state,
+        checksums_sha256: format!("{:x}", Sha256::digest(&checksums_bytes)),
+    })
+}
+
+fn verify_acquisition_error_map(
+    directory: &Path,
+    manifest: &AcquisitionManifest,
+    checksums: &BTreeMap<String, String>,
+    locks: &mut crate::safe_file::ReadLocks,
+) -> Result<()> {
+    use std::io::{BufRead, BufReader};
+
+    let path = directory.join("read-errors.jsonl");
+    let metadata = fs::symlink_metadata(&path).map_err(err)?;
+    if !metadata.is_file()
+        || metadata.file_type().is_symlink()
+        || metadata.len() > MAX_ACQUISITION_ERROR_MAP_BYTES
+    {
+        return Err("Acquisition read-error map is not a bounded regular file.".into());
+    }
+    let file = crate::safe_file::open_regular_file(&path).map_err(err)?;
+    let opened = file.metadata().map_err(err)?;
+    if !opened.is_file() || opened.len() != metadata.len() {
+        return Err("Acquisition read-error map changed while opening.".into());
+    }
+    let initial_length = opened.len();
+    let mut reader = BufReader::new(file);
+    let mut line = Vec::new();
+    let mut count = 0usize;
+    let mut previous_end = 0u64;
+    loop {
+        line.clear();
+        let read = reader.read_until(b'\n', &mut line).map_err(err)?;
+        if read == 0 {
+            break;
+        }
+        if line.len() > 8192 || line.last() != Some(&b'\n') || line.len() < 2 {
+            return Err("Acquisition read-error map contains an invalid line.".into());
+        }
+        let record: AcquisitionReadError = serde_json::from_slice(&line[..line.len() - 1])
+            .map_err(|error| format!("Invalid acquisition read-error record: {error}"))?;
+        let expected_length = manifest
+            .source_size_bytes
+            .saturating_sub(record.offset)
+            .min(1024 * 1024);
+        if record.offset < previous_end
+            || record.offset >= manifest.source_size_bytes
+            || !record.offset.is_multiple_of(1024 * 1024)
+            || record.length == 0
+            || record.length != expected_length
+            || record
+                .offset
+                .checked_add(record.length)
+                .is_none_or(|end| end > manifest.source_size_bytes)
+            || record.attempts != manifest.retries_per_range
+            || record.error.is_empty()
+            || record.error.len() > 4096
+        {
+            return Err("Acquisition read-error range is invalid or out of order.".into());
+        }
+        previous_end = record.offset + record.length;
+        count += 1;
+        if count > MAX_ACQUISITION_ERROR_RANGES {
+            return Err("Acquisition read-error map exceeds its range limit.".into());
+        }
+    }
+    let file = reader.into_inner();
+    if file.metadata().map_err(err)?.len() != initial_length || count != manifest.read_error_ranges
+    {
+        return Err("Acquisition read-error map count or size changed during verification.".into());
+    }
+    locks.retain_file(file);
+    if count == 0 && initial_length != 0 {
+        return Err("An acquisition with no read errors must have an empty error map.".into());
+    }
+    let (digest, _) = hash_regular_file(&path, locks)?;
+    if checksums.get("read-errors.jsonl") != Some(&digest) {
+        return Err("Acquisition checksum mismatch: read-errors.jsonl".into());
+    }
+    Ok(())
+}
+
+fn verify_raid_package(
+    directory: &Path,
+    entries: BTreeSet<String>,
+    directories: BTreeSet<String>,
+    manifest_bytes: &[u8],
+    locks: &mut crate::safe_file::ReadLocks,
+) -> Result<RecoveryExportVerification> {
+    if !directories.is_empty() {
+        return Err("RAID reconstruction packages cannot contain subdirectories.".into());
+    }
+    let completion_bytes = read_bounded(directory, "completion.json", MAX_METADATA_BYTES, locks)?;
+    let checksums_bytes = read_bounded(directory, "checksums.sha256", MAX_CHECKSUMS_BYTES, locks)?;
+    let manifest: RaidManifest = serde_json::from_slice(manifest_bytes)
+        .map_err(|error| format!("Invalid RAID reconstruction manifest: {error}"))?;
+    let completion: RaidCompletion = serde_json::from_slice(&completion_bytes)
+        .map_err(|error| format!("Invalid RAID completion marker: {error}"))?;
+    let created = manifest
+        .created_unix_ns
+        .parse::<u128>()
+        .map_err(|_| "Invalid RAID reconstruction timestamp.")?;
+    if manifest.tool != "DaemonCore Data Recovery"
+        || manifest.version.is_empty()
+        || manifest.package_type != "raid_reconstruction"
+        || manifest.case_id <= 0
+        || created == 0
+        || !manifest.member_order_is_operator_supplied
+        || !(2..=32).contains(&manifest.members.len())
+        || !matches!(manifest.bytes_per_sector, 512 | 4096)
+        || manifest.image_name != "image.raw"
+        || !validate_hex_digest(&manifest.image_sha256)
+        || manifest.limitations.is_empty()
+        || completion.state != "complete"
+        || completion.image_sha256 != manifest.image_sha256
+        || completion.checksums_sha256 != format!("{:x}", Sha256::digest(&checksums_bytes))
+    {
+        return Err("Unsupported or inconsistent RAID reconstruction metadata.".into());
+    }
+
+    let first_data_size = manifest.members[0].data_size_bytes;
+    if first_data_size == 0 || !first_data_size.is_multiple_of(u64::from(manifest.bytes_per_sector))
+    {
+        return Err("RAID member data size is empty or not sector aligned.".into());
+    }
+    for (order, member) in manifest.members.iter().enumerate() {
+        if member.order != order
+            || member.path.is_empty()
+            || member.path.encode_utf16().count() > 32767
+            || member.path.chars().any(char::is_control)
+            || member.image_size_bytes == 0
+            || member.data_offset_bytes != manifest.data_offset_bytes
+            || member
+                .image_size_bytes
+                .checked_sub(member.data_offset_bytes)
+                != Some(member.data_size_bytes)
+            || member.data_size_bytes != first_data_size
+            || !validate_hex_digest(&member.image_sha256)
+        {
+            return Err("RAID member provenance is invalid or inconsistent.".into());
+        }
+    }
+    let expected_size = match manifest.level.as_str() {
+        "RAID 0" => {
+            let stripe = manifest
+                .stripe_size_bytes
+                .ok_or("RAID 0 manifest has no stripe size.")?;
+            if !(512..=16 * 1024 * 1024).contains(&stripe)
+                || !stripe.is_power_of_two()
+                || !stripe.is_multiple_of(u64::from(manifest.bytes_per_sector))
+                || !first_data_size.is_multiple_of(stripe)
+                || manifest.layout_method
+                    != "RAID 0 left-symmetric striping in operator-supplied member order"
+            {
+                return Err("RAID 0 stripe geometry or layout method is invalid.".into());
+            }
+            first_data_size
+                .checked_mul(manifest.members.len() as u64)
+                .ok_or("Reconstructed RAID 0 size overflow")?
+        }
+        "RAID 1" => {
+            if manifest.stripe_size_bytes.is_some()
+                || manifest.layout_method
+                    != "RAID 1 mirror copy after byte-for-byte agreement across all selected data regions"
+            {
+                return Err("RAID 1 mirror metadata or layout method is invalid.".into());
+            }
+            first_data_size
+        }
+        "RAID 5" => {
+            let stripe = manifest
+                .stripe_size_bytes
+                .ok_or("RAID 5 manifest has no stripe size.")?;
+            if manifest.members.len() < 3
+                || !(512..=16 * 1024 * 1024).contains(&stripe)
+                || !stripe.is_power_of_two()
+                || !stripe.is_multiple_of(u64::from(manifest.bytes_per_sector))
+                || !first_data_size.is_multiple_of(stripe)
+                || manifest.layout_method
+                    != "RAID 5 left-symmetric rotating parity; all member data and XOR parity verified"
+            {
+                return Err("RAID 5 stripe geometry or parity-validation method is invalid.".into());
+            }
+            first_data_size
+                .checked_mul((manifest.members.len() - 1) as u64)
+                .ok_or("Reconstructed RAID 5 size overflow")?
+        }
+        _ => return Err("Unsupported RAID reconstruction level.".into()),
+    };
+    if manifest.reconstructed_size_bytes != expected_size {
+        return Err("RAID reconstruction size does not match the declared geometry.".into());
+    }
+
+    let checksums = parse_checksums(&checksums_bytes)?;
+    let expected_checksums = BTreeSet::from(["image.raw".to_owned(), "manifest.json".to_owned()]);
+    if checksums.keys().cloned().collect::<BTreeSet<_>>() != expected_checksums {
+        return Err("RAID checksum list does not match package contents.".into());
+    }
+    let mut expected_entries = expected_checksums;
+    expected_entries.insert("checksums.sha256".into());
+    expected_entries.insert("completion.json".into());
+    if entries != expected_entries {
+        return Err("RAID package has missing or unlisted files.".into());
+    }
+    let (image_hash, image_size) = hash_regular_file(&directory.join("image.raw"), locks)?;
+    if image_size != expected_size || image_hash != manifest.image_sha256 {
+        return Err("Reconstructed RAID image size or SHA-256 does not match its manifest.".into());
+    }
+    let (manifest_hash, _) = hash_regular_file(&directory.join("manifest.json"), locks)?;
+    if checksums.get("manifest.json") != Some(&manifest_hash) {
+        return Err("RAID package checksum mismatch: manifest.json".into());
+    }
+    if checksums.get("image.raw") != Some(&image_hash) {
+        return Err("RAID package checksum mismatch: image.raw".into());
+    }
+    crate::safe_file::require_plain_directory(directory).map_err(err)?;
+    if enumerate_entries(directory, locks)? != (expected_entries, BTreeSet::new()) {
+        return Err("RAID package contents changed during verification.".into());
+    }
+    Ok(RecoveryExportVerification {
+        package_type: "raid_reconstruction".into(),
+        case_id: Some(manifest.case_id),
+        evidence_record_id: None,
+        scan_session_id: None,
+        records: manifest.members.len(),
+        exported: 1,
+        failed: 0,
+        cancelled: false,
+        state: completion.state,
+        checksums_sha256: format!("{:x}", Sha256::digest(&checksums_bytes)),
+    })
+}
+
 pub(crate) fn verify_package(directory: &Path) -> Result<RecoveryExportVerification> {
     let mut locks = crate::safe_file::ReadLocks::default();
     let (entries, directories) = enumerate_entries(directory, &mut locks)?;
+    let manifest_bytes = read_bounded(directory, "manifest.json", MAX_METADATA_BYTES, &mut locks)?;
+    let package_kind: serde_json::Value = serde_json::from_slice(&manifest_bytes)
+        .map_err(|error| format!("Invalid recovery manifest: {error}"))?;
+    match package_kind
+        .get("package_type")
+        .and_then(|value| value.as_str())
+    {
+        Some("signature_carving") => {
+            return verify_carve_package(directory, entries, directories, &mut locks)
+        }
+        Some("physical_device_acquisition") => {
+            return verify_acquisition_package(
+                directory,
+                entries,
+                directories,
+                &manifest_bytes,
+                &mut locks,
+            )
+        }
+        Some("raid_reconstruction") => {
+            return verify_raid_package(
+                directory,
+                entries,
+                directories,
+                &manifest_bytes,
+                &mut locks,
+            )
+        }
+        _ => {}
+    }
+
     let checksums_bytes = read_bounded(
         directory,
         "checksums.sha256",
@@ -374,7 +1134,6 @@ pub(crate) fn verify_package(directory: &Path) -> Result<RecoveryExportVerificat
     let completion_bytes =
         read_bounded(directory, "completion.json", MAX_METADATA_BYTES, &mut locks)?;
     let summary_bytes = read_bounded(directory, "summary.json", MAX_METADATA_BYTES, &mut locks)?;
-    let manifest_bytes = read_bounded(directory, "manifest.json", MAX_METADATA_BYTES, &mut locks)?;
     let inventory_bytes = read_bounded(
         directory,
         "inventory.jsonl",
@@ -414,6 +1173,42 @@ pub(crate) fn verify_package(directory: &Path) -> Result<RecoveryExportVerificat
     {
         return Err("Unsupported or inconsistent recovery manifest metadata.".into());
     }
+    let fat32_manifest = match manifest
+        .volume
+        .get("filesystem")
+        .and_then(|value| value.as_str())
+    {
+        Some("FAT32") => {
+            let volume_offset = manifest.volume["volume_offset"].as_u64();
+            let volume_size = manifest.volume["volume_size"].as_u64();
+            let cluster_size = manifest.volume["cluster_size"].as_u64();
+            let cluster_count = manifest.volume["cluster_count"].as_u64();
+            if volume_offset.zip(volume_size).is_none_or(|(offset, size)| {
+                size == 0
+                    || offset
+                        .checked_add(size)
+                        .is_none_or(|end| end > manifest.source.size)
+            }) || cluster_size
+                .is_none_or(|size| !(512..=524_288).contains(&size) || !size.is_power_of_two())
+                || cluster_count.is_none_or(|count| !(65_525..=0x0fff_fff5).contains(&count))
+                || cluster_count.zip(cluster_size).zip(volume_size).is_none_or(
+                    |((count, cluster), size)| {
+                        count.checked_mul(cluster).is_none_or(|bytes| bytes > size)
+                            || size % cluster != 0
+                    },
+                )
+                || manifest.volume["deleted_file_layout"]
+                    != "contiguous_assumed_only_when_candidate_clusters_are_free"
+                || manifest.volume["selected_cluster_overlap_check"]
+                    != "selected_entries_only_other_deleted_entries_may_reference_the_same_clusters"
+            {
+                return Err("FAT32 recovery manifest has invalid geometry or omits its recovery assumptions.".into());
+            }
+            true
+        }
+        Some(_) => return Err("Recovery manifest names an unsupported filesystem.".into()),
+        None => false,
+    };
 
     let canonical = directory.canonicalize().map_err(err)?;
     let summary_directory = PathBuf::from(&summary.directory)
@@ -479,6 +1274,23 @@ pub(crate) fn verify_package(directory: &Path) -> Result<RecoveryExportVerificat
             || !validate_hex_digest(&record.record_sha256)
     }) {
         return Err("Recovery manifest contains invalid selected-record metadata.".into());
+    }
+    if fat32_manifest
+        && manifest.selected_records.iter().any(|record| {
+            record.parent_record != 5
+                || record.parent_sequence.is_some()
+                || record.parent_path.is_some()
+                || !record.filename_references.is_empty()
+                || record.path_restored != Some(false)
+                || record.storage != "contiguous_assumed"
+                || record.allocation != "free_contiguous_clusters"
+                || record.output_name.as_deref()
+                    != Some(safe_name(record.record, &record.name).as_str())
+        })
+    {
+        return Err(
+            "FAT32 recovery manifest contains unsupported path or allocation claims.".into(),
+        );
     }
     let mut seen = BTreeSet::new();
     let mut outputs = BTreeSet::new();
@@ -625,6 +1437,7 @@ pub(crate) fn verify_package(directory: &Path) -> Result<RecoveryExportVerificat
     }
 
     Ok(RecoveryExportVerification {
+        package_type: "filesystem_recovery".into(),
         case_id: manifest.source.case_id,
         evidence_record_id: manifest.source.evidence_record_id,
         scan_session_id: manifest.source.scan_session_id,
@@ -657,7 +1470,12 @@ pub async fn verify_recovery_export(
         .map_err(err)?;
     let (event, verification, failure) = match &result {
         Ok(verification) => (
-            "recovery_export_verified",
+            match verification.package_type.as_str() {
+                "physical_device_acquisition" => "acquisition_package_verified",
+                "signature_carving" => "carving_package_verified",
+                "raid_reconstruction" => "raid_package_verified",
+                _ => "recovery_export_verified",
+            },
             Some(serde_json::to_value(verification).map_err(err)?),
             None,
         ),
@@ -671,6 +1489,7 @@ pub async fn verify_recovery_export(
         "case_id": result.as_ref().ok().map(|value| value.case_id),
         "evidence_record_id": result.as_ref().ok().and_then(|value| value.evidence_record_id),
         "scan_session_id": result.as_ref().ok().and_then(|value| value.scan_session_id),
+        "package_type": result.as_ref().ok().map(|value| value.package_type.as_str()),
         "directory": folder_path,
         "verification": verification,
         "failure": failure
@@ -728,6 +1547,133 @@ mod tests {
 
     fn hash(bytes: &[u8]) -> String {
         format!("{:x}", Sha256::digest(bytes))
+    }
+
+    fn acquisition_package(with_read_error: bool) -> (PathBuf, PathBuf) {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join("test-temp")
+            .join(format!("acquisition-verify-{unique}"));
+        let directory = root.join("package");
+        fs::create_dir_all(&directory).unwrap();
+        let image = vec![if with_read_error { 0 } else { 0x5a }; 512];
+        let image_hash = hash(&image);
+        fs::write(directory.join("image.raw"), &image).unwrap();
+        let error_map = if with_read_error {
+            b"{\"offset\":0,\"length\":512,\"attempts\":3,\"error\":\"fixture failure\"}\n".to_vec()
+        } else {
+            Vec::new()
+        };
+        fs::write(directory.join("read-errors.jsonl"), &error_map).unwrap();
+        let manifest = json!({
+            "tool":"DaemonCore Data Recovery",
+            "version":"0.1.0",
+            "package_type":"physical_device_acquisition",
+            "case_id":1,
+            "created_unix_ns":"1",
+            "device_number":0,
+            "device_identity": {
+                "number":0,
+                "size_bytes":512,
+                "bytes_per_sector":512,
+                "vendor":"Fixture",
+                "product":"Disk",
+                "revision":null,
+                "serial_number":"TEST-01",
+                "bus_type":7,
+                "identity_error":null
+            },
+            "source_size_bytes":512,
+            "bytes_per_sector":512,
+            "retries_per_range":3,
+            "hardware_write_blocker_attested":true,
+            "acquisition_method":"Windows raw physical-drive read through a handle opened without write access",
+            "image_name":"image.raw",
+            "image_sha256":image_hash,
+            "read_error_ranges":if with_read_error { 1 } else { 0 },
+            "limitations":"fixture"
+        });
+        let manifest_bytes = serde_json::to_vec_pretty(&manifest).unwrap();
+        fs::write(directory.join("manifest.json"), &manifest_bytes).unwrap();
+        let checksums = format!(
+            "{}  manifest.json\n{}  read-errors.jsonl\n{}  image.raw\n",
+            hash(&manifest_bytes),
+            hash(&error_map),
+            image_hash
+        );
+        fs::write(directory.join("checksums.sha256"), &checksums).unwrap();
+        let completion = json!({
+            "state":if with_read_error { "partial" } else { "complete" },
+            "image_sha256":image_hash,
+            "checksums_sha256":hash(checksums.as_bytes()),
+            "read_error_ranges":if with_read_error { 1 } else { 0 }
+        });
+        fs::write(
+            directory.join("completion.json"),
+            serde_json::to_vec_pretty(&completion).unwrap(),
+        )
+        .unwrap();
+        (root, directory)
+    }
+
+    #[test]
+    fn verifies_complete_acquisition_package_and_image_digest() {
+        let (root, directory) = acquisition_package(false);
+        let verification = verify_package(&directory).unwrap();
+        assert_eq!(verification.state, "complete");
+        assert_eq!(verification.case_id, Some(1));
+        assert_eq!(verification.exported, 1);
+        fs::write(directory.join("unlisted.bin"), b"unexpected").unwrap();
+        assert!(verify_package(&directory)
+            .unwrap_err()
+            .contains("missing or unlisted files"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn verifies_partial_acquisition_ranges_and_rejects_modified_image() {
+        let (root, directory) = acquisition_package(true);
+        let verification = verify_package(&directory).unwrap();
+        assert_eq!(verification.state, "partial");
+        assert_eq!(verification.failed, 1);
+        fs::write(directory.join("image.raw"), vec![0x7f; 512]).unwrap();
+        assert!(verify_package(&directory)
+            .unwrap_err()
+            .contains("image size or SHA-256"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rejects_out_of_bounds_acquisition_error_ranges_even_when_checksums_are_rebuilt() {
+        let (root, directory) = acquisition_package(true);
+        let error_map = b"{\"offset\":512,\"length\":0,\"attempts\":3,\"error\":\"forged\"}\n";
+        fs::write(directory.join("read-errors.jsonl"), error_map).unwrap();
+        let manifest = fs::read(directory.join("manifest.json")).unwrap();
+        let image = fs::read(directory.join("image.raw")).unwrap();
+        let checksums = format!(
+            "{}  manifest.json\n{}  read-errors.jsonl\n{}  image.raw\n",
+            hash(&manifest),
+            hash(error_map),
+            hash(&image)
+        );
+        fs::write(directory.join("checksums.sha256"), &checksums).unwrap();
+        let mut completion: serde_json::Value =
+            serde_json::from_slice(&fs::read(directory.join("completion.json")).unwrap()).unwrap();
+        completion["checksums_sha256"] = json!(hash(checksums.as_bytes()));
+        fs::write(
+            directory.join("completion.json"),
+            serde_json::to_vec_pretty(&completion).unwrap(),
+        )
+        .unwrap();
+        assert!(verify_package(&directory)
+            .unwrap_err()
+            .contains("read-error range is invalid"));
+        fs::remove_dir_all(root).unwrap();
     }
 
     fn valid_package() -> (PathBuf, String) {

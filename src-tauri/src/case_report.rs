@@ -16,6 +16,9 @@ use tauri::{Manager, State};
 
 const MAX_REPORT_BYTES: usize = 64 * 1024 * 1024;
 const MAX_REPORT_SCANS: usize = 200;
+const MAX_REPORT_OPERATIONS: usize = 2_000;
+const MAX_OPERATION_PAYLOAD_BYTES: usize = 1024 * 1024;
+const MAX_REPORT_OPERATION_BYTES: usize = 16 * 1024 * 1024;
 const ANCHOR_NOTE: &str = "This report includes an internally verified local audit-chain head. It is not digitally signed or externally anchored; preserve the head hash independently.";
 
 #[derive(Serialize)]
@@ -61,6 +64,41 @@ struct ReportFat32Scan {
 }
 
 #[derive(Serialize)]
+struct ReportExfatScan {
+    id: i64,
+    evidence_id: i64,
+    evidence_hash_matches_current_record: bool,
+    volume_offset: String,
+    source_sha256: String,
+    completed_at: String,
+    snapshot_sha256: String,
+    boot: serde_json::Value,
+    entries: Vec<daemoncore_ntfs_core::exfat::TreeEntry>,
+}
+
+#[derive(Serialize)]
+struct ReportCarveScan {
+    id: i64,
+    evidence_id: i64,
+    evidence_hash_matches_current_record: bool,
+    source_sha256: String,
+    completed_at: String,
+    scanned_bytes: u64,
+    candidates_limited: bool,
+    snapshot_sha256: String,
+    candidates: Vec<crate::carving::CarvedCandidate>,
+}
+
+#[derive(Serialize)]
+struct ReportOperation {
+    audit_record_id: i64,
+    timestamp: String,
+    event: String,
+    record_sha256: String,
+    payload: serde_json::Value,
+}
+
+#[derive(Serialize)]
 struct CaseReport {
     format: &'static str,
     generated_at_unix_ms: String,
@@ -69,12 +107,17 @@ struct CaseReport {
     evidence: Vec<EvidenceRecord>,
     scans: Vec<ReportScan>,
     fat32_scans: Vec<ReportFat32Scan>,
+    exfat_scans: Vec<ReportExfatScan>,
+    carve_scans: Vec<ReportCarveScan>,
+    imaging_and_raid_operations: Vec<ReportOperation>,
+    recovery_operations: Vec<ReportOperation>,
     audit: ReportAudit,
     scope_note: &'static str,
 }
 
 #[derive(Serialize)]
 pub struct CaseReportExport {
+    case_id: i64,
     path: String,
     sha256: String,
     bytes: u64,
@@ -82,6 +125,116 @@ pub struct CaseReportExport {
     candidates: usize,
     fat32_scans: usize,
     directory_entries: usize,
+    exfat_scans: usize,
+    exfat_entries: usize,
+    carve_scans: usize,
+    carved_candidates: usize,
+    imaging_and_raid_operations: usize,
+    recovery_operations: usize,
+}
+
+fn case_operations(
+    db: &rusqlite::Connection,
+    case_id: i64,
+    events: &[&str],
+    family: &str,
+) -> Result<Vec<ReportOperation>> {
+    let placeholders = vec!["?"; events.len()].join(",");
+    let query = format!("SELECT id,timestamp,event,payload,hash FROM audit WHERE event IN ({placeholders}) ORDER BY id");
+    let mut statement = db.prepare(&query).map_err(err)?;
+    let rows = statement
+        .query_map(rusqlite::params_from_iter(events.iter()), |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        })
+        .map_err(err)?;
+    let mut operations = Vec::new();
+    let mut operation_bytes = 0usize;
+    for row in rows {
+        let (id, timestamp, event, payload, record_sha256) = row.map_err(err)?;
+        if !events.contains(&event.as_str()) {
+            return Err("The audit query returned an unexpected event type.".into());
+        }
+        if payload.len() > MAX_OPERATION_PAYLOAD_BYTES {
+            return Err(format!(
+                "Audit record {id} is too large to include safely in this report."
+            ));
+        }
+        let payload_bytes = payload.len();
+        let payload: serde_json::Value = serde_json::from_str(&payload)
+            .map_err(|error| format!("Audit record {id} has invalid operation data: {error}"))?;
+        if payload.get("case_id").and_then(serde_json::Value::as_i64) == Some(case_id) {
+            operation_bytes = operation_bytes
+                .checked_add(payload_bytes)
+                .ok_or_else(|| format!("Case {family} report size overflow"))?;
+            if operation_bytes > MAX_REPORT_OPERATION_BYTES {
+                return Err(format!(
+                    "Case {family} audit records exceed the {} MiB report limit.",
+                    MAX_REPORT_OPERATION_BYTES / (1024 * 1024)
+                ));
+            }
+            operations.push(ReportOperation {
+                audit_record_id: id,
+                timestamp,
+                event,
+                record_sha256,
+                payload,
+            });
+        }
+        if operations.len() > MAX_REPORT_OPERATIONS {
+            return Err(format!(
+                "The case exceeds the supported {MAX_REPORT_OPERATIONS}-operation report limit."
+            ));
+        }
+    }
+    Ok(operations)
+}
+
+fn case_imaging_and_raid_operations(
+    db: &rusqlite::Connection,
+    case_id: i64,
+) -> Result<Vec<ReportOperation>> {
+    const EVENTS: &[&str] = &[
+        "physical_device_acquisition_started",
+        "physical_device_acquisition_published",
+        "physical_device_acquisition_cancelled",
+        "physical_device_acquisition_failed",
+        "physical_device_acquisition_finalization_failed",
+        "acquired_image_hash_recorded",
+        "acquisition_package_verified",
+        "raid_reconstruction_started",
+        "raid_reconstruction_published",
+        "raid_reconstruction_cancelled",
+        "raid_reconstruction_failed",
+        "raid_reconstruction_image_registered",
+        "raid_package_verified",
+    ];
+    case_operations(db, case_id, EVENTS, "imaging/RAID operation")
+}
+
+fn case_recovery_operations(
+    db: &rusqlite::Connection,
+    case_id: i64,
+) -> Result<Vec<ReportOperation>> {
+    const EVENTS: &[&str] = &[
+        "recovery_export_rejected",
+        "recovery_export_started",
+        "recovery_export_finished",
+        "fat32_recovery_export_rejected",
+        "fat32_recovery_export_started",
+        "fat32_recovery_export_finished",
+        "carve_export_started",
+        "carve_export_finished",
+        "carve_export_failed",
+        "recovery_export_verified",
+        "carving_package_verified",
+    ];
+    case_operations(db, case_id, EVENTS, "recovery")
 }
 
 struct StagedFile(PathBuf);
@@ -203,6 +356,140 @@ fn case_report_from(db: &rusqlite::Connection, case_id: i64) -> Result<CaseRepor
             entries,
         });
     }
+    let mut exfat_statement = db.prepare(
+        "SELECT id,evidence_id,volume_offset,source_sha256,completed_at,boot_json,entries_json,snapshot_sha256 FROM exfat_scan_sessions WHERE case_id=?1 ORDER BY id",
+    ).map_err(err)?;
+    let exfat_rows = exfat_statement
+        .query_map([case_id], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
+                row.get::<_, String>(7)?,
+            ))
+        })
+        .map_err(err)?;
+    let mut exfat_scans = Vec::new();
+    let mut exfat_audit = std::collections::HashMap::new();
+    let mut exfat_audit_statement = db
+        .prepare("SELECT payload FROM audit WHERE event='exfat_scan_persisted'")
+        .map_err(err)?;
+    for row in exfat_audit_statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(err)?
+    {
+        let payload: serde_json::Value = serde_json::from_str(&row.map_err(err)?).map_err(err)?;
+        let scan_id = payload["scan_session_id"]
+            .as_i64()
+            .ok_or("An exFAT audit record has no valid scan ID.")?;
+        if exfat_audit.insert(scan_id, payload).is_some() {
+            return Err(format!(
+                "Duplicate exFAT scan audit record for scan {scan_id}."
+            ));
+        }
+    }
+    for row in exfat_rows {
+        let (
+            id,
+            evidence_id,
+            volume_offset,
+            source_sha256,
+            completed_at,
+            boot_json,
+            entries_json,
+            stored_digest,
+        ) = row.map_err(err)?;
+        let evidence_record = evidence
+            .iter()
+            .find(|record| record.id == evidence_id)
+            .ok_or_else(|| format!("exFAT scan {id} refers to evidence outside this case."))?;
+        let calculated_digest =
+            crate::exfat_commands::snapshot_digest(&source_sha256, &boot_json, &entries_json);
+        if calculated_digest != stored_digest {
+            return Err(format!(
+                "exFAT scan {id} snapshot digest does not match the stored contents."
+            ));
+        }
+        let boot: serde_json::Value = serde_json::from_str(&boot_json)
+            .map_err(|error| format!("exFAT scan {id} boot metadata is invalid: {error}"))?;
+        let entries: Vec<daemoncore_ntfs_core::exfat::TreeEntry> =
+            serde_json::from_str(&entries_json).map_err(|error| {
+                format!("exFAT scan {id} directory snapshot is invalid: {error}")
+            })?;
+        let audit_payload = exfat_audit
+            .get(&id)
+            .ok_or_else(|| format!("exFAT scan {id} has no matching case audit record."))?;
+        if audit_payload["case_id"].as_i64() != Some(case_id)
+            || audit_payload["evidence_id"].as_i64() != Some(evidence_id)
+            || audit_payload["source_sha256"].as_str() != Some(source_sha256.as_str())
+            || audit_payload["snapshot_sha256"].as_str() != Some(stored_digest.as_str())
+            || audit_payload["volume_offset"].as_u64() != volume_offset.parse::<u64>().ok()
+            || audit_payload["records"].as_u64() != Some(entries.len() as u64)
+        {
+            return Err(format!(
+                "exFAT scan {id} does not match its case audit record."
+            ));
+        }
+        exfat_scans.push(ReportExfatScan {
+            id,
+            evidence_id,
+            evidence_hash_matches_current_record: evidence_record.status == "hashed"
+                && evidence_record.sha256.as_deref() == Some(source_sha256.as_str()),
+            volume_offset,
+            source_sha256,
+            completed_at,
+            snapshot_sha256: stored_digest,
+            boot,
+            entries,
+        });
+    }
+    if exfat_audit.iter().any(|(id, payload)| {
+        payload["case_id"].as_i64() == Some(case_id)
+            && !exfat_scans.iter().any(|scan| scan.id == *id)
+    }) {
+        return Err("An audited exFAT scan has no matching stored snapshot.".into());
+    }
+    let carve_sessions = crate::carving::list_case_scan_sessions_from(db, case_id)?;
+    if scans.len() + fat32_scans.len() + exfat_scans.len() + carve_sessions.len() > MAX_REPORT_SCANS
+    {
+        return Err(format!(
+            "The case exceeds the supported {MAX_REPORT_SCANS}-scan report limit."
+        ));
+    }
+    let mut carve_scans = Vec::with_capacity(carve_sessions.len());
+    for session in carve_sessions {
+        let evidence_record = evidence
+            .iter()
+            .find(|record| record.id == session.evidence_id)
+            .ok_or_else(|| {
+                format!(
+                    "Carving scan {} refers to evidence outside this case.",
+                    session.id
+                )
+            })?;
+        if session.scanned_bytes != evidence_record.size_bytes {
+            return Err(format!(
+                "Carving scan {} did not cover the complete recorded evidence image.",
+                session.id
+            ));
+        }
+        carve_scans.push(ReportCarveScan {
+            id: session.id,
+            evidence_id: session.evidence_id,
+            evidence_hash_matches_current_record: evidence_record.status == "hashed"
+                && evidence_record.sha256.as_deref() == Some(session.source_sha256.as_str()),
+            source_sha256: session.source_sha256,
+            completed_at: session.completed_at,
+            scanned_bytes: session.scanned_bytes,
+            candidates_limited: session.candidates_limited,
+            snapshot_sha256: session.snapshot_sha256,
+            candidates: session.candidates,
+        });
+    }
     let audit = verify_audit_chain(db)?;
     if !audit.valid {
         return Err(format!(
@@ -211,14 +498,20 @@ fn case_report_from(db: &rusqlite::Connection, case_id: i64) -> Result<CaseRepor
         ));
     }
     let generated_at_unix_ms = audit_timestamp(SystemTime::now())?;
+    let imaging_and_raid_operations = case_imaging_and_raid_operations(db, case_id)?;
+    let recovery_operations = case_recovery_operations(db, case_id)?;
     let report = CaseReport {
-        format: "daemoncore-case-report-v2",
+        format: "daemoncore-case-report-v6",
         generated_at_unix_ms,
         hash_algorithm: "SHA-256",
         case,
         evidence,
         scans,
         fat32_scans,
+        exfat_scans,
+        carve_scans,
+        imaging_and_raid_operations,
+        recovery_operations,
         audit: ReportAudit {
             chain_valid: audit.valid,
             records_checked: audit.records_checked,
@@ -226,7 +519,7 @@ fn case_report_from(db: &rusqlite::Connection, case_id: i64) -> Result<CaseRepor
             externally_anchored: false,
             note: ANCHOR_NOTE,
         },
-        scope_note: "This report contains case records, NTFS candidates, and FAT32 directory-entry snapshots. It does not establish recovered-file content integrity, acquisition provenance, or an external trust anchor.",
+        scope_note: "This report contains case records, NTFS candidates, FAT32 and exFAT directory-entry snapshots, validated PNG/BMP/JPEG carving snapshots, case-scoped recovery export and verification records, and selected audit-linked physical acquisition and RAID operation records. exFAT entries are live directory inventory only. Audit events are included as recorded and are not independent proof that device identity, write blocking, array geometry, or acquisition conditions were correct. It does not establish recovered-file content integrity, that carved files were deleted, or an external trust anchor.",
     };
     Ok(report)
 }
@@ -277,9 +570,18 @@ fn publish_case_report(
     report: &CaseReport,
     bytes: &[u8],
     path: &Path,
+    cancel: &std::sync::atomic::AtomicBool,
 ) -> Result<CaseReportExport> {
+    if cancel.load(Ordering::SeqCst) {
+        return Err("Case report export cancelled before staging.".into());
+    }
     let digest = format!("{:x}", Sha256::digest(bytes));
     let staged = stage_report(path, bytes)?;
+    if cancel.load(Ordering::SeqCst) {
+        return Err("Case report export cancelled before publication.".into());
+    }
+    let imaging_and_raid_operations = report.imaging_and_raid_operations.len();
+    let recovery_operations = report.recovery_operations.len();
     audit(
         db,
         "case_report_export_prepared",
@@ -292,10 +594,19 @@ fn publish_case_report(
             "candidates": report.scans.iter().map(|scan| scan.candidates.len()).sum::<usize>(),
             "fat32_scans": report.fat32_scans.len(),
             "directory_entries": report.fat32_scans.iter().map(|scan| scan.entries.len()).sum::<usize>(),
+            "exfat_scans": report.exfat_scans.len(),
+            "exfat_entries": report.exfat_scans.iter().map(|scan| scan.entries.len()).sum::<usize>(),
+            "carve_scans": report.carve_scans.len(),
+            "carved_candidates": report.carve_scans.iter().map(|scan| scan.candidates.len()).sum::<usize>(),
+            "imaging_and_raid_operations": imaging_and_raid_operations,
+            "recovery_operations": recovery_operations,
             "audit_head_in_report": report.audit.head_sha256,
         })
         .to_string(),
     )?;
+    if cancel.load(Ordering::SeqCst) {
+        return Err("Case report export cancelled before publication.".into());
+    }
     destination::publish_new(&staged.0, path).map_err(|error| {
         format!(
             "The report was staged and audited but could not be published to {}: {error}",
@@ -303,6 +614,7 @@ fn publish_case_report(
         )
     })?;
     let published = CaseReportExport {
+        case_id: report.case.id,
         path: path.to_string_lossy().into_owned(),
         sha256: digest,
         bytes: bytes.len() as u64,
@@ -314,6 +626,20 @@ fn publish_case_report(
             .iter()
             .map(|scan| scan.entries.len())
             .sum(),
+        exfat_scans: report.exfat_scans.len(),
+        exfat_entries: report
+            .exfat_scans
+            .iter()
+            .map(|scan| scan.entries.len())
+            .sum(),
+        carve_scans: report.carve_scans.len(),
+        carved_candidates: report
+            .carve_scans
+            .iter()
+            .map(|scan| scan.candidates.len())
+            .sum(),
+        imaging_and_raid_operations,
+        recovery_operations,
     };
     audit(
         db,
@@ -327,6 +653,12 @@ fn publish_case_report(
             "candidates": published.candidates,
             "fat32_scans": published.fat32_scans,
             "directory_entries": published.directory_entries,
+            "exfat_scans": published.exfat_scans,
+            "exfat_entries": published.exfat_entries,
+            "carve_scans": published.carve_scans,
+            "carved_candidates": published.carved_candidates,
+            "imaging_and_raid_operations": published.imaging_and_raid_operations,
+            "recovery_operations": published.recovery_operations,
             "audit_head_in_report": report.audit.head_sha256,
         })
         .to_string(),
@@ -359,7 +691,7 @@ pub async fn export_case_report(
             ..Job::default()
         };
     }
-    let result: Result<Option<CaseReportExport>> = async {
+    let mut result: Result<Option<CaseReportExport>> = async {
         let destination = tauri::async_runtime::spawn_blocking(|| {
             rfd::FileDialog::new()
                 .set_title("Export forensic case report")
@@ -384,26 +716,52 @@ pub async fn export_case_report(
                 transaction.commit().map_err(err)?;
                 report
             };
+            if state.cancel.load(Ordering::SeqCst) {
+                return Err("Case report export cancelled during report generation.".into());
+            }
             let bytes = encode_report(&report)?;
+            if state.cancel.load(Ordering::SeqCst) {
+                return Err("Case report export cancelled before staging.".into());
+            }
             if let Ok(mut job) = state.job.lock() {
                 job.message = Some("Staging the report and recording its digest".into());
                 job.total = bytes.len() as u64;
             }
             let db = state.db.lock().map_err(err)?;
-            publish_case_report(&db, case_id, &report, &bytes, &destination)
+            publish_case_report(&db, case_id, &report, &bytes, &destination, &state.cancel)
         })
         .await
         .map_err(err)??;
         Ok(Some(exported))
     }
     .await;
+    if matches!(&result, Ok(None)) || (state.cancel.load(Ordering::SeqCst) && result.is_err()) {
+        let reason = match &result {
+            Ok(None) => "Destination selection was cancelled.".to_owned(),
+            Err(error) => error.chars().take(2048).collect(),
+            Ok(Some(_)) => unreachable!(),
+        };
+        let audit_result = (|| -> Result<()> {
+            let db = state.db.lock().map_err(err)?;
+            audit(
+                &db,
+                "case_report_export_cancelled",
+                &serde_json::json!({"case_id":case_id,"reason":reason}).to_string(),
+            )
+        })();
+        if let Err(error) = audit_result {
+            result = Err(format!(
+                "Case report export was cancelled, but the cancellation could not be recorded in the audit log: {error}"
+            ));
+        }
+    }
     if let Ok(mut job) = state.job.lock() {
         match &result {
             Ok(Some(report)) => {
                 job.state = "completed".into();
                 job.message = Some(format!(
-                    "Case report exported · {} scans · {} candidates · {} FAT32 scans · {} directory entries",
-                    report.scans, report.candidates, report.fat32_scans, report.directory_entries
+                    "Case report exported · {} NTFS scans · {} NTFS candidates · {} FAT32 scans · {} directory entries · {} carving scans · {} carved candidates · {} imaging/RAID events · {} recovery export/verification events",
+                    report.scans, report.candidates, report.fat32_scans, report.directory_entries, report.carve_scans, report.carved_candidates, report.imaging_and_raid_operations, report.recovery_operations
                 ));
                 job.total = report.bytes;
                 job.processed = report.bytes;
@@ -536,7 +894,7 @@ mod tests {
             ));
         fs::create_dir(&root).unwrap();
         let destination = root.join("report.json");
-        let bytes = br#"{"format":"daemoncore-case-report-v2"}"#;
+        let bytes = br#"{"format":"daemoncore-case-report-v4"}"#;
         let staged = stage_report(&destination, bytes).unwrap();
         assert_eq!(fs::read(&staged.0).unwrap(), bytes);
         destination::publish_new(&staged.0, &destination).unwrap();
@@ -582,11 +940,14 @@ mod tests {
         assert!(report.evidence.is_empty());
         assert!(report.scans.is_empty());
         assert!(report.fat32_scans.is_empty());
+        assert!(report.carve_scans.is_empty());
+        assert!(report.imaging_and_raid_operations.is_empty());
+        assert!(report.recovery_operations.is_empty());
         assert!(report.audit.chain_valid);
         assert!(!report.audit.externally_anchored);
         let bytes = encode_report(&report).unwrap();
         let report: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(report["format"], "daemoncore-case-report-v2");
+        assert_eq!(report["format"], "daemoncore-case-report-v6");
         assert_eq!(report["audit"]["externally_anchored"], false);
         assert_eq!(report["case"]["title"], "Case 1");
         db.execute("UPDATE audit SET payload='tampered' WHERE id=1", [])
@@ -625,12 +986,25 @@ mod tests {
         let path = root.join("case-report.json");
         let bytes = encode_report(&report).unwrap();
         let expected_sha256 = format!("{:x}", Sha256::digest(&bytes));
-        let exported = publish_case_report(&db, 1, &report, &bytes, &path).unwrap();
+        let exported = publish_case_report(
+            &db,
+            1,
+            &report,
+            &bytes,
+            &path,
+            &std::sync::atomic::AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(exported.case_id, 1);
         assert_eq!(exported.sha256, expected_sha256);
         assert_eq!(exported.scans, 1);
         assert_eq!(exported.candidates, 1);
         assert_eq!(exported.fat32_scans, 0);
         assert_eq!(exported.directory_entries, 0);
+        assert_eq!(exported.carve_scans, 0);
+        assert_eq!(exported.carved_candidates, 0);
+        assert_eq!(exported.imaging_and_raid_operations, 0);
+        assert_eq!(exported.recovery_operations, 0);
         assert_eq!(fs::read(&path).unwrap(), bytes);
         let (prepared, completed): (String, String) = db
             .query_row(
@@ -646,7 +1020,16 @@ mod tests {
         assert_eq!(completed["scans"], 1);
         assert_eq!(completed["candidates"], 1);
         assert_eq!(completed["fat32_scans"], 0);
-        let collision = match publish_case_report(&db, 1, &report, &bytes, &path) {
+        assert_eq!(completed["carve_scans"], 0);
+        assert_eq!(completed["carved_candidates"], 0);
+        let collision = match publish_case_report(
+            &db,
+            1,
+            &report,
+            &bytes,
+            &path,
+            &std::sync::atomic::AtomicBool::new(false),
+        ) {
             Ok(_) => panic!("existing report destination was replaced"),
             Err(error) => error,
         };
@@ -663,6 +1046,83 @@ mod tests {
         assert_eq!(completed_count, 1);
         assert!(crate::verify_audit_chain(&db).unwrap().valid);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cancelled_case_report_is_not_staged_or_published() {
+        let db = populated_case();
+        let report = case_report_from(&db, 1).unwrap();
+        let bytes = encode_report(&report).unwrap();
+        let root = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join(format!(
+                "daemoncore-case-report-cancel-{}-{}",
+                std::process::id(),
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+        fs::create_dir(&root).unwrap();
+        let path = root.join("case-report.json");
+        let cancel = std::sync::atomic::AtomicBool::new(true);
+
+        let error = publish_case_report(&db, 1, &report, &bytes, &path, &cancel)
+            .err()
+            .expect("cancelled report must not publish");
+
+        assert!(error.contains("cancelled before staging"));
+        assert!(!path.exists());
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
+        let prepared: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM audit WHERE event='case_report_export_prepared'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(prepared, 0);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn case_report_includes_integrity_checked_png_carving_snapshot() {
+        let db = populated_case();
+        let source_sha256 = "b".repeat(64);
+        let candidate = crate::carving::CarvedCandidate {
+            id: 128,
+            offset: 128,
+            length: 72,
+            format: "PNG".into(),
+            sha256: "c".repeat(64),
+            validation: "PNG chunks and CRCs valid; image decoded".into(),
+        };
+        let candidates_json = serde_json::to_string(&[candidate]).unwrap();
+        let snapshot_sha256 =
+            crate::carving::snapshot_digest(&source_sha256, 4096, false, &candidates_json);
+        db.execute(
+            "INSERT INTO carve_scan_sessions(id,evidence_id,case_id,source_sha256,completed_at,scanned_bytes,candidates_json,snapshot_sha256,candidates_limited) VALUES (1,2,1,?1,'12',4096,?2,?3,0)",
+            rusqlite::params![source_sha256,candidates_json,snapshot_sha256],
+        )
+        .unwrap();
+        audit(
+            &db,
+            "carve_scan_persisted",
+            &serde_json::json!({"case_id":1,"evidence_record_id":2,"source_id":9,"scan_session_id":1,"source_path":"evidence.img","source_sha256":source_sha256,"scanned_bytes":4096,"format":"PNG","candidates":1,"candidates_limited":false,"snapshot_sha256":snapshot_sha256}).to_string(),
+        )
+        .unwrap();
+
+        let report = case_report_from(&db, 1).unwrap();
+        assert_eq!(report.carve_scans.len(), 1);
+        assert_eq!(report.carve_scans[0].id, 1);
+        assert!(report.carve_scans[0].evidence_hash_matches_current_record);
+        assert_eq!(report.carve_scans[0].candidates.len(), 1);
+        assert_eq!(report.carve_scans[0].candidates[0].offset, 128);
+        let encoded: serde_json::Value =
+            serde_json::from_slice(&encode_report(&report).unwrap()).unwrap();
+        assert_eq!(encoded["format"], "daemoncore-case-report-v6");
+        assert_eq!(encoded["carve_scans"][0]["candidates"][0]["format"], "PNG");
     }
 
     #[test]
@@ -715,10 +1175,201 @@ mod tests {
         assert!(report.fat32_scans[0].evidence_hash_matches_current_record);
         let encoded = encode_report(&report).unwrap();
         let json: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
-        assert_eq!(json["format"], "daemoncore-case-report-v2");
+        assert_eq!(json["format"], "daemoncore-case-report-v6");
         assert_eq!(
             json["fat32_scans"][0]["entries"][0]["entry"]["deleted"],
             true
+        );
+    }
+
+    #[test]
+    fn case_report_includes_audited_exfat_directory_inventory() {
+        let db = populated_case();
+        let entries = vec![daemoncore_ntfs_core::exfat::TreeEntry {
+            path: vec!["ROOT.TXT".into()],
+            entry: daemoncore_ntfs_core::exfat::DirectoryEntry {
+                source_offset: 20_544,
+                raw_entries: vec![[0x85; 32], [0xc0; 32], [0xc1; 32]],
+                name: "ROOT.TXT".into(),
+                attributes: 0x20,
+                first_cluster: 0,
+                valid_data_length: 0,
+                data_length: 0,
+                no_fat_chain: false,
+                name_hash: 0x1234,
+            },
+        }];
+        let boot = serde_json::json!({
+            "volume_offset": 0,
+            "bytes_per_sector": 512,
+            "cluster_count": 2008,
+            "root_cluster": 2,
+            "source_path": "evidence.img"
+        });
+        let boot_json = serde_json::to_string(&boot).unwrap();
+        let entries_json = serde_json::to_string(&entries).unwrap();
+        let source_sha256 = "b".repeat(64);
+        let snapshot_sha256 =
+            crate::exfat_commands::snapshot_digest(&source_sha256, &boot_json, &entries_json);
+        db.execute(
+            "INSERT INTO exfat_scan_sessions(id,evidence_id,case_id,volume_offset,source_sha256,completed_at,boot_json,entries_json,snapshot_sha256) VALUES (1,2,1,'0',?1,'12',?2,?3,?4)",
+            rusqlite::params![source_sha256, boot_json, entries_json, snapshot_sha256],
+        )
+        .unwrap();
+        audit(
+            &db,
+            "exfat_scan_persisted",
+            &serde_json::json!({"case_id":1,"evidence_id":2,"source_id":9,"scan_session_id":1,"volume_offset":0,"source_sha256":source_sha256,"records":1,"snapshot_sha256":snapshot_sha256}).to_string(),
+        )
+        .unwrap();
+
+        let report = case_report_from(&db, 1).unwrap();
+        assert_eq!(report.exfat_scans.len(), 1);
+        assert_eq!(report.exfat_scans[0].entries[0].entry.name, "ROOT.TXT");
+        assert!(report.exfat_scans[0].evidence_hash_matches_current_record);
+        let encoded: serde_json::Value =
+            serde_json::from_slice(&encode_report(&report).unwrap()).unwrap();
+        assert_eq!(encoded["format"], "daemoncore-case-report-v6");
+        assert_eq!(
+            encoded["exfat_scans"][0]["entries"][0]["entry"]["name"],
+            "ROOT.TXT"
+        );
+    }
+
+    #[test]
+    fn case_report_includes_only_hash_chained_imaging_and_raid_events_for_its_case() {
+        let db = populated_case();
+        audit(
+            &db,
+            "physical_device_acquisition_published",
+            &serde_json::json!({
+                "case_id":1,
+                "device_number":7,
+                "image_sha256":"d".repeat(64),
+                "outcome":"complete"
+            })
+            .to_string(),
+        )
+        .unwrap();
+        audit(
+            &db,
+            "physical_device_acquisition_cancelled",
+            &serde_json::json!({"case_id":1,"device_number":7}).to_string(),
+        )
+        .unwrap();
+        audit(
+            &db,
+            "physical_device_acquisition_finalization_failed",
+            &serde_json::json!({"case_id":1,"device_number":7,"stage":"case_registration"})
+                .to_string(),
+        )
+        .unwrap();
+        audit(
+            &db,
+            "raid_reconstruction_started",
+            &serde_json::json!({
+                "case_id":1,
+                "level":"RAID 0",
+                "member_order_is_operator_supplied":true
+            })
+            .to_string(),
+        )
+        .unwrap();
+        audit(
+            &db,
+            "raid_package_verified",
+            &serde_json::json!({"case_id":2,"package_type":"raid_reconstruction"}).to_string(),
+        )
+        .unwrap();
+
+        let report = case_report_from(&db, 1).unwrap();
+        assert_eq!(report.imaging_and_raid_operations.len(), 4);
+        assert_eq!(
+            report.imaging_and_raid_operations[0].event,
+            "physical_device_acquisition_published"
+        );
+        assert_eq!(
+            report.imaging_and_raid_operations[1].event,
+            "physical_device_acquisition_cancelled"
+        );
+        assert_eq!(
+            report.imaging_and_raid_operations[2].event,
+            "physical_device_acquisition_finalization_failed"
+        );
+        assert_eq!(
+            report.imaging_and_raid_operations[3].event,
+            "raid_reconstruction_started"
+        );
+        let json: serde_json::Value =
+            serde_json::from_slice(&encode_report(&report).unwrap()).unwrap();
+        assert_eq!(json["format"], "daemoncore-case-report-v6");
+        assert_eq!(
+            json["imaging_and_raid_operations"]
+                .as_array()
+                .unwrap()
+                .len(),
+            4
+        );
+        assert_eq!(
+            json["imaging_and_raid_operations"][0]["payload"]["image_sha256"],
+            "d".repeat(64)
+        );
+    }
+
+    #[test]
+    fn case_report_includes_recovery_export_events_only_for_its_case() {
+        let db = populated_case();
+        audit(
+            &db,
+            "recovery_export_finished",
+            &serde_json::json!({
+                "case_id": 1,
+                "source_sha256": "b".repeat(64),
+                "job": {"state":"completed","output_directory":"D:/case/recovery"}
+            })
+            .to_string(),
+        )
+        .unwrap();
+        audit(
+            &db,
+            "fat32_recovery_export_finished",
+            &serde_json::json!({
+                "case_id": 2,
+                "source_sha256": "c".repeat(64),
+                "job": {"state":"completed","output_directory":"D:/other/recovery"}
+            })
+            .to_string(),
+        )
+        .unwrap();
+        audit(
+            &db,
+            "carve_export_finished",
+            &serde_json::json!({
+                "case_id": 1,
+                "source_sha256": "b".repeat(64),
+                "summary": {"state":"complete","directory":"D:/case/carved"}
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let report = case_report_from(&db, 1).unwrap();
+        assert_eq!(report.recovery_operations.len(), 2);
+        assert_eq!(
+            report.recovery_operations[0].event,
+            "recovery_export_finished"
+        );
+        assert_eq!(report.recovery_operations[1].event, "carve_export_finished");
+        let json: serde_json::Value =
+            serde_json::from_slice(&encode_report(&report).unwrap()).unwrap();
+        assert_eq!(json["format"], "daemoncore-case-report-v6");
+        assert_eq!(json["recovery_operations"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            json["recovery_operations"][0]["record_sha256"]
+                .as_str()
+                .unwrap()
+                .len(),
+            64
         );
     }
 

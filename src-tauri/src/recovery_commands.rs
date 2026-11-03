@@ -227,6 +227,7 @@ pub async fn reopen_archived_source(
                 sha256: Some(digest),
             };
             *state.scan.lock().map_err(err)? = None;
+            *state.carve_scan.lock().map_err(err)? = None;
             *state.fat32_scan.lock().map_err(err)? = None;
             *state.source.lock().map_err(err)? = Some(crate::Evidence {
                 image,
@@ -507,6 +508,7 @@ pub fn start_ntfs_scan(offset: u64, app: tauri::AppHandle, state: State<AppState
     )
     .map_err(err)?;
     *state.scan.lock().map_err(err)? = None;
+    *state.carve_scan.lock().map_err(err)? = None;
     *state.fat32_scan.lock().map_err(err)? = None;
     state.cancel.store(false, Ordering::SeqCst);
     *job = Job {

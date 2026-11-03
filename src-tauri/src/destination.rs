@@ -152,6 +152,49 @@ pub fn check_destination(
     }
     Ok(destination)
 }
+
+pub fn check_device_destination(
+    source_disk: u32,
+    destination: &Path,
+    required: u64,
+) -> Result<PathBuf, String> {
+    let destination = destination
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
+    if !destination.is_dir() {
+        return Err("Choose an existing local acquisition folder.".into());
+    }
+    let destination_disks = disks(&destination).map_err(|error| {
+        format!("Cannot establish the destination's physical disk identity: {error}")
+    })?;
+    if destination_disks.contains(&source_disk) {
+        return Err(
+            "The acquisition destination is on the source physical disk. Choose a separate disk."
+                .into(),
+        );
+    }
+    let root = wide(&destination);
+    let mut available = 0;
+    if unsafe {
+        GetDiskFreeSpaceExW(
+            root.as_ptr(),
+            &mut available,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    } == 0
+    {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+    if required
+        .checked_add(16 * 1024 * 1024)
+        .is_none_or(|needed| needed > available)
+    {
+        return Err("There is not enough free space for the image and acquisition records.".into());
+    }
+    Ok(destination)
+}
+
 pub fn publish_new(from: &Path, to: &Path) -> io::Result<()> {
     let from = wide_file_path(from)?;
     let to = wide_file_path(to)?;

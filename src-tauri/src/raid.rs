@@ -1,0 +1,1148 @@
+use crate::{destination, storage::Image, Result};
+use daemoncore_ntfs_core::storage::BlockSource;
+use serde::Serialize;
+use sha2::{Digest, Sha256};
+use std::{
+    fs::{self, File, OpenOptions},
+    io::{Read, Write},
+    path::{Path, PathBuf},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    time::{SystemTime, UNIX_EPOCH},
+};
+use tauri::{Manager, State};
+
+const READ_CHUNK: usize = 1024 * 1024;
+const MIN_MEMBERS: usize = 2;
+const MAX_MEMBERS: usize = 32;
+const MAX_STRIPE_BYTES: u64 = 16 * 1024 * 1024;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RaidLevel {
+    Raid0,
+    Raid1,
+    Raid5,
+}
+
+impl RaidLevel {
+    fn parse(value: &str) -> Result<Self> {
+        match value {
+            "raid0" => Ok(Self::Raid0),
+            "raid1" => Ok(Self::Raid1),
+            "raid5" => Ok(Self::Raid5),
+            _ => Err(
+                "Supported reconstruction levels are RAID 0, RAID 1, and full-member RAID 5."
+                    .into(),
+            ),
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Raid0 => "RAID 0",
+            Self::Raid1 => "RAID 1",
+            Self::Raid5 => "RAID 5",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct MemberManifest {
+    order: usize,
+    path: String,
+    image_size_bytes: u64,
+    image_sha256: String,
+    data_offset_bytes: u64,
+    data_size_bytes: u64,
+}
+
+#[derive(Serialize)]
+struct RaidManifest {
+    tool: &'static str,
+    version: &'static str,
+    package_type: &'static str,
+    case_id: i64,
+    created_unix_ns: String,
+    level: &'static str,
+    member_order_is_operator_supplied: bool,
+    members: Vec<MemberManifest>,
+    data_offset_bytes: u64,
+    bytes_per_sector: u32,
+    stripe_size_bytes: Option<u64>,
+    reconstructed_size_bytes: u64,
+    image_name: &'static str,
+    image_sha256: String,
+    layout_method: &'static str,
+    limitations: &'static str,
+}
+
+#[derive(Serialize)]
+struct Completion {
+    state: &'static str,
+    image_sha256: String,
+    checksums_sha256: String,
+}
+
+pub struct RaidPackage {
+    pub directory: PathBuf,
+    pub image_path: PathBuf,
+    pub image_sha256: String,
+    pub size_bytes: u64,
+    pub level: RaidLevel,
+    pub member_count: usize,
+}
+
+pub struct ReconstructionRequest<'a> {
+    pub level_name: &'a str,
+    pub member_paths: &'a [PathBuf],
+    pub data_offset_bytes: u64,
+    pub stripe_size_bytes: u64,
+    pub bytes_per_sector: u32,
+    pub case_id: i64,
+    pub destination: &'a Path,
+}
+
+struct Staging(Option<PathBuf>);
+
+impl Drop for Staging {
+    fn drop(&mut self) {
+        if let Some(path) = self.0.take() {
+            let _ = fs::remove_dir_all(path);
+        }
+    }
+}
+
+fn write_json(path: &Path, value: &impl Serialize) -> Result<()> {
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(crate::err)?;
+    serde_json::to_writer_pretty(&mut file, value).map_err(crate::err)?;
+    file.sync_all().map_err(crate::err)
+}
+
+fn hash_file(path: &Path, mut progress: impl FnMut(u64)) -> Result<String> {
+    let mut file = File::open(path).map_err(crate::err)?;
+    let expected = file.metadata().map_err(crate::err)?.len();
+    let mut read = 0u64;
+    let mut digest = Sha256::new();
+    let mut buffer = vec![0; READ_CHUNK];
+    loop {
+        let count = file.read(&mut buffer).map_err(crate::err)?;
+        if count == 0 {
+            break;
+        }
+        read = read.checked_add(count as u64).ok_or("File size overflow")?;
+        digest.update(&buffer[..count]);
+        progress(count as u64);
+    }
+    if read != expected {
+        return Err("A RAID package file changed during verification.".into());
+    }
+    Ok(format!("{:x}", digest.finalize()))
+}
+
+fn hash_source(
+    source: &Image,
+    cancel: &AtomicBool,
+    mut progress: impl FnMut(u64),
+) -> Result<Option<String>> {
+    let mut position = 0u64;
+    let mut digest = Sha256::new();
+    let mut buffer = vec![0; READ_CHUNK];
+    while position < source.len() {
+        if cancel.load(Ordering::SeqCst) {
+            return Ok(None);
+        }
+        let count = (source.len() - position).min(buffer.len() as u64) as usize;
+        source
+            .read_exact_at(position, &mut buffer[..count])
+            .map_err(crate::err)?;
+        digest.update(&buffer[..count]);
+        position += count as u64;
+        progress(count as u64);
+    }
+    source.verify_unchanged().map_err(crate::err)?;
+    Ok(Some(format!("{:x}", digest.finalize())))
+}
+
+fn validate_geometry(
+    level: RaidLevel,
+    members: &[Image],
+    offset: u64,
+    stripe_bytes: u64,
+    sector_bytes: u32,
+) -> Result<(u64, u64)> {
+    if !(MIN_MEMBERS..=MAX_MEMBERS).contains(&members.len()) {
+        return Err(format!(
+            "Select between {MIN_MEMBERS} and {MAX_MEMBERS} RAID member images."
+        ));
+    }
+    if !matches!(sector_bytes, 512 | 4096) {
+        return Err("Sector size must be 512 or 4096 bytes.".into());
+    }
+    if !offset.is_multiple_of(u64::from(sector_bytes)) {
+        return Err("Data offset must align to the selected sector size.".into());
+    }
+    let first_length = members[0].len();
+    if offset >= first_length {
+        return Err("Data offset must be inside every member image.".into());
+    }
+    let data_size = first_length - offset;
+    if !data_size.is_multiple_of(u64::from(sector_bytes))
+        || members
+            .iter()
+            .any(|member| member.len().checked_sub(offset) != Some(data_size))
+    {
+        return Err(
+            "All members must have equal sector-aligned data regions after the offset.".into(),
+        );
+    }
+    match level {
+        RaidLevel::Raid0 | RaidLevel::Raid5 => {
+            if level == RaidLevel::Raid5 && members.len() < 3 {
+                return Err("RAID 5 requires at least three complete member images; degraded reconstruction is not supported.".into());
+            }
+            if !(512..=MAX_STRIPE_BYTES).contains(&stripe_bytes)
+                || !stripe_bytes.is_power_of_two()
+                || !stripe_bytes.is_multiple_of(u64::from(sector_bytes))
+                || !data_size.is_multiple_of(stripe_bytes)
+            {
+                return Err("RAID 0/5 stripe size must be a 512-byte to 16-MiB power of two, aligned to the sector size, and divide each member data region evenly.".into());
+            }
+            let data_members = if level == RaidLevel::Raid5 {
+                members.len() - 1
+            } else {
+                members.len()
+            };
+            let output = data_size
+                .checked_mul(data_members as u64)
+                .ok_or("Reconstructed RAID size overflow")?;
+            Ok((data_size, output))
+        }
+        RaidLevel::Raid1 => Ok((data_size, data_size)),
+    }
+}
+
+pub fn reconstruct_package(
+    request: ReconstructionRequest<'_>,
+    cancel: &AtomicBool,
+    mut progress: impl FnMut(u64, u64),
+) -> Result<Option<RaidPackage>> {
+    let ReconstructionRequest {
+        level_name,
+        member_paths,
+        data_offset_bytes,
+        stripe_size_bytes,
+        bytes_per_sector,
+        case_id,
+        destination,
+    } = request;
+    let level = RaidLevel::parse(level_name)?;
+    if !(MIN_MEMBERS..=MAX_MEMBERS).contains(&member_paths.len()) {
+        return Err(format!(
+            "Select between {MIN_MEMBERS} and {MAX_MEMBERS} RAID member images."
+        ));
+    }
+    let mut canonical_paths = std::collections::BTreeSet::new();
+    let mut members = Vec::with_capacity(member_paths.len());
+    for path in member_paths {
+        let canonical = path.canonicalize().map_err(crate::err)?;
+        if !canonical_paths.insert(canonical.clone()) {
+            return Err("The same RAID member image cannot be selected more than once.".into());
+        }
+        members.push(Image::open(&canonical).map_err(crate::err)?);
+    }
+    let (member_data_size, output_size) = validate_geometry(
+        level,
+        &members,
+        data_offset_bytes,
+        stripe_size_bytes,
+        bytes_per_sector,
+    )?;
+    let member_bytes = members
+        .iter()
+        .try_fold(0u64, |sum, member| sum.checked_add(member.len()))
+        .ok_or("RAID member size overflow")?;
+    let total = member_bytes
+        .checked_mul(2)
+        .and_then(|sum| sum.checked_add(output_size.checked_mul(2)?))
+        .and_then(|sum| match level {
+            RaidLevel::Raid1 => {
+                sum.checked_add(output_size.checked_mul(members.len().saturating_sub(1) as u64)?)
+            }
+            RaidLevel::Raid5 => sum.checked_add(member_data_size),
+            RaidLevel::Raid0 => Some(sum),
+        })
+        .ok_or("RAID operation progress size overflow")?;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(crate::err)?
+        .as_nanos();
+    let package_name = format!("DaemonCore-RAID-Reconstruction-{now}");
+    let staging_path = destination.join(format!(".{package_name}.partial"));
+    let final_path = destination.join(package_name);
+    fs::create_dir(&staging_path).map_err(crate::err)?;
+    let mut staging = Staging(Some(staging_path.clone()));
+
+    let mut processed = 0u64;
+    progress(processed, total);
+    let mut member_hashes = Vec::with_capacity(members.len());
+    for member in &members {
+        let digest = hash_source(member, cancel, |count| {
+            processed = processed.saturating_add(count);
+            progress(processed.min(total), total);
+        })?;
+        let Some(digest) = digest else {
+            return Ok(None);
+        };
+        member_hashes.push(digest);
+    }
+
+    if level == RaidLevel::Raid1 {
+        let mut buffer = vec![0; READ_CHUNK];
+        let mut position = 0u64;
+        while position < member_data_size {
+            if cancel.load(Ordering::SeqCst) {
+                return Ok(None);
+            }
+            let count = (member_data_size - position).min(buffer.len() as u64) as usize;
+            members[0]
+                .read_exact_at(data_offset_bytes + position, &mut buffer[..count])
+                .map_err(crate::err)?;
+            let mut comparison = vec![0; count];
+            for mirror in members.iter().skip(1) {
+                mirror
+                    .read_exact_at(data_offset_bytes + position, &mut comparison)
+                    .map_err(crate::err)?;
+                if comparison != buffer[..count] {
+                    return Err("RAID 1 member data differs. No mirror was chosen or reconstructed; inspect member offsets and identify the authoritative mirror.".into());
+                }
+            }
+            processed = processed.saturating_add(
+                (count as u64).saturating_mul(members.len().saturating_sub(1) as u64),
+            );
+            progress(processed.min(total), total);
+            position += count as u64;
+            processed = processed.saturating_add(count as u64);
+            progress(processed.min(total), total);
+        }
+    }
+
+    let image_path = staging_path.join("image.raw");
+    let mut output = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&image_path)
+        .map_err(crate::err)?;
+    let mut output_hash = Sha256::new();
+    let mut buffer = vec![0; READ_CHUNK.min(stripe_size_bytes as usize).max(512)];
+    match level {
+        RaidLevel::Raid0 => {
+            let stripe_count = member_data_size / stripe_size_bytes;
+            for stripe in 0..stripe_count {
+                for member in &members {
+                    if cancel.load(Ordering::SeqCst) {
+                        return Ok(None);
+                    }
+                    let mut within = 0u64;
+                    while within < stripe_size_bytes {
+                        let count = (stripe_size_bytes - within).min(buffer.len() as u64) as usize;
+                        let source_offset = data_offset_bytes + stripe * stripe_size_bytes + within;
+                        member
+                            .read_exact_at(source_offset, &mut buffer[..count])
+                            .map_err(crate::err)?;
+                        output.write_all(&buffer[..count]).map_err(crate::err)?;
+                        output_hash.update(&buffer[..count]);
+                        within += count as u64;
+                        processed = processed.saturating_add(count as u64);
+                        progress(processed.min(total), total);
+                    }
+                }
+            }
+        }
+        RaidLevel::Raid1 => {
+            let mut position = 0u64;
+            while position < member_data_size {
+                if cancel.load(Ordering::SeqCst) {
+                    return Ok(None);
+                }
+                let count = (member_data_size - position).min(buffer.len() as u64) as usize;
+                members[0]
+                    .read_exact_at(data_offset_bytes + position, &mut buffer[..count])
+                    .map_err(crate::err)?;
+                output.write_all(&buffer[..count]).map_err(crate::err)?;
+                output_hash.update(&buffer[..count]);
+                position += count as u64;
+                processed = processed.saturating_add(count as u64);
+                progress(processed.min(total), total);
+            }
+        }
+        RaidLevel::Raid5 => {
+            let stripe_count = member_data_size / stripe_size_bytes;
+            let mut parity = vec![0; buffer.len()];
+            let mut observed_parity = vec![0; buffer.len()];
+            for stripe in 0..stripe_count {
+                if cancel.load(Ordering::SeqCst) {
+                    return Ok(None);
+                }
+                let parity_rotation = usize::try_from(stripe % members.len() as u64)
+                    .map_err(|_| "RAID 5 stripe index exceeds addressable memory")?;
+                let parity_member = members.len() - 1 - parity_rotation;
+                let member_offset = data_offset_bytes + stripe * stripe_size_bytes;
+                for within in (0..stripe_size_bytes).step_by(buffer.len()) {
+                    if cancel.load(Ordering::SeqCst) {
+                        return Ok(None);
+                    }
+                    let count = (stripe_size_bytes - within).min(buffer.len() as u64) as usize;
+                    parity[..count].fill(0);
+                    for data_position in 1..members.len() {
+                        let member_index = (parity_member + data_position) % members.len();
+                        members[member_index]
+                            .read_exact_at(member_offset + within, &mut buffer[..count])
+                            .map_err(crate::err)?;
+                        for (parity_byte, data_byte) in
+                            parity[..count].iter_mut().zip(&buffer[..count])
+                        {
+                            *parity_byte ^= *data_byte;
+                        }
+                        output.write_all(&buffer[..count]).map_err(crate::err)?;
+                        output_hash.update(&buffer[..count]);
+                        processed = processed.saturating_add(count as u64);
+                        progress(processed.min(total), total);
+                    }
+                    members[parity_member]
+                        .read_exact_at(member_offset + within, &mut observed_parity[..count])
+                        .map_err(crate::err)?;
+                    if parity[..count] != observed_parity[..count] {
+                        return Err(format!(
+                            "RAID 5 XOR parity mismatch at stripe row {stripe}, byte offset {}. Verify member order, stripe size, and data offset; no package was published.",
+                            member_offset + within
+                        ));
+                    }
+                    processed = processed.saturating_add(count as u64);
+                    progress(processed.min(total), total);
+                }
+            }
+        }
+    }
+    output.sync_all().map_err(crate::err)?;
+    drop(output);
+    let observed_hash = format!("{:x}", output_hash.finalize());
+    let verified_hash = hash_file(&image_path, |count| {
+        processed = processed.saturating_add(count);
+        progress(processed.min(total), total);
+    })?;
+    if observed_hash != verified_hash {
+        return Err("Reconstructed image failed destination SHA-256 verification.".into());
+    }
+
+    for (member, expected_hash) in members.iter().zip(&member_hashes) {
+        let current_hash = hash_source(member, cancel, |count| {
+            processed = processed.saturating_add(count);
+            progress(processed.min(total), total);
+        })?;
+        let Some(current_hash) = current_hash else {
+            return Ok(None);
+        };
+        if current_hash != *expected_hash {
+            return Err(
+                "A RAID member changed during reconstruction. The staged package was discarded."
+                    .into(),
+            );
+        }
+    }
+    if cancel.load(Ordering::SeqCst) {
+        return Ok(None);
+    }
+
+    let member_manifest = members
+        .iter()
+        .zip(&member_hashes)
+        .enumerate()
+        .map(|(order, (member, image_sha256))| MemberManifest {
+            order,
+            path: member.path.to_string_lossy().into_owned(),
+            image_size_bytes: member.len(),
+            image_sha256: image_sha256.clone(),
+            data_offset_bytes,
+            data_size_bytes: member_data_size,
+        })
+        .collect();
+    let manifest = RaidManifest {
+        tool: "DaemonCore Data Recovery",
+        version: env!("CARGO_PKG_VERSION"),
+        package_type: "raid_reconstruction",
+        case_id,
+        created_unix_ns: now.to_string(),
+        level: level.label(),
+        member_order_is_operator_supplied: true,
+        members: member_manifest,
+        data_offset_bytes,
+        bytes_per_sector,
+        stripe_size_bytes: matches!(level, RaidLevel::Raid0 | RaidLevel::Raid5)
+            .then_some(stripe_size_bytes),
+        reconstructed_size_bytes: output_size,
+        image_name: "image.raw",
+        image_sha256: verified_hash.clone(),
+        layout_method: match level {
+            RaidLevel::Raid0 => "RAID 0 left-symmetric striping in operator-supplied member order",
+            RaidLevel::Raid1 => "RAID 1 mirror copy after byte-for-byte agreement across all selected data regions",
+            RaidLevel::Raid5 => "RAID 5 left-symmetric rotating parity; all member data and XOR parity verified",
+        },
+        limitations: "The operator supplied member order, data offset, sector size, and stripe size. RAID 5 requires every member image and verifies rotating XOR parity; degraded or missing-member reconstruction is not supported. No on-disk RAID metadata was interpreted. Reconstructed bytes are not a hardware acquisition, do not establish which files were deleted, and are not validated against a vendor-specific array metadata format.",
+    };
+    write_json(&staging_path.join("manifest.json"), &manifest)?;
+    let checksums = format!(
+        "{}  image.raw\n{}  manifest.json\n",
+        verified_hash,
+        hash_file(&staging_path.join("manifest.json"), |_| {})?
+    );
+    let mut checksum_file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(staging_path.join("checksums.sha256"))
+        .map_err(crate::err)?;
+    checksum_file
+        .write_all(checksums.as_bytes())
+        .map_err(crate::err)?;
+    checksum_file.sync_all().map_err(crate::err)?;
+    drop(checksum_file);
+    write_json(
+        &staging_path.join("completion.json"),
+        &Completion {
+            state: "complete",
+            image_sha256: verified_hash.clone(),
+            checksums_sha256: format!("{:x}", Sha256::digest(checksums.as_bytes())),
+        },
+    )?;
+    destination::publish_new(&staging_path, &final_path).map_err(crate::err)?;
+    staging.0 = None;
+    Ok(Some(RaidPackage {
+        directory: final_path.clone(),
+        image_path: final_path.join("image.raw"),
+        image_sha256: verified_hash,
+        size_bytes: output_size,
+        level,
+        member_count: members.len(),
+    }))
+}
+
+#[tauri::command]
+pub async fn pick_raid_members() -> Result<Vec<String>> {
+    let files = tauri::async_runtime::spawn_blocking(|| {
+        rfd::FileDialog::new()
+            .add_filter("Raw RAID member images", &["img", "dd", "raw", "bin"])
+            .pick_files()
+    })
+    .await
+    .map_err(crate::err)?;
+    Ok(files
+        .unwrap_or_default()
+        .into_iter()
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect())
+}
+
+fn activate_reconstructed_image(
+    state: &crate::AppState,
+    case_id: i64,
+    package: &RaidPackage,
+) -> Result<()> {
+    let image = Arc::new(Image::open(&package.image_path).map_err(crate::err)?);
+    let mut prefix = vec![0; image.len().min(512) as usize];
+    image.read_exact_at(0, &mut prefix).map_err(crate::err)?;
+    let filesystem = crate::detect(&prefix);
+    let source_id = state.generation.fetch_add(1, Ordering::SeqCst);
+    let path = image.path.to_string_lossy().into_owned();
+    let name = image
+        .path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
+    let opened_at = crate::audit_timestamp(SystemTime::now())?;
+    let mut db = state.db.lock().map_err(crate::err)?;
+    if crate::require_audited_active_case(&db)? != case_id {
+        return Err("The active case changed while RAID reconstruction was running.".into());
+    }
+    let evidence_record_id = crate::record_evidence_open(
+        &mut db,
+        &crate::EvidenceRegistration {
+            case_id,
+            source_id,
+            path: &path,
+            name: &name,
+            size: package.size_bytes,
+            filesystem: &filesystem,
+            opened_at: &opened_at,
+        },
+    )?;
+    let tx = db.transaction().map_err(crate::err)?;
+    let updated = tx
+        .execute(
+            "UPDATE evidence_sources SET sha256=?1,status='hashed' WHERE id=?2 AND case_id=?3 AND status='open'",
+            rusqlite::params![package.image_sha256, evidence_record_id, case_id],
+        )
+        .map_err(crate::err)?;
+    if updated != 1 {
+        return Err("Reconstructed image could not be registered as hashed evidence.".into());
+    }
+    crate::audit(
+        &tx,
+        "raid_reconstruction_image_registered",
+        &serde_json::json!({
+            "case_id":case_id,
+            "evidence_record_id":evidence_record_id,
+            "source_id":source_id,
+            "level":package.level.label(),
+            "members":package.member_count,
+            "image_sha256":package.image_sha256,
+            "size_bytes":package.size_bytes,
+            "package_directory":package.directory,
+        })
+        .to_string(),
+    )?;
+    tx.commit().map_err(crate::err)?;
+    drop(db);
+    *state.source.lock().map_err(crate::err)? = Some(crate::Evidence {
+        image,
+        info: crate::Source {
+            id: source_id,
+            case_id,
+            evidence_record_id,
+            name,
+            size: package.size_bytes,
+            filesystem,
+            sha256: Some(package.image_sha256.clone()),
+        },
+        integrity_compromised: false,
+    });
+    *state.scan.lock().map_err(crate::err)? = None;
+    *state.carve_scan.lock().map_err(crate::err)? = None;
+    *state.fat32_scan.lock().map_err(crate::err)? = None;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn reconstruct_raid(
+    app: tauri::AppHandle,
+    state: State<'_, crate::AppState>,
+    member_paths: Vec<String>,
+    level: String,
+    data_offset_bytes: u64,
+    stripe_size_bytes: u64,
+    bytes_per_sector: u32,
+) -> Result<bool> {
+    let level_value = RaidLevel::parse(&level)?;
+    if !(MIN_MEMBERS..=MAX_MEMBERS).contains(&member_paths.len()) {
+        return Err(format!(
+            "Select between {MIN_MEMBERS} and {MAX_MEMBERS} RAID member images."
+        ));
+    }
+    let case_id = {
+        let db = state.db.lock().map_err(crate::err)?;
+        crate::require_audited_active_case(&db)?
+    };
+    let paths: Vec<PathBuf> = member_paths.iter().map(PathBuf::from).collect();
+    let opened: Vec<Image> = paths
+        .iter()
+        .map(|path| Image::open(path).map_err(crate::err))
+        .collect::<Result<_>>()?;
+    let (member_data_size, output_size) = validate_geometry(
+        level_value,
+        &opened,
+        data_offset_bytes,
+        stripe_size_bytes,
+        bytes_per_sector,
+    )?;
+    drop(opened);
+    let destination = tauri::async_runtime::spawn_blocking(|| {
+        rfd::FileDialog::new()
+            .set_title("Choose a RAID output folder on a different physical disk")
+            .pick_folder()
+    })
+    .await
+    .map_err(crate::err)?;
+    let Some(destination) = destination else {
+        return Ok(false);
+    };
+    let mut canonical_members = Vec::with_capacity(paths.len());
+    let mut unique = std::collections::BTreeSet::new();
+    for path in paths {
+        let canonical = path.canonicalize().map_err(crate::err)?;
+        if !unique.insert(canonical.clone()) {
+            return Err("The same RAID member image cannot be selected more than once.".into());
+        }
+        destination::check_destination(&canonical, &destination, output_size)?;
+        canonical_members.push(canonical);
+    }
+    let destination = destination.canonicalize().map_err(crate::err)?;
+    let total = canonical_members
+        .iter()
+        .try_fold(0u64, |sum, path| {
+            let size = fs::metadata(path).ok()?.len();
+            sum.checked_add(size)
+        })
+        .and_then(|sum| sum.checked_mul(2))
+        .and_then(|sum| sum.checked_add(output_size.checked_mul(2)?))
+        .and_then(|sum| match level_value {
+            RaidLevel::Raid1 => sum.checked_add(
+                output_size.checked_mul(canonical_members.len().saturating_sub(1) as u64)?,
+            ),
+            RaidLevel::Raid5 => sum.checked_add(member_data_size),
+            RaidLevel::Raid0 => Some(sum),
+        })
+        .ok_or("RAID progress size overflow")?;
+    {
+        let mut job = state.job.lock().map_err(crate::err)?;
+        if job.state == "running" {
+            return Err(
+                "Wait for or cancel the active operation before reconstructing RAID.".into(),
+            );
+        }
+        let db = state.db.lock().map_err(crate::err)?;
+        if crate::require_audited_active_case(&db)? != case_id {
+            return Err("The active case changed before RAID reconstruction started.".into());
+        }
+        crate::audit(
+            &db,
+            "raid_reconstruction_started",
+            &serde_json::json!({
+                "case_id":case_id,
+                "level":level_value.label(),
+                "member_paths":canonical_members,
+                "data_offset_bytes":data_offset_bytes,
+                "stripe_size_bytes":if matches!(level_value, RaidLevel::Raid0 | RaidLevel::Raid5) { Some(stripe_size_bytes) } else { None },
+                "bytes_per_sector":bytes_per_sector,
+                "member_data_size_bytes":member_data_size,
+                "reconstructed_size_bytes":output_size,
+                "destination":destination,
+                "member_order_is_operator_supplied":true,
+            })
+            .to_string(),
+        )?;
+        state.cancel.store(false, Ordering::SeqCst);
+        *job = crate::Job {
+            state: "running".into(),
+            kind: "raid_reconstruction".into(),
+            total,
+            message: Some(format!(
+                "Reconstructing {} from {} ordered members",
+                level_value.label(),
+                canonical_members.len()
+            )),
+            ..crate::Job::default()
+        };
+    }
+
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<crate::AppState>();
+        let outcome = reconstruct_package(
+            ReconstructionRequest {
+                level_name: &level,
+                member_paths: &canonical_members,
+                data_offset_bytes,
+                stripe_size_bytes,
+                bytes_per_sector,
+                case_id,
+                destination: &destination,
+            },
+            &state.cancel,
+            |processed, total| {
+                if let Ok(mut job) = state.job.lock() {
+                    job.processed = processed.min(total);
+                    job.total = total;
+                    job.message = Some(format!("Reconstructing and validating {} image", level_value.label()));
+                }
+            },
+        );
+        match outcome {
+            Ok(Some(package)) => {
+                let finalization = (|| -> Result<()> {
+                    let db = state.db.lock().map_err(crate::err)?;
+                    if crate::require_audited_active_case(&db)? != case_id {
+                        return Err("The active case changed during RAID reconstruction. Preserve the output package and inspect the audit log.".into());
+                    }
+                    crate::audit(
+                        &db,
+                        "raid_reconstruction_published",
+                        &serde_json::json!({
+                            "case_id":case_id,
+                            "level":package.level.label(),
+                            "members":package.member_count,
+                            "image_sha256":package.image_sha256,
+                            "size_bytes":package.size_bytes,
+                            "output_directory":package.directory,
+                        })
+                        .to_string(),
+                    )
+                })();
+                let finalization = finalization.and_then(|()| activate_reconstructed_image(&state, case_id, &package));
+                if let Ok(mut job) = state.job.lock() {
+                    let completed = finalization.is_ok();
+                    job.state = if completed { "completed" } else { "failed" }.into();
+                    job.error = finalization.err();
+                    job.message = Some(if completed {
+                        "RAID image reconstructed, verified, and registered to the active case".into()
+                    } else {
+                        "The package was published, but case registration failed. Review the error and audit log before using it.".into()
+                    });
+                    job.output_directory = Some(package.directory.to_string_lossy().into_owned());
+                    job.sha256 = Some(package.image_sha256);
+                    job.processed = job.total;
+                }
+                Ok(true)
+            }
+            Ok(None) => {
+                let audit_result = (|| -> Result<()> {
+                    let db = state.db.lock().map_err(crate::err)?;
+                    crate::audit(
+                        &db,
+                        "raid_reconstruction_cancelled",
+                        &serde_json::json!({"case_id":case_id,"level":level_value.label()}).to_string(),
+                    )
+                })();
+                if let Ok(mut job) = state.job.lock() {
+                    job.state = if audit_result.is_ok() { "cancelled" } else { "failed" }.into();
+                    job.error = audit_result.as_ref().err().cloned();
+                    job.message = Some(if audit_result.is_ok() {
+                        "RAID reconstruction cancelled; unpublished staging data removed".into()
+                    } else {
+                        "RAID reconstruction stopped, but cancellation could not be recorded in the audit log.".into()
+                    });
+                }
+                audit_result.map(|()| false)
+            }
+            Err(error) => {
+                let audit_result = (|| -> Result<()> {
+                    let db = state.db.lock().map_err(crate::err)?;
+                    crate::audit(
+                        &db,
+                        "raid_reconstruction_failed",
+                        &serde_json::json!({"case_id":case_id,"level":level_value.label(),"error":error}).to_string(),
+                    )
+                })();
+                let error = match audit_result {
+                    Ok(()) => error,
+                    Err(audit_error) => format!("{error}; failure was not recorded in the audit log: {audit_error}"),
+                };
+                if let Ok(mut job) = state.job.lock() {
+                    job.state = "failed".into();
+                    job.error = Some(error.clone());
+                }
+                Err(error)
+            }
+        }
+    })
+    .await;
+    match result {
+        Ok(result) => result,
+        Err(error) => {
+            if let Ok(mut job) = state.job.lock() {
+                job.state = "failed".into();
+                job.error = Some(format!(
+                    "RAID reconstruction worker stopped unexpectedly: {error}"
+                ));
+            }
+            Err(format!(
+                "RAID reconstruction worker stopped unexpectedly: {error}"
+            ))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::AtomicU64;
+
+    static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
+
+    fn root() -> PathBuf {
+        let id = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
+        let directory = std::env::current_dir()
+            .unwrap()
+            .join(format!(".raid-test-{}-{id}", std::process::id()));
+        fs::create_dir(&directory).unwrap();
+        directory
+    }
+
+    fn write_member(path: &Path, bytes: &[u8]) {
+        fs::write(path, bytes).unwrap();
+    }
+
+    fn raid5_members() -> [Vec<u8>; 3] {
+        // Three stripe rows exercise a complete left-symmetric parity
+        // rotation from member 2 through member 1 to member 0.
+        let a = 0x12;
+        let b = 0x24;
+        let c = 0x48;
+        let d = 0x81;
+        let e = 0x96;
+        let f = 0xa5;
+        [
+            [vec![a; 512], vec![d; 512], vec![e ^ f; 512]].concat(),
+            [vec![b; 512], vec![c ^ d; 512], vec![e; 512]].concat(),
+            [vec![a ^ b; 512], vec![c; 512], vec![f; 512]].concat(),
+        ]
+    }
+
+    #[test]
+    fn reconstructs_full_raid5_left_symmetric_layout_and_checks_parity() {
+        let root = root();
+        let members = raid5_members();
+        let paths = [
+            root.join("member0.raw"),
+            root.join("member1.raw"),
+            root.join("member2.raw"),
+        ];
+        for (path, bytes) in paths.iter().zip(&members) {
+            write_member(path, bytes);
+        }
+        let data = [
+            vec![0x12; 512],
+            vec![0x24; 512],
+            vec![0x48; 512],
+            vec![0x81; 512],
+            vec![0x96; 512],
+            vec![0xa5; 512],
+        ]
+        .concat();
+        let mut final_progress = (0, 0);
+        let package = reconstruct_package(
+            ReconstructionRequest {
+                level_name: "raid5",
+                member_paths: &paths,
+                data_offset_bytes: 0,
+                stripe_size_bytes: 512,
+                bytes_per_sector: 512,
+                case_id: 7,
+                destination: &root,
+            },
+            &AtomicBool::new(false),
+            |processed, total| final_progress = (processed, total),
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(fs::read(&package.image_path).unwrap(), data);
+        assert_eq!(package.size_bytes, 3072);
+        assert_eq!(package.level, RaidLevel::Raid5);
+        assert_eq!(final_progress.0, final_progress.1);
+        let verification = crate::recovery_verify::verify_package(&package.directory).unwrap();
+        assert_eq!(verification.package_type, "raid_reconstruction");
+        assert_eq!(verification.records, 3);
+        assert_eq!(verification.state, "complete");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires the independently generated Linux MD RAID 5 reference array"]
+    fn reconstructs_independent_linux_md_raid5_reference_array() {
+        let fixture = std::env::var_os("DAEMONCORE_RAID5_REFERENCE_DIR")
+            .map(PathBuf::from)
+            .expect("reference fixture directory is required");
+        let member_paths =
+            ["member0.raw", "member1.raw", "member2.raw"].map(|name| fixture.join(name));
+        let expected = fs::read(fixture.join("logical-image.raw")).unwrap();
+        assert_eq!(expected.len(), 16 * 1024 * 1024);
+        assert_eq!(
+            format!("{:x}", Sha256::digest(&expected)),
+            "ae6018b38e30a433a0505035cf4df582da77c7ef92c269245232686e541e97c8"
+        );
+        assert_eq!(
+            member_paths
+                .iter()
+                .map(|path| fs::metadata(path).unwrap().len())
+                .collect::<Vec<_>>(),
+            vec![8 * 1024 * 1024; 3]
+        );
+
+        let root = root();
+        let package = reconstruct_package(
+            ReconstructionRequest {
+                level_name: "raid5",
+                member_paths: &member_paths,
+                data_offset_bytes: 0,
+                stripe_size_bytes: 64 * 1024,
+                bytes_per_sector: 512,
+                case_id: 7,
+                destination: &root,
+            },
+            &AtomicBool::new(false),
+            |_, _| {},
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(fs::read(&package.image_path).unwrap(), expected);
+        assert_eq!(package.size_bytes, expected.len() as u64);
+        let verification = crate::recovery_verify::verify_package(&package.directory).unwrap();
+        assert_eq!(verification.package_type, "raid_reconstruction");
+        assert_eq!(verification.state, "complete");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rejects_raid5_parity_mismatch_and_removes_staged_output() {
+        let root = root();
+        let mut members = raid5_members();
+        members[2][0] ^= 1;
+        let paths = [
+            root.join("member0.raw"),
+            root.join("member1.raw"),
+            root.join("member2.raw"),
+        ];
+        for (path, bytes) in paths.iter().zip(&members) {
+            write_member(path, bytes);
+        }
+        let error = reconstruct_package(
+            ReconstructionRequest {
+                level_name: "raid5",
+                member_paths: &paths,
+                data_offset_bytes: 0,
+                stripe_size_bytes: 512,
+                bytes_per_sector: 512,
+                case_id: 7,
+                destination: &root,
+            },
+            &AtomicBool::new(false),
+            |_, _| {},
+        )
+        .err()
+        .expect("mismatched parity must not publish a RAID 5 image");
+
+        assert!(error.contains("RAID 5 XOR parity mismatch at stripe row 0"));
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 3);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn reconstructs_raid0_using_operator_member_order_and_stripe_size() {
+        let root = root();
+        let a = root.join("a.raw");
+        let b = root.join("b.raw");
+        let mut a_bytes = vec![b'A'; 512];
+        a_bytes.extend(vec![b'B'; 512]);
+        let mut b_bytes = vec![b'1'; 512];
+        b_bytes.extend(vec![b'2'; 512]);
+        write_member(&a, &a_bytes);
+        write_member(&b, &b_bytes);
+        let package = reconstruct_package(
+            ReconstructionRequest {
+                level_name: "raid0",
+                member_paths: &[a, b],
+                data_offset_bytes: 0,
+                stripe_size_bytes: 512,
+                bytes_per_sector: 512,
+                case_id: 7,
+                destination: &root,
+            },
+            &AtomicBool::new(false),
+            |_, _| {},
+        );
+        let package = package.unwrap().unwrap();
+        let image = fs::read(&package.image_path).unwrap();
+        assert_eq!(&image[..512], &vec![b'A'; 512]);
+        assert_eq!(&image[512..1024], &vec![b'1'; 512]);
+        assert_eq!(&image[1024..1536], &vec![b'B'; 512]);
+        assert_eq!(&image[1536..], &vec![b'2'; 512]);
+        assert_eq!(package.size_bytes, 2048);
+        let verification = crate::recovery_verify::verify_package(&package.directory).unwrap();
+        assert_eq!(verification.package_type, "raid_reconstruction");
+        assert_eq!(verification.state, "complete");
+        fs::write(package.image_path, vec![0; 2048]).unwrap();
+        assert!(crate::recovery_verify::verify_package(&package.directory)
+            .unwrap_err()
+            .contains("image size or SHA-256"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn reconstructs_and_verifies_matching_raid1_mirrors() {
+        let root = root();
+        let a = root.join("a.raw");
+        let b = root.join("b.raw");
+        let data = vec![0x29; 512];
+        write_member(&a, &data);
+        write_member(&b, &data);
+        let package = reconstruct_package(
+            ReconstructionRequest {
+                level_name: "raid1",
+                member_paths: &[a, b],
+                data_offset_bytes: 0,
+                stripe_size_bytes: 0,
+                bytes_per_sector: 512,
+                case_id: 7,
+                destination: &root,
+            },
+            &AtomicBool::new(false),
+            |_, _| {},
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(fs::read(&package.image_path).unwrap(), data);
+        assert_eq!(
+            crate::recovery_verify::verify_package(&package.directory)
+                .unwrap()
+                .package_type,
+            "raid_reconstruction"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rejects_mismatched_raid1_members_instead_of_selecting_a_mirror() {
+        let root = root();
+        let a = root.join("a.raw");
+        let b = root.join("b.raw");
+        write_member(&a, &vec![0x11; 512]);
+        write_member(&b, &vec![0x22; 512]);
+        let result = reconstruct_package(
+            ReconstructionRequest {
+                level_name: "raid1",
+                member_paths: &[a, b],
+                data_offset_bytes: 0,
+                stripe_size_bytes: 0,
+                bytes_per_sector: 512,
+                case_id: 7,
+                destination: &root,
+            },
+            &AtomicBool::new(false),
+            |_, _| {},
+        );
+        assert!(result.err().unwrap().contains("member data differs"));
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 2);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cancels_without_publishing_a_raid_package() {
+        let root = root();
+        let a = root.join("a.raw");
+        let b = root.join("b.raw");
+        write_member(&a, &vec![0x11; 512]);
+        write_member(&b, &vec![0x11; 512]);
+        let result = reconstruct_package(
+            ReconstructionRequest {
+                level_name: "raid1",
+                member_paths: &[a, b],
+                data_offset_bytes: 0,
+                stripe_size_bytes: 0,
+                bytes_per_sector: 512,
+                case_id: 7,
+                destination: &root,
+            },
+            &AtomicBool::new(true),
+            |_, _| {},
+        )
+        .unwrap();
+        assert!(result.is_none());
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 2);
+        fs::remove_dir_all(root).unwrap();
+    }
+}
