@@ -598,10 +598,19 @@ fn capture(
         &mut progress,
     );
     match result {
-        Err(error) if staging_path.exists() => Err(format!(
-            "{error} Unpublished acquisition data may remain at {}. Treat it as unverified; the normal package verifier must pass before use.",
-            staging_path.display()
-        )),
+        Err(error) if staging_path.exists() => {
+            let marker_warning = match fs::read_to_string(staging_path.join("INCOMPLETE.txt")) {
+                Ok(marker) if marker.contains("UNPUBLISHED ACQUISITION") => String::new(),
+                Ok(_) => " The incomplete marker is missing or invalid; the package verifier must reject this folder before use.".into(),
+                Err(marker_error) => format!(
+                    " Could not verify the incomplete marker ({marker_error}); the package verifier must reject this folder before use."
+                ),
+            };
+            Err(format!(
+                "{error} Unpublished acquisition data may remain at {}. Treat it as unverified; the normal package verifier must pass before use.{marker_warning}",
+                staging_path.display()
+            ))
+        }
         result => result,
     }
 }
@@ -1139,6 +1148,26 @@ mod tests {
         }
     }
 
+    struct MarkerBlockedSource {
+        destination: PathBuf,
+        size: u64,
+    }
+
+    impl BlockSource for MarkerBlockedSource {
+        fn len(&self) -> u64 {
+            self.size
+        }
+
+        fn read_exact_at(&self, _offset: u64, _buffer: &mut [u8]) -> std::io::Result<()> {
+            let staging = fs::read_dir(&self.destination)?
+                .next()
+                .ok_or_else(|| std::io::Error::other("staging directory was not created"))??
+                .path();
+            fs::create_dir(staging.join("INCOMPLETE.txt"))?;
+            Err(std::io::Error::from_raw_os_error(1167))
+        }
+    }
+
     impl BlockSource for SectorFailureSource {
         fn len(&self) -> u64 {
             self.bytes.len() as u64
@@ -1480,6 +1509,40 @@ mod tests {
             .unwrap()
             .contains("UNPUBLISHED ACQUISITION"));
         assert!(crate::recovery_verify::verify_package(&partial).is_err());
+        fs::remove_dir_all(destination).unwrap();
+    }
+
+    #[test]
+    fn acquisition_error_reports_when_incomplete_marker_cannot_be_written() {
+        let destination = test_directory();
+        let source = MarkerBlockedSource {
+            destination: destination.clone(),
+            size: 2048,
+        };
+        let mut device = test_device();
+        device.size_bytes = source.len();
+        let error = capture(
+            &source,
+            &device,
+            42,
+            &destination,
+            true,
+            &AtomicBool::new(false),
+            |_, _, _| {},
+        )
+        .err()
+        .expect("device read failure must retain an unverified staging folder");
+
+        assert!(error.contains("source became unavailable"));
+        assert!(error.contains("Could not verify the incomplete marker"));
+        let staging = fs::read_dir(&destination)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        assert!(error.contains(&staging.to_string_lossy().to_string()));
+        assert!(crate::recovery_verify::verify_package(&staging).is_err());
         fs::remove_dir_all(destination).unwrap();
     }
 

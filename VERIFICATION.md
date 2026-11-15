@@ -1427,3 +1427,11 @@ window across chunks to avoid repeated large allocations. All 12 runnable
 carving tests pass, including signatures split across a chunk boundary. This
 reduces allocation churn; representative large-image throughput and memory
 benchmarks remain open.
+
+Physical acquisition errors now check whether the best-effort `INCOMPLETE.txt`
+marker can be read back as valid before presenting the retained staging path.
+When marker creation is deliberately blocked, the operator error explicitly
+reports that condition, and the ordinary verifier rejects the staging folder.
+The full `npm run validate` passes on Windows: frontend typecheck/build, 54
+core tests (3 ignored), 129 desktop tests (6 ignored), formatting, and Clippy
+with warnings denied.
