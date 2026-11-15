@@ -628,17 +628,15 @@ pub fn start_ntfs_scan(offset: u64, app: tauri::AppHandle, state: State<AppState
                 }
             }
             if job.state != "completed" {
-                if let Ok(db) = state.db.lock() {
-                    if let Err(e) = audit(
+                let audit_result = state.db.lock().map_err(err).and_then(|db| {
+                    audit(
                         &db,
                         "ntfs_scan_finished",
                         &serde_json::json!({"case_id":case_id,"source_id":source_id,"job":&*job})
                             .to_string(),
-                    ) {
-                        job.state = "failed".into();
-                        job.error = Some(e.to_string());
-                    }
-                }
+                    )
+                });
+                crate::mark_job_audit_failure(&mut job, audit_result);
             }
         };
     });
@@ -887,8 +885,8 @@ pub async fn export_selected(
                     job.error = Some(e);
                 }
             };
-            if let Ok(db) = state.db.lock() {
-                if let Err(e) = audit(
+            let audit_result = state.db.lock().map_err(err).and_then(|db| {
+                audit(
                     &db,
                     "recovery_export_finished",
                     &export_audit_payload(
@@ -904,11 +902,9 @@ pub async fn export_selected(
                         None,
                         Some(&job),
                     ),
-                ) {
-                    job.state = "failed".into();
-                    job.error = Some(e.to_string());
-                }
-            }
+                )
+            });
+            crate::mark_job_audit_failure(&mut job, audit_result);
         };
     });
     Ok(true)

@@ -458,8 +458,8 @@ pub async fn export_exfat_deleted(
                     job.error = Some(error);
                 }
             }
-            if let Ok(db) = state.db.lock() {
-                if let Err(error) = audit(
+            let audit_result = state.db.lock().map_err(err).and_then(|db| {
+                audit(
                     &db,
                     "recovery_export_finished",
                     &serde_json::json!({
@@ -473,11 +473,9 @@ pub async fn export_exfat_deleted(
                         "job": &*job,
                     })
                     .to_string(),
-                ) {
-                    job.state = "failed".into();
-                    job.error = Some(error.to_string());
-                }
-            }
+                )
+            });
+            crate::mark_job_audit_failure(&mut job, audit_result);
         };
     });
     Ok(true)

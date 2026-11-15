@@ -328,8 +328,8 @@ pub fn start_fat32_scan(offset: u64, app: tauri::AppHandle, state: State<AppStat
             }
         }
         if job.state != "completed" {
-            if let Ok(db) = state.db.lock() {
-                if let Err(error) = audit(
+            let audit_result = state.db.lock().map_err(err).and_then(|db| {
+                audit(
                     &db,
                     "fat32_scan_finished",
                     &serde_json::json!({
@@ -338,11 +338,9 @@ pub fn start_fat32_scan(offset: u64, app: tauri::AppHandle, state: State<AppStat
                         "job": &*job,
                     })
                     .to_string(),
-                ) {
-                    job.state = "failed".into();
-                    job.error = Some(error.to_string());
-                }
-            }
+                )
+            });
+            crate::mark_job_audit_failure(&mut job, audit_result);
         };
     });
     Ok(())
@@ -588,8 +586,8 @@ pub async fn export_fat32_deleted(
                     job.error = Some(error);
                 }
             }
-            if let Ok(db) = state.db.lock() {
-                if let Err(error) = audit(
+            let audit_result = state.db.lock().map_err(err).and_then(|db| {
+                audit(
                     &db,
                     "fat32_recovery_export_finished",
                     &serde_json::json!({
@@ -602,11 +600,9 @@ pub async fn export_fat32_deleted(
                         "job": &*job,
                     })
                     .to_string(),
-                ) {
-                    job.state = "failed".into();
-                    job.error = Some(error.to_string());
-                }
-            }
+                )
+            });
+            crate::mark_job_audit_failure(&mut job, audit_result);
         };
     });
     Ok(true)

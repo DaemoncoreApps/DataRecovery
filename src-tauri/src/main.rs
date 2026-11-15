@@ -114,6 +114,16 @@ fn include_audit_failure(operation_message: String, audit_result: Result<()>) ->
         ),
     }
 }
+fn mark_job_audit_failure(job: &mut Job, audit_result: Result<()>) {
+    if let Err(audit_error) = audit_result {
+        let operation_message = job
+            .error
+            .take()
+            .unwrap_or_else(|| format!("The operation ended as {}.", job.state));
+        job.state = "failed".into();
+        job.error = Some(include_audit_failure(operation_message, Err(audit_error)));
+    }
+}
 fn detect(bytes: &[u8]) -> String {
     match bytes.get(3..11) {
         Some(b"NTFS    ") => "NTFS volume (metadata scan available)",
@@ -1746,6 +1756,21 @@ mod tests {
                 Err("database is locked".into())
             ),
             "Carving failed. The outcome could not be recorded in the audit log: database is locked"
+        );
+    }
+
+    #[test]
+    fn terminal_job_fails_when_its_audit_record_cannot_be_written() {
+        let mut job = Job {
+            state: "completed".into(),
+            error: None,
+            ..Job::default()
+        };
+        mark_job_audit_failure(&mut job, Err("database is locked".into()));
+        assert_eq!(job.state, "failed");
+        assert_eq!(
+            job.error.as_deref(),
+            Some("The operation ended as completed. The outcome could not be recorded in the audit log: database is locked")
         );
     }
 
