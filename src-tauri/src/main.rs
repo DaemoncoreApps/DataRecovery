@@ -1601,6 +1601,9 @@ fn record_evidence_open(
 }
 fn database(path: PathBuf) -> rusqlite::Result<Connection> {
     let db = Connection::open(path)?;
+    // UI and background operations share one evidence database; tolerate brief
+    // transaction overlap instead of failing immediately with SQLITE_BUSY.
+    db.busy_timeout(std::time::Duration::from_secs(5))?;
     let integrity: String = db.query_row("PRAGMA quick_check", [], |row| row.get(0))?;
     if integrity != "ok" {
         return Err(rusqlite::Error::ToSqlConversionFailure(Box::new(
@@ -1751,6 +1754,10 @@ mod tests {
             .query_row("PRAGMA synchronous", [], |row| row.get(0))
             .unwrap();
         assert_eq!(synchronous, 2);
+        let busy_timeout: i64 = db
+            .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(busy_timeout, 5_000);
     }
 
     #[test]

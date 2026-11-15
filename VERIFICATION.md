@@ -1457,3 +1457,7 @@ Full `npm run validate` passes after the candidate-limit regression: frontend ty
 Archived carving scan listing now stores audit payloads only for the requested case and joins them to persisted scan sessions by ID. This removes the former repeated linear scan of every carving audit event for every saved session and avoids retaining unrelated cases' audit payloads. A regression loads one target scan alongside 5,000 unrelated case audit records and verifies the target snapshot remains valid. This still scans the audit table sequentially; a database index or paginated candidate archive remains future scale work.
 
 The full `npm run validate` passes after the archive lookup change: frontend typecheck/build, 55 core tests (3 ignored), 133 desktop tests (6 ignored), formatting, and Clippy with warnings denied.
+
+SQLite case-database connections now use a five-second busy timeout before integrity checks or schema work. This lets brief overlapping app transactions finish instead of immediately returning `SQLITE_BUSY`; a persistent lock still fails after a bounded wait. The database configuration regression checks the timeout alongside full synchronous durability. This addresses transient lock contention only; it does not replace transaction retries for idempotent operations or qualify concurrent-process access.
+
+The full `npm run validate` passes after the database lock-wait change: frontend typecheck/build, 55 core tests (3 ignored), 133 desktop tests (6 ignored), formatting, and Clippy with warnings denied.
