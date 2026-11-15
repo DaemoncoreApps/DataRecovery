@@ -120,7 +120,10 @@ function App() {
     [readOffset, setReadOffset] = useState(0),
     [busy, setBusy] = useState(false);
   const sourceGeneration = useRef(0);
+  const actionInProgress = useRef(false);
   const run = async (action: () => Promise<void>) => {
+    if (actionInProgress.current) return;
+    actionInProgress.current = true;
     setError("");
     setBusy(true);
     try {
@@ -128,6 +131,7 @@ function App() {
     } catch (e) {
       setError(String(e));
     } finally {
+      actionInProgress.current = false;
       setBusy(false);
     }
   };
