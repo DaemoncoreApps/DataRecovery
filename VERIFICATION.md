@@ -1402,7 +1402,7 @@ power loss.
 
 RAID reconstruction now follows the same failure rule: if a failed reconstruction
 has written image bytes, the staged image is retained, a clear incomplete marker
-is attempted and read back, and marker validation failures are disclosed with the
+is attempted, flushed, and read back, and marker validation failures are disclosed with the
 staging path. The ordinary package verifier rejects the staged directory. User
 cancellation explicitly removes staging, including when cancellation occurs after
 output writing begins. Eight RAID tests pass, with the independent Linux MD
@@ -1444,4 +1444,4 @@ full `npm run validate` passes on Windows: frontend build, 55 core tests (3
 ignored), 129 desktop tests (6 ignored), formatting, and Clippy with warnings
 denied. The independent exFAT volume test remains available in hosted CI.
 
-RAID reconstruction now verifies the retained incomplete marker after an operation error. If it is missing, unreadable, or does not match the expected warning, the returned error explicitly tells the operator and includes the staging path. An injected marker-path obstruction regression passes. The full `npm run validate` passes on Windows: frontend typecheck/build, 55 core tests (3 ignored), 130 desktop tests (6 ignored), formatting, and Clippy with warnings denied. This confirms error reporting only; abrupt power-loss durability and process-kill recovery remain unqualified.
+RAID reconstruction now flushes and verifies the retained incomplete marker after an operation error. If it is missing, unreadable, or does not match the expected warning, the returned error explicitly tells the operator and includes the staging path. An injected marker-path obstruction regression passes. The full `npm run validate` passes on Windows: frontend typecheck/build, 55 core tests (3 ignored), 130 desktop tests (6 ignored), formatting, and Clippy with warnings denied. This confirms error reporting only; abrupt power-loss durability and process-kill recovery remain unqualified.

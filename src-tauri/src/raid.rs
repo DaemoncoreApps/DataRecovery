@@ -141,7 +141,14 @@ impl Drop for Staging {
 }
 
 fn verify_incomplete_marker(path: &Path) -> std::io::Result<()> {
-    let contents = fs::read(path.join("INCOMPLETE.txt"))?;
+    let marker_path = path.join("INCOMPLETE.txt");
+    let marker = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&marker_path)?;
+    marker.sync_all()?;
+    drop(marker);
+    let contents = fs::read(marker_path)?;
     if contents == INCOMPLETE_MARKER {
         Ok(())
     } else {
@@ -154,7 +161,7 @@ fn verify_incomplete_marker(path: &Path) -> std::io::Result<()> {
 
 fn failed_staging_message(error: &str, path: &Path) -> String {
     let marker_status = match verify_incomplete_marker(path) {
-        Ok(()) => "The incomplete marker was written and read back.".to_owned(),
+        Ok(()) => "The incomplete marker was flushed and read back.".to_owned(),
         Err(marker_error) => format!(
             "The incomplete marker could not be validated ({marker_error}); inspect the folder manually."
         ),
