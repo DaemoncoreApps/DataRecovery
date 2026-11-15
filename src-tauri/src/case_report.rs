@@ -140,10 +140,18 @@ fn case_operations(
     family: &str,
 ) -> Result<Vec<ReportOperation>> {
     let placeholders = vec!["?"; events.len()].join(",");
-    let query = format!("SELECT id,timestamp,event,payload,hash FROM audit WHERE event IN ({placeholders}) ORDER BY id");
+    let case_id_parameter = events.len() + 1;
+    let query = format!(
+        "SELECT id,timestamp,event,payload,hash FROM audit WHERE event IN ({placeholders}) AND CASE WHEN json_valid(payload) THEN json_extract(payload, '$.case_id') ELSE NULL END = ?{case_id_parameter} ORDER BY id"
+    );
+    let mut parameters = events
+        .iter()
+        .map(|event| rusqlite::types::Value::Text((*event).to_owned()))
+        .collect::<Vec<_>>();
+    parameters.push(rusqlite::types::Value::Integer(case_id));
     let mut statement = db.prepare(&query).map_err(err)?;
     let rows = statement
-        .query_map(rusqlite::params_from_iter(events.iter()), |row| {
+        .query_map(rusqlite::params_from_iter(parameters.iter()), |row| {
             Ok((
                 row.get::<_, i64>(0)?,
                 row.get::<_, String>(1)?,
@@ -920,6 +928,45 @@ pub async fn export_case_report(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn case_report_operation_query_ignores_unrelated_oversized_records() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE audit(id INTEGER PRIMARY KEY,timestamp TEXT,event TEXT,payload TEXT,hash TEXT);",
+        )
+        .unwrap();
+        let unrelated_payload = serde_json::json!({
+            "case_id": 2,
+            "details": "x".repeat(MAX_OPERATION_PAYLOAD_BYTES + 1)
+        })
+        .to_string();
+        db.execute(
+            "INSERT INTO audit(timestamp,event,payload,hash) VALUES ('1','recovery_export_started',?1,'hash')",
+            [&unrelated_payload],
+        )
+        .unwrap();
+
+        let events = ["recovery_export_started"];
+        let operations = case_operations(&db, 1, &events, "recovery").unwrap();
+        assert!(operations.is_empty());
+
+        let selected_payload = serde_json::json!({
+            "case_id": 1,
+            "details": "x".repeat(MAX_OPERATION_PAYLOAD_BYTES + 1)
+        })
+        .to_string();
+        db.execute(
+            "INSERT INTO audit(timestamp,event,payload,hash) VALUES ('2','recovery_export_started',?1,'hash')",
+            [&selected_payload],
+        )
+        .unwrap();
+        let error = match case_operations(&db, 1, &events, "recovery") {
+            Ok(_) => panic!("oversized selected-case operation must be rejected"),
+            Err(error) => error,
+        };
+        assert!(error.contains("too large to include safely"));
+    }
 
     fn candidate() -> crate::ntfs::Candidate {
         crate::ntfs::Candidate {

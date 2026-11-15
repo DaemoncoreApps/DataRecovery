@@ -1461,3 +1461,7 @@ The full `npm run validate` passes after the archive lookup change: frontend typ
 SQLite case-database connections now use a five-second busy timeout before integrity checks or schema work. This lets brief overlapping app transactions finish instead of immediately returning `SQLITE_BUSY`; a persistent lock still fails after a bounded wait. The database configuration regression checks the timeout alongside full synchronous durability. This addresses transient lock contention only; it does not replace transaction retries for idempotent operations or qualify concurrent-process access.
 
 The full `npm run validate` passes after the database lock-wait change: frontend typecheck/build, 55 core tests (3 ignored), 133 desktop tests (6 ignored), formatting, and Clippy with warnings denied.
+
+Case reports now filter operation events by the selected case ID in SQLite before parsing the payload and applying the 1 MiB per-record limit. The query guards JSON extraction with `json_valid`; an unrelated case's oversized operation record no longer blocks the selected report, while an oversized matching record remains a hard error. The regression exercises both cases. This relies on the bundled SQLite JSON functions and leaves whole-chain audit verification as the report's integrity gate.
+
+The full `npm run validate` passes after report scoping: frontend typecheck/build, 55 core tests (3 ignored), 134 desktop tests (6 ignored), formatting, and Clippy with warnings denied.
