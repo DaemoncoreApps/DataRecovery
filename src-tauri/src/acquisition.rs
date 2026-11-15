@@ -362,13 +362,19 @@ fn device_io_control(file: &File, code: u32, output: &mut [u8]) -> Result<usize>
 
 #[tauri::command]
 pub fn list_physical_devices() -> PhysicalDeviceInventory {
+    collect_physical_device_inventory(|number| DeviceSource::open(number).map(|device| device.info))
+}
+
+fn collect_physical_device_inventory(
+    mut probe: impl FnMut(u32) -> std::result::Result<PhysicalDevice, DeviceProbeError>,
+) -> PhysicalDeviceInventory {
     let mut inventory = PhysicalDeviceInventory {
         devices: Vec::new(),
         failures: Vec::new(),
     };
     for number in 0..MAX_PHYSICAL_DEVICES {
-        match DeviceSource::open(number) {
-            Ok(device) => inventory.devices.push(device.info),
+        match probe(number) {
+            Ok(device) => inventory.devices.push(device),
             Err(DeviceProbeError::Unavailable) => {}
             Err(DeviceProbeError::Failed(message)) => {
                 inventory
@@ -1189,6 +1195,33 @@ mod tests {
             }
             DeviceProbeError::Unavailable => panic!("access denied must be visible"),
         }
+    }
+
+    #[test]
+    fn device_inventory_keeps_probe_errors_alongside_readable_devices() {
+        let inventory = collect_physical_device_inventory(|number| match number {
+            0 => Err(DeviceProbeError::Unavailable),
+            1 => Err(DeviceProbeError::Failed("access denied".into())),
+            2 => Ok(PhysicalDevice {
+                number,
+                size_bytes: 4096,
+                bytes_per_sector: 512,
+                identity: DeviceIdentity {
+                    vendor: Some("Fixture".into()),
+                    product: Some("Readable disk".into()),
+                    revision: None,
+                    serial_number: Some("TEST-02".into()),
+                    bus_type: Some(7),
+                    identity_error: None,
+                },
+            }),
+            _ => Err(DeviceProbeError::Unavailable),
+        });
+        assert_eq!(inventory.devices.len(), 1);
+        assert_eq!(inventory.devices[0].number, 2);
+        assert_eq!(inventory.failures.len(), 1);
+        assert_eq!(inventory.failures[0].number, 1);
+        assert_eq!(inventory.failures[0].message, "access denied");
     }
 
     struct TestSource {
