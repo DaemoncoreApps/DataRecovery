@@ -1418,3 +1418,6 @@ Carving export failures follow the same operator-facing rule: if a package
 folder was created, the error includes its location and requires verification
 before retained output is used. The regression confirms the incomplete folder
 fails package verification.
+An additional integration regression injects a failure during the final source
+stability recheck after a real carved file has been written; the export error
+includes the actual staged package path, and the verifier rejects that package.

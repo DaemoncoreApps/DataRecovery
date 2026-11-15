@@ -1288,6 +1288,36 @@ mod tests {
         }
     }
 
+    struct FailAfterFirstFullRead {
+        bytes: Vec<u8>,
+        full_reads: std::sync::atomic::AtomicUsize,
+    }
+
+    impl BlockSource for FailAfterFirstFullRead {
+        fn len(&self) -> u64 {
+            self.bytes.len() as u64
+        }
+
+        fn read_exact_at(&self, offset: u64, buffer: &mut [u8]) -> std::io::Result<()> {
+            if offset == 0 && buffer.len() == self.bytes.len() {
+                let prior = self.full_reads.fetch_add(1, Ordering::SeqCst);
+                if prior > 0 {
+                    return Err(std::io::Error::other(
+                        "injected final source recheck failure",
+                    ));
+                }
+            }
+            let start =
+                usize::try_from(offset).map_err(|_| std::io::Error::other("offset overflow"))?;
+            let end = start
+                .checked_add(buffer.len())
+                .filter(|end| *end <= self.bytes.len())
+                .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::UnexpectedEof))?;
+            buffer.copy_from_slice(&self.bytes[start..end]);
+            Ok(())
+        }
+    }
+
     struct DecoderReadFailure {
         bytes: Vec<u8>,
         failing_offset: u64,
@@ -1310,6 +1340,56 @@ mod tests {
         assert!(error.contains("source changed"));
         assert!(error.contains(&package.to_string_lossy().to_string()));
         assert!(error.contains("Treat it as unverified"));
+        assert!(crate::recovery_verify::verify_package(&package).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn final_source_recheck_failure_reports_real_incomplete_export() {
+        let mut bytes = vec![0x5a; 17];
+        bytes.extend_from_slice(&valid_png());
+        let scan = scan_supported_files(
+            &TestSource(bytes.clone()),
+            &AtomicBool::new(false),
+            |_, _| {},
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(scan.candidates.len(), 1);
+        let source = FailAfterFirstFullRead {
+            bytes: bytes.clone(),
+            full_reads: std::sync::atomic::AtomicUsize::new(0),
+        };
+        let source_sha256 = format!("{:x}", Sha256::digest(&bytes));
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("daemoncore-carving-failure-{stamp}"));
+        fs::create_dir_all(&root).unwrap();
+
+        let error = export_selected(
+            &source,
+            &scan.candidates,
+            &root,
+            ExportIdentity {
+                case_id: 4,
+                evidence_record_id: 9,
+                scan_session_id: 12,
+                source_id: 7,
+                source_path: "synthetic.raw",
+                source_sha256: &source_sha256,
+            },
+            &AtomicBool::new(false),
+            |_, _| {},
+        )
+        .unwrap_err();
+
+        let package = fs::read_dir(&root).unwrap().next().unwrap().unwrap().path();
+        assert!(error.contains("injected final source recheck failure"));
+        assert!(error.contains(&package.to_string_lossy().to_string()));
+        assert!(error.contains("Treat it as unverified"));
+        assert!(package.join("carved-0000000000000011.png").is_file());
         assert!(crate::recovery_verify::verify_package(&package).is_err());
         fs::remove_dir_all(root).unwrap();
     }
