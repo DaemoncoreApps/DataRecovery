@@ -566,12 +566,12 @@ function App() {
                 })}>Analyze exFAT volume</button>
               </div>
               {!source?.sha256 && <p className="muted">Calculate the source SHA-256 before starting filesystem analysis.</p>}
-              {job.kind === "exfat_scan" && job.state === "completed" && exfatPage && (
+              {exfatPage && exfatSummary && source?.id === exfatSummary.source_id && (
                 <>
                   <div className="panelTitle"><h3>{exfatPage.total.toLocaleString()} verified directory records</h3><span className="muted">PAGE {exfatPageIndex + 1}</span></div>
                   <div className="fat32RecoveryBar">
                     <p role="note">Selected files are revalidated against the source image and allocation bitmap before export. Overlapping selected ranges are rejected. Each output is destination-hash checked; original content integrity cannot be established from deleted metadata alone.</p>
-                    <button className="primary" disabled={!native || busy || !exfatSummary || exfatSelected.size === 0} onClick={() => void run(async () => {
+                    <button className="primary" disabled={!native || busy || job.state === "running" || exfatSelected.size === 0} onClick={() => void run(async () => {
                       if (!source || !exfatSummary) throw new Error("The verified exFAT scan is no longer available. Re-run the analysis.");
                       const started = await command<boolean>("export_exfat_deleted", {
                         sourceId: source.id,
