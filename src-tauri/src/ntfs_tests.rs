@@ -15,6 +15,23 @@ fn resident(kind: u32, value: &[u8]) -> Vec<u8> {
     a[24..24 + value.len()].copy_from_slice(value);
     a
 }
+fn named_resident(kind: u32, name: &str, value: &[u8]) -> Vec<u8> {
+    let name: Vec<u16> = name.encode_utf16().collect();
+    let value_offset = (24 + name.len() * 2 + 7) & !7;
+    let len = (value_offset + value.len() + 7) & !7;
+    let mut a = vec![0; len];
+    a[..4].copy_from_slice(&kind.to_le_bytes());
+    a[4..8].copy_from_slice(&(len as u32).to_le_bytes());
+    a[9] = name.len() as u8;
+    a[10..12].copy_from_slice(&24u16.to_le_bytes());
+    a[16..20].copy_from_slice(&(value.len() as u32).to_le_bytes());
+    a[20..22].copy_from_slice(&(value_offset as u16).to_le_bytes());
+    for (index, unit) in name.iter().enumerate() {
+        a[24 + index * 2..26 + index * 2].copy_from_slice(&unit.to_le_bytes());
+    }
+    a[value_offset..value_offset + value.len()].copy_from_slice(value);
+    a
+}
 fn filename(name: &str) -> Vec<u8> {
     filename_ref(name, 5, 1)
 }
@@ -289,6 +306,7 @@ fn image_with_attribute_list_layout(nonresident_list: bool, continued_list: bool
             17 => vec![
                 filename("fragmented.bin"),
                 nonresident(&[0x11, 1, 104, 0x11, 1, 4, 0], 2, 700, 700, 0),
+                named_resident(0x80, "case_note", b"alternate stream fixture"),
             ],
             18 => vec![
                 filename("reused.bin"),
@@ -469,15 +487,12 @@ fn synthetic_ntfs_scan_classifies_real_record_data() {
     );
     assert_eq!(resident.allocation, "resident");
     assert!(resident.exportable);
-    assert_eq!(
-        result
-            .candidates
-            .iter()
-            .find(|c| c.id == 17)
-            .unwrap()
-            .allocation,
-        "unallocated"
-    );
+    let fragmented = result.candidates.iter().find(|c| c.id == 17).unwrap();
+    assert_eq!(fragmented.allocation, "unallocated");
+    assert!(fragmented
+        .notes
+        .iter()
+        .any(|note| { note == "1 alternate data stream detected; only unnamed data is listed" }));
     assert_eq!(
         result
             .candidates

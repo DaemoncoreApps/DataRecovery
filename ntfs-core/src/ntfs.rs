@@ -1120,9 +1120,14 @@ pub fn parse_record(raw: &[u8], number: u64, boot: &Boot) -> Result<Record> {
         }
     }
     if record.ads > 0 {
+        let stream_label = if record.ads == 1 {
+            "alternate data stream"
+        } else {
+            "alternate data streams"
+        };
         record.notes.push(format!(
-            "{} alternate data streams detected; only unnamed data is listed",
-            record.ads
+            "{} {stream_label} detected; only unnamed data is listed",
+            record.ads,
         ));
     }
     Ok(record)

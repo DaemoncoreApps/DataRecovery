@@ -1,5 +1,28 @@
 # Recovery validation — 2026-10-31
 
+## UI error recovery and NTFS stream disclosure — 2026-11-15
+
+The frontend now distinguishes background status and data-loading failures from
+examiner-triggered action failures. Status polling retries with bounded
+backoff; background loading messages clear when the corresponding data reloads
+successfully; and effect cleanup prevents stale asynchronous results from
+replacing the current view. A synchronous action guard prevents rapid clicks
+from starting overlapping examiner actions. A top-level React error boundary
+replaces a blank window after render failures with an explicit warning to
+reopen the interface and verify operation status and output packages. These
+changes do not make operations resumable or establish process-crash recovery.
+
+`npm run validate` passed locally after these changes: frontend production
+build, Rust formatting, 59 core tests, 148 desktop tests, and both Clippy
+checks with warnings denied. Three core and nine desktop fixture-dependent
+tests remain ignored in the local environment; hosted reference-image and
+fuzz validation is tracked separately.
+
+The NTFS synthetic deleted-file test now includes a named `$DATA` attribute
+(alternate data stream) and confirms the candidate says that only unnamed
+data is listed. This proves disclosure of an unsupported stream; ADS content
+recovery remains unimplemented and is still a production gate.
+
 ## Full-volume exFAT parser fuzz coverage — 2026-11-02
 
 Extended the bounded partition-image fuzz target beyond exFAT boot-region
