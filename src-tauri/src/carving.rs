@@ -20,6 +20,15 @@ const MAX_PNG_CHUNK_BYTES: u32 = 64 * 1024 * 1024;
 const MAX_DECODED_BYTES: usize = 256 * 1024 * 1024;
 const MAX_CANDIDATES: usize = 10_000;
 
+fn try_zeroed_buffer(length: usize, purpose: &str) -> Result<Vec<u8>, String> {
+    let mut buffer = Vec::new();
+    buffer
+        .try_reserve_exact(length)
+        .map_err(|error| format!("Could not allocate {length} bytes for {purpose}: {error}"))?;
+    buffer.resize(length, 0);
+    Ok(buffer)
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct CarvedCandidate {
     pub id: u64,
@@ -947,7 +956,7 @@ fn validate_bmp(source: &dyn BlockSource, offset: u64) -> Result<Option<(u64, St
     {
         return Ok(None);
     }
-    let mut decoded = vec![0; decoded_bytes as usize];
+    let mut decoded = try_zeroed_buffer(decoded_bytes as usize, "BMP image decoding")?;
     if let Err(error) = decoder.read_image(&mut decoded) {
         return match error {
             image::ImageError::IoError(error) => Err(error.to_string()),
@@ -1035,7 +1044,7 @@ fn validate_png(source: &dyn BlockSource, offset: u64) -> Result<Option<(u64, St
             return Ok(None);
         }
         let data_start = position + 8;
-        let mut data = vec![0; length as usize];
+        let mut data = try_zeroed_buffer(length as usize, "PNG chunk validation")?;
         if !data.is_empty() {
             source
                 .read_exact_at(data_start, &mut data)
@@ -1051,6 +1060,14 @@ fn validate_png(source: &dyn BlockSource, offset: u64) -> Result<Option<(u64, St
         if crc.finalize() != u32::from_be_bytes(stored_crc) {
             return Ok(None);
         }
+        let candidate_growth = header
+            .len()
+            .checked_add(data.len())
+            .and_then(|size| size.checked_add(stored_crc.len()))
+            .ok_or("PNG candidate size overflow")?;
+        candidate
+            .try_reserve(candidate_growth)
+            .map_err(|error| format!("Could not grow the bounded PNG candidate buffer: {error}"))?;
         candidate.extend_from_slice(&header);
         candidate.extend_from_slice(&data);
         candidate.extend_from_slice(&stored_crc);
@@ -1071,7 +1088,7 @@ fn validate_png(source: &dyn BlockSource, offset: u64) -> Result<Option<(u64, St
             if reader.output_buffer_size() > MAX_DECODED_BYTES {
                 return Ok(None);
             }
-            let mut decoded = vec![0; reader.output_buffer_size()];
+            let mut decoded = try_zeroed_buffer(reader.output_buffer_size(), "PNG image decoding")?;
             if reader.next_frame(&mut decoded).is_err() {
                 return Ok(None);
             }
@@ -1107,7 +1124,13 @@ impl CandidateReader<'_> {
                 return Ok(false);
             }
             let start = self.bytes.len();
-            self.bytes.resize(start + count, 0);
+            let end = start
+                .checked_add(count)
+                .ok_or("JPEG candidate buffer size overflow")?;
+            self.bytes.try_reserve(count).map_err(|error| {
+                format!("Could not grow the bounded JPEG candidate buffer: {error}")
+            })?;
+            self.bytes.resize(end, 0);
             self.source
                 .read_exact_at(self.offset + start as u64, &mut self.bytes[start..])
                 .map_err(|error| error.to_string())?;
@@ -1160,7 +1183,13 @@ fn validate_jpeg(source: &dyn BlockSource, offset: u64) -> Result<Option<(u64, S
     let mut reader = CandidateReader {
         source,
         offset,
-        bytes: Vec::with_capacity(64 * 1024),
+        bytes: {
+            let mut bytes = Vec::new();
+            bytes.try_reserve_exact(64 * 1024).map_err(|error| {
+                format!("Could not allocate the JPEG candidate buffer: {error}")
+            })?;
+            bytes
+        },
     };
     if !reader.ensure(2)? || &reader.bytes[..2] != JPEG_SIGNATURE {
         return Ok(None);
@@ -1208,7 +1237,8 @@ fn validate_jpeg(source: &dyn BlockSource, offset: u64) -> Result<Option<(u64, S
             {
                 return Ok(None);
             }
-            let mut decoded = vec![0; decoder.total_bytes() as usize];
+            let mut decoded =
+                try_zeroed_buffer(decoder.total_bytes() as usize, "JPEG image decoding")?;
             if decoder.read_image(&mut decoded).is_err() {
                 return Ok(None);
             }
@@ -1269,6 +1299,14 @@ fn validate_jpeg(source: &dyn BlockSource, offset: u64) -> Result<Option<(u64, S
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    #[test]
+    fn oversized_buffer_request_fails_without_panicking() {
+        let error = try_zeroed_buffer(usize::MAX, "test candidate").unwrap_err();
+        assert!(error.contains("test candidate"));
+
+        assert_eq!(try_zeroed_buffer(4, "test candidate").unwrap(), [0; 4]);
+    }
 
     struct TestSource(Vec<u8>);
 

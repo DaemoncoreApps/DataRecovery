@@ -1445,3 +1445,7 @@ ignored), 129 desktop tests (6 ignored), formatting, and Clippy with warnings
 denied. The independent exFAT volume test remains available in hosted CI.
 
 RAID reconstruction now flushes and verifies the retained incomplete marker after an operation error. If it is missing, unreadable, or does not match the expected warning, the returned error explicitly tells the operator and includes the staging path. An injected marker-path obstruction regression passes. The full `npm run validate` passes on Windows: frontend typecheck/build, 55 core tests (3 ignored), 130 desktop tests (6 ignored), formatting, and Clippy with warnings denied. This confirms error reporting only; abrupt power-loss durability and process-kill recovery remain unqualified.
+
+Carving now reserves its potentially large PNG chunk, assembled candidate, BMP/JPEG/PNG decode, and JPEG candidate buffers fallibly. Allocation failures return a scan error with the buffer purpose instead of panicking while building these application-owned buffers. A regression confirms capacity-overflow requests fail safely and ordinary small allocations still work. Decoder-internal allocation behavior and representative memory/throughput benchmarks remain separate qualification work.
+
+The full `npm run validate` passes on Windows after this change: frontend typecheck/build, 55 core tests (3 ignored), 131 desktop tests (6 ignored), formatting, and Clippy with warnings denied.
