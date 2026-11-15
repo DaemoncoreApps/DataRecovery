@@ -19,7 +19,7 @@ truncate -s 128M "$image"
 mkfs.vfat -F 32 -s 1 -n DCRTEST -i 0xDCDC0201 "$image"
 mcopy -i "$image" "$expected" ::RECOVER.BIN
 directory_listing="$(mdir -i "$image" ::)"
-if ! printf '%s\n' "$directory_listing" | grep -qiF 'RECOVER.BIN'; then
+if ! printf '%s\n' "$directory_listing" | grep -qiE 'RECOVER([.]|[[:space:]])+BIN'; then
   printf 'RECOVER.BIN is missing immediately after mcopy. FAT32 root listing:\n%s\n' \
     "$directory_listing" >&2
   exit 1
