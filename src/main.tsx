@@ -528,7 +528,7 @@ function App() {
                 <h2>exFAT directory analysis</h2>
                 <span className="tag">READ ONLY · SOURCE VERIFIED</span>
               </div>
-              <p>Validates the main and backup boot regions, allocation bitmap, up-case table, entry-set checksums, and allocated file streams. Results are an inventory of live entries; deleted exFAT recovery is not supported here.</p>
+              <p>Validates the main and backup boot regions, allocation bitmap, up-case table, live file streams, and checksum-valid deleted file entry sets. Deleted records are metadata leads only; deleted exFAT data is not recovered or exported yet.</p>
               <div className="actions">
                 <label>Volume byte offset <input value={filesystemOffset} onChange={(event) => setFilesystemOffset(event.target.value)} placeholder="0 or 0x..." /></label>
                 <button className="primary" disabled={!source?.sha256 || busy || job.state === "running"} onClick={() => void run(async () => {
@@ -543,15 +543,15 @@ function App() {
               {!source?.sha256 && <p className="muted">Calculate the source SHA-256 before starting filesystem analysis.</p>}
               {job.kind === "exfat_scan" && job.state === "completed" && exfatPage && (
                 <>
-                  <div className="panelTitle"><h3>{exfatPage.total.toLocaleString()} verified live entries</h3><span className="muted">PAGE {exfatPageIndex + 1}</span></div>
+                  <div className="panelTitle"><h3>{exfatPage.total.toLocaleString()} verified directory records</h3><span className="muted">PAGE {exfatPageIndex + 1}</span></div>
                   {exfatPage.rows.map(({ path, entry }) => (
                     <div className="case" key={entry.source_offset}>
                       <code>0x{entry.source_offset.toString(16).padStart(12, "0")}</code>
                       <h3 title={path.join("/")}>{path.join("/")}</h3>
-                      <span>{entry.data_length.toLocaleString()} bytes · cluster {entry.first_cluster || "—"} · {entry.attributes & 0x10 ? "directory" : "file"}{entry.no_fat_chain ? " · contiguous allocation" : ""}</span>
+                      <span>{entry.deleted ? "Deleted metadata lead · contents not recovered" : "Live entry"} · {entry.data_length.toLocaleString()} bytes · cluster {entry.first_cluster || "—"} · {entry.attributes & 0x10 ? "directory" : "file"}{entry.no_fat_chain ? " · contiguous allocation" : ""}</span>
                     </div>
                   ))}
-                  {!exfatPage.total && <p className="muted">The volume is valid and contains no live file entries.</p>}
+                  {!exfatPage.total && <p className="muted">The volume is valid and contains no supported file entry sets.</p>}
                   <div className="actions archivedPagination">
                     <button disabled={exfatPageIndex === 0} onClick={() => setExfatPageIndex((index) => Math.max(0, index - 1))}>Previous</button>
                     <span>{exfatPage.total.toLocaleString()} entries</span>
@@ -916,7 +916,7 @@ function App() {
                       <code>Expected SHA-256 · {selectedArchivedExfatScan?.source_sha256 ?? "unavailable"}</code>
                       {!archivedExfatSourceMatchesScan && <span className="archivedSourceWarning">Evidence is unverified or no longer matches this exFAT scan.</span>}
                     </div>
-                    <p className="warning" role="status">This archived exFAT inventory is read-only and lists live entries only; it does not recover deleted exFAT files.</p>
+                    <p className="warning" role="status">This archived exFAT inventory is read-only. Deleted entry sets are metadata leads only; their file contents are not recovered.</p>
                     {archivedExfatPage.rows.map(({ path, entry }) => (
                       <div className="case" key={entry.source_offset}>
                         <code>0x{entry.source_offset.toString(16).padStart(12, "0")}</code>

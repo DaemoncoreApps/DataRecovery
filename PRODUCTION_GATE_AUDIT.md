@@ -127,3 +127,14 @@ fuzz campaigns passed. This closes the artifact-quota fixture-transfer blocker
 and the hosted FAT32/RAID reference checks. Physical-device qualification,
 degraded RAID, sustained fuzzing, crash/resume, large-image performance, trusted
 installer signing/lifecycle, and other release criteria remain open.
+
+## exFAT deleted-entry metadata inventory — 2026-11-15
+
+Filesystem Analysis now records checksum-valid inactive exFAT file entry sets
+with the verified live directory inventory. It requires consistent cleared
+InUse bits across the entry set and validates the set checksum and filename
+metadata. Deleted directories are not traversed, and deleted file contents are
+not mapped or exported. The UI, archived review, report scope text, and
+capability matrix label these records as metadata leads. This is an inventory
+improvement only; deleted exFAT recovery and independently formatted deleted
+fixtures remain release gates.

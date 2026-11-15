@@ -26,6 +26,8 @@ pub struct DirectoryEntry {
     /// Exact 32-byte records used to construct this entry set.
     pub raw_entries: Vec<[u8; 32]>,
     pub name: String,
+    #[serde(default)]
+    pub deleted: bool,
     pub attributes: u16,
     pub first_cluster: u32,
     pub valid_data_length: u64,
@@ -273,6 +275,21 @@ impl Volume {
     }
 
     pub fn read_tree(&self, source: &dyn BlockSource) -> Result<Vec<TreeEntry>> {
+        self.read_tree_mode(source, false)
+    }
+
+    /// Inventory active entries and checksum-valid deleted file entry sets.
+    /// Deleted directory contents are not traversed because an inactive
+    /// directory entry cannot establish that its cluster chain is intact.
+    pub fn read_tree_with_deleted(&self, source: &dyn BlockSource) -> Result<Vec<TreeEntry>> {
+        self.read_tree_mode(source, true)
+    }
+
+    fn read_tree_mode(
+        &self,
+        source: &dyn BlockSource,
+        include_deleted: bool,
+    ) -> Result<Vec<TreeEntry>> {
         let mut results = DirectoryTreeResults {
             visited_directories: HashSet::new(),
             entries: Vec::new(),
@@ -283,6 +300,7 @@ impl Volume {
             self.walk_fat_chain(source, self.root_cluster)?,
             Vec::new(),
             0,
+            include_deleted,
             &mut results,
         )?;
         Ok(results.entries)
@@ -535,6 +553,7 @@ impl Volume {
         clusters: Vec<u32>,
         parent_path: Vec<String>,
         depth: usize,
+        include_deleted: bool,
         results: &mut DirectoryTreeResults,
     ) -> Result<()> {
         if depth > MAX_DIRECTORY_DEPTH {
@@ -559,7 +578,8 @@ impl Volume {
             }
         }
         let directory = self.read_clusters(source, &clusters, MAX_DIRECTORY_BYTES)?;
-        let entries = self.parse_file_entries(source, &directory, &clusters, depth == 0)?;
+        let entries =
+            self.parse_file_entries(source, &directory, &clusters, depth == 0, include_deleted)?;
         let mut child_directories: Vec<PendingDirectory> = Vec::new();
         for entry in entries {
             if results.entries.len() >= MAX_DIRECTORY_ENTRIES {
@@ -569,7 +589,7 @@ impl Volume {
             path.push(entry.name.clone());
             let is_directory = entry.attributes & 0x10 != 0;
             let mut entry_memory = tree_entry_dynamic_memory(&path, &entry)?;
-            if is_directory {
+            if is_directory && !entry.deleted {
                 entry_memory = entry_memory
                     .checked_add(path_memory(&path)?)
                     .and_then(|memory| memory.checked_add(std::mem::size_of::<PendingDirectory>()))
@@ -625,7 +645,7 @@ impl Volume {
                 path: path.clone(),
                 entry: entry.clone(),
             });
-            if is_directory {
+            if is_directory && !entry.deleted {
                 if entry.data_length == 0 {
                     continue;
                 }
@@ -657,7 +677,14 @@ impl Volume {
                     "exFAT directory allocation length does not match its cluster chain.".into(),
                 );
             }
-            self.read_directory_tree(source, children, child.path, child.depth, results)?;
+            self.read_directory_tree(
+                source,
+                children,
+                child.path,
+                child.depth,
+                include_deleted,
+                results,
+            )?;
         }
         Ok(())
     }
@@ -668,6 +695,7 @@ impl Volume {
         bytes: &[u8],
         directory_clusters: &[u32],
         is_root: bool,
+        include_deleted: bool,
     ) -> Result<Vec<DirectoryEntry>> {
         let records = directory_records(bytes)?;
         let mut entries = Vec::new();
@@ -675,11 +703,12 @@ impl Volume {
         let mut index = 0usize;
         while index < records.len() {
             let primary = &records[index];
-            if primary[0] & 0x80 == 0 {
+            let deleted = primary[0] == 0x05;
+            if primary[0] & 0x80 == 0 && !(include_deleted && deleted) {
                 index += 1;
                 continue;
             }
-            if primary[0] != 0x85 {
+            if !deleted && primary[0] != 0x85 {
                 if is_root && matches!(primary[0], 0x81..=0x83) {
                     index += 1;
                     continue;
@@ -703,15 +732,22 @@ impl Volume {
                 return Err("exFAT file entry set is truncated.".into());
             }
             let set = &records[index..end];
+            if set.iter().any(|record| (record[0] & 0x80 == 0) != deleted) {
+                return Err("exFAT file entry set has inconsistent in-use flags.".into());
+            }
             if entry_set_checksum(set) != u16::from_le_bytes([primary[2], primary[3]]) {
                 return Err("exFAT file entry-set checksum is invalid.".into());
             }
-            if secondary_count < 2 || set[1][0] != 0xc0 {
+            if secondary_count < 2 || set[1][0] & 0x7f != 0x40 {
                 return Err("exFAT file entry set is missing its stream extension.".into());
             }
             let stream_entry = &set[1];
             let flags = stream_entry[1];
             if flags & 1 == 0 || flags & !3 != 0 {
+                if deleted && flags & 1 == 0 {
+                    index = end;
+                    continue;
+                }
                 return Err("exFAT stream extension allocation flags are invalid.".into());
             }
             if stream_entry[2] != 0
@@ -736,8 +772,27 @@ impl Volume {
                 {
                     return Err("Empty exFAT file has inconsistent allocation metadata.".into());
                 }
-            } else {
+            } else if !deleted {
                 self.validate_stream_allocation(source, &stream)?;
+            } else {
+                self.cluster_offset(stream.first_cluster)?;
+                let clusters = stream
+                    .data_length
+                    .checked_add(self.cluster_size - 1)
+                    .ok_or("Deleted exFAT stream cluster count overflow.")?
+                    / self.cluster_size;
+                if clusters == 0 || clusters > u64::from(self.cluster_count) {
+                    return Err("Deleted exFAT stream exceeds the cluster heap.".into());
+                }
+                if stream.no_fat_chain
+                    && u64::from(stream.first_cluster)
+                        .checked_add(clusters - 1)
+                        .is_none_or(|last| last > u64::from(self.cluster_count) + 1)
+                {
+                    return Err(
+                        "Deleted exFAT contiguous stream extends beyond the cluster heap.".into(),
+                    );
+                }
             }
             let name_entries = stream.name_length.div_ceil(15);
             if 1 + name_entries > secondary_count {
@@ -746,7 +801,7 @@ impl Volume {
             let mut units = Vec::with_capacity(name_entries * 15);
             for name_index in 0..name_entries {
                 let record = &set[2 + name_index];
-                if record[0] != 0xc1 || record[1] != 0 {
+                if record[0] & 0x7f != 0x41 || record[1] != 0 {
                     return Err("exFAT filename entries are missing or out of order.".into());
                 }
                 #[allow(clippy::chunks_exact_to_as_chunks)]
@@ -766,7 +821,7 @@ impl Volume {
                 );
             }
             for extra in &set[2 + name_entries..] {
-                if extra[0] & 0x20 == 0 || extra[0] & 0x80 == 0 {
+                if extra[0] & 0x20 == 0 || (extra[0] & 0x80 == 0) != deleted {
                     return Err(
                         "exFAT file entry set contains an unknown critical secondary entry.".into(),
                     );
@@ -780,6 +835,7 @@ impl Volume {
                 source_offset: self.directory_record_offset(directory_clusters, index * 32)?,
                 raw_entries,
                 name,
+                deleted,
                 attributes: u16::from_le_bytes([primary[4], primary[5]]),
                 first_cluster: stream.first_cluster,
                 valid_data_length: stream.valid_data_length,
@@ -1359,6 +1415,44 @@ mod tests {
     }
 
     #[test]
+    fn reads_checksum_valid_deleted_exfat_file_entries_separately() {
+        let mut source = fixture();
+        let heap_start = 40 * 512;
+        let mut deleted = test_file_set("DELETED.TXT", 0x20, 5, 512, true);
+        for record in &mut deleted {
+            record[0] &= 0x7f;
+        }
+        let checksum = entry_set_checksum(&deleted);
+        deleted[0][2..4].copy_from_slice(&checksum.to_le_bytes());
+        for (index, record) in deleted.iter().enumerate() {
+            source.0[heap_start + 160 + index * 32..heap_start + 192 + index * 32]
+                .copy_from_slice(record);
+        }
+        source.0[heap_start + 3 * 512..heap_start + 4 * 512].fill(0x5a);
+
+        let volume = Volume::open(&source, 0, source.len()).unwrap();
+        let live = volume.read_tree(&source).unwrap();
+        let with_deleted = volume.read_tree_with_deleted(&source).unwrap();
+
+        assert_eq!(live.len(), 1);
+        assert!(!live[0].entry.deleted);
+        assert_eq!(with_deleted.len(), 2);
+        assert_eq!(with_deleted[1].path, ["DELETED.TXT"]);
+        assert!(with_deleted[1].entry.deleted);
+        assert_eq!(with_deleted[1].entry.data_length, 512);
+        assert!(with_deleted[1].entry.no_fat_chain);
+    }
+
+    #[test]
+    fn legacy_exfat_snapshots_default_to_live_entries() {
+        let entry: DirectoryEntry = serde_json::from_str(
+            r#"{"source_offset":64,"raw_entries":[],"name":"ROOT.TXT","attributes":32,"first_cluster":0,"valid_data_length":0,"data_length":0,"no_fat_chain":false,"name_hash":4660}"#,
+        )
+        .unwrap();
+        assert!(!entry.deleted);
+    }
+
+    #[test]
     fn traverses_nested_directories_after_releasing_parent_buffers() {
         let mut source = fixture();
         let heap_start = 40 * 512;
@@ -1440,6 +1534,19 @@ mod tests {
                     path == deleted_directory || path.starts_with(&format!("{deleted_directory}/"))
                 })
         }));
+
+        let deleted_inventory = volume.read_tree_with_deleted(&source).unwrap();
+        let deleted_paths: HashSet<String> = deleted_inventory
+            .iter()
+            .filter(|entry| entry.entry.deleted)
+            .map(|entry| entry.path.join("/"))
+            .collect();
+        for expected_deleted in ["audio2", "movie2", "pic2", "text2"] {
+            assert!(
+                deleted_paths.contains(expected_deleted),
+                "missing deleted exFAT metadata lead {expected_deleted}"
+            );
+        }
     }
 
     #[test]

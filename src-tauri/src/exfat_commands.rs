@@ -110,7 +110,7 @@ pub fn start_exfat_scan(offset: u64, app: tauri::AppHandle, state: State<AppStat
         let state = app.state::<AppState>();
         let operation = crate::guarded(|| {
             let volume = exfat::Volume::open(image.as_ref(), offset, image.len() - offset)?;
-            let entries = volume.read_tree(image.as_ref())?;
+            let entries = volume.read_tree_with_deleted(image.as_ref())?;
             if state.cancel.load(Ordering::SeqCst) {
                 return Err("exFAT scan was cancelled; no results were recorded.".into());
             }
@@ -190,7 +190,7 @@ pub fn start_exfat_scan(offset: u64, app: tauri::AppHandle, state: State<AppStat
                             }));
                             job.state = "completed".into();
                             job.discovered = cache.as_ref().map_or(0, |scan| scan.entries.len());
-                            job.message = Some("exFAT directory inventory verified and recorded in the case audit trail.".into());
+                            job.message = Some("Live entries and checksum-valid deleted entry metadata were verified and recorded; deleted-file data is not recovered.".into());
                         }
                         Err(error) => {
                             job.state = "failed".into();
@@ -505,6 +505,7 @@ mod tests {
                 source_offset: 4096,
                 raw_entries: vec![[0x85; 32], [0xc0; 32], [0xc1; 32]],
                 name: "ROOT.TXT".into(),
+                deleted: false,
                 attributes: 0x20,
                 first_cluster: 0,
                 valid_data_length: 0,

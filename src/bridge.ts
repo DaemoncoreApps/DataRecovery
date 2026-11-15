@@ -136,6 +136,7 @@ export interface ExfatTreeEntry {
     source_offset: number;
     raw_entries: number[][];
     name: string;
+    deleted: boolean;
     attributes: number;
     first_cluster: number;
     valid_data_length: number;

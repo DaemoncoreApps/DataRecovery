@@ -527,7 +527,7 @@ fn case_report_from(db: &rusqlite::Connection, case_id: i64) -> Result<CaseRepor
             externally_anchored: false,
             note: ANCHOR_NOTE,
         },
-        scope_note: "This report contains case records, NTFS candidates, FAT32 and exFAT directory-entry snapshots, validated PNG/BMP/JPEG carving snapshots, case-scoped recovery export and verification records, and selected audit-linked physical acquisition and RAID operation records. exFAT entries are live directory inventory only. Audit events are included as recorded and are not independent proof that device identity, write blocking, array geometry, or acquisition conditions were correct. It does not establish recovered-file content integrity, that carved files were deleted, or an external trust anchor.",
+        scope_note: "This report contains case records, NTFS candidates, FAT32 and exFAT directory-entry snapshots, validated PNG/BMP/JPEG carving snapshots, case-scoped recovery export and verification records, and selected audit-linked physical acquisition and RAID operation records. exFAT deleted entry sets are metadata leads only; this application does not recover their file contents. Audit events are included as recorded and are not independent proof that device identity, write blocking, array geometry, or acquisition conditions were correct. It does not establish recovered-file content integrity, that carved files were deleted, or an external trust anchor.",
     };
     Ok(report)
 }
@@ -1404,6 +1404,7 @@ mod tests {
                 source_offset: 20_544,
                 raw_entries: vec![[0x85; 32], [0xc0; 32], [0xc1; 32]],
                 name: "ROOT.TXT".into(),
+                deleted: false,
                 attributes: 0x20,
                 first_cluster: 0,
                 valid_data_length: 0,
