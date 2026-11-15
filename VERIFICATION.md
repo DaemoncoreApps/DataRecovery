@@ -19,12 +19,18 @@ external fixtures or Windows volume behavior unavailable in this local run.
 
 ## Current optimized Windows build — 2026-11-15
 
-`npm exec -- tauri build --no-bundle` completed successfully against the
-current worktree, including GIF carving support. The release executable is
+`npm exec -- tauri build --verbose` built the production frontend and optimized
+Windows executable against the current worktree. The executable is
 `src-tauri/target/release/daemoncore.exe` (15,442,432 bytes, SHA-256
-`2e7e3d7bbd61775061f66fd40bd8e41cd774a0d529081f948471cc9b92d8e379`).
-Authenticode reports `NotSigned`. The executable was not launched; this build
-proves optimized compilation only, not packaged runtime or installer behavior.
+`1b378d0726a27f548de55b2c0bcba1fd5f75fc452eda5ea49f7e5362b5fcebde`).
+Authenticode reports `NotSigned`. The executable was not launched; this proves
+compilation only, not packaged runtime or installer behavior.
+
+The same command stopped during NSIS packaging when Tauri tried to resolve the
+Microsoft WebView2 offline-installer URL with an HTTP `HEAD` request and Windows
+DNS returned `No such host is known` (error 11001). The current installer was
+not produced. The existing NSIS file in `target/release/bundle/nsis` is dated
+2026-10-31 and is stale; do not distribute it as a build of the current source.
 
 ## Independent GIF carving fixture — 2026-11-15
 
