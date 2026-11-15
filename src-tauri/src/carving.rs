@@ -13,6 +13,7 @@ use std::{
 const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
 const BMP_SIGNATURE: &[u8; 2] = b"BM";
 const JPEG_SIGNATURE: &[u8; 2] = b"\xff\xd8";
+pub const SUPPORTED_FORMATS: &[&str] = &["PNG", "BMP", "JPEG"];
 const MAX_SIGNATURE_LEN: usize = 8;
 const READ_CHUNK: usize = 1024 * 1024;
 const MAX_FILE_BYTES: u64 = 128 * 1024 * 1024;

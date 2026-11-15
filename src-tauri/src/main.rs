@@ -214,7 +214,7 @@ fn persist_carve_scan(
     audit(
         &tx,
         "carve_scan_persisted",
-        &serde_json::json!({"case_id":case_id,"evidence_record_id":evidence_record_id,"source_id":source_id,"scan_session_id":persistent_id,"source_path":source_path,"source_sha256":source_sha256,"scanned_bytes":result.scanned_bytes,"formats":["PNG","BMP"],"candidates":result.candidates.len(),"candidates_limited":result.candidates_limited,"snapshot_sha256":snapshot_sha256}).to_string(),
+        &serde_json::json!({"case_id":case_id,"evidence_record_id":evidence_record_id,"source_id":source_id,"scan_session_id":persistent_id,"source_path":source_path,"source_sha256":source_sha256,"scanned_bytes":result.scanned_bytes,"formats":carving::SUPPORTED_FORMATS,"candidates":result.candidates.len(),"candidates_limited":result.candidates_limited,"snapshot_sha256":snapshot_sha256}).to_string(),
     )?;
     tx.commit().map_err(err)?;
     Ok(persistent_id)
@@ -257,7 +257,7 @@ fn start_file_carving(app: tauri::AppHandle, state: State<AppState>) -> Result<(
         audit(
             &db,
             "carve_scan_started",
-            &serde_json::json!({"case_id":case_id,"evidence_record_id":evidence_record_id,"source_id":source_id,"source_sha256":expected_sha256,"size":source.len(),"formats":["PNG","BMP"]}).to_string(),
+            &serde_json::json!({"case_id":case_id,"evidence_record_id":evidence_record_id,"source_id":source_id,"source_sha256":expected_sha256,"size":source.len(),"formats":carving::SUPPORTED_FORMATS}).to_string(),
         )?;
     }
     state.cancel.store(false, Ordering::SeqCst);
@@ -265,9 +265,10 @@ fn start_file_carving(app: tauri::AppHandle, state: State<AppState>) -> Result<(
         state: "running".into(),
         kind: "carving_scan".into(),
         total: source.len(),
-        message: Some(
-            "Scanning the complete hashed image for structurally valid PNG and BMP files".into(),
-        ),
+        message: Some(format!(
+            "Scanning the complete hashed image for structurally valid {} files",
+            carving::SUPPORTED_FORMATS.join(", ")
+        )),
         ..Job::default()
     };
     std::thread::spawn(move || {
