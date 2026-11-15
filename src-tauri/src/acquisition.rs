@@ -335,7 +335,12 @@ struct ReadErrorRange {
 }
 
 fn source_is_unavailable(error: &std::io::Error) -> bool {
-    matches!(error.raw_os_error(), Some(21 | 55 | 321 | 1167))
+    // Do not turn a changed or removed source into zero-filled sectors. ERROR_IO_DEVICE
+    // is deliberately excluded because it can describe a recoverable bad sector.
+    matches!(
+        error.raw_os_error(),
+        Some(21 | 55 | 321 | 1110 | 1112 | 1164 | 1167)
+    )
 }
 
 fn append_read_error(errors: &mut Vec<ReadErrorRange>, offset: u64, length: u64, error: String) {
@@ -1123,6 +1128,21 @@ mod tests {
         let mut changed_geometry = test_device();
         changed_geometry.size_bytes += 512;
         assert!(validate_selected_device(&expected, &changed_geometry).is_err());
+    }
+
+    #[test]
+    fn source_changes_and_hardware_reinitialization_errors_abort_acquisition() {
+        for code in [21, 55, 321, 1110, 1112, 1164, 1167] {
+            assert!(
+                source_is_unavailable(&std::io::Error::from_raw_os_error(code)),
+                "Windows error {code} must stop acquisition"
+            );
+        }
+        // A generic I/O device error can be a localized unreadable sector; the
+        // imager should retry and map it rather than assume the whole source vanished.
+        assert!(!source_is_unavailable(&std::io::Error::from_raw_os_error(
+            1117
+        )));
     }
 
     fn geometry_fixture() -> ([u8; 64], [u8; 8]) {
