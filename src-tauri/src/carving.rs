@@ -1535,6 +1535,27 @@ mod tests {
     }
 
     #[test]
+    fn supported_format_inventory_matches_scanner_output() {
+        let mut image = valid_png();
+        image.extend_from_slice(&valid_bmp());
+        image.extend_from_slice(&valid_jpeg());
+        let scan = scan_supported_files(&TestSource(image), &AtomicBool::new(false), |_, _| {})
+            .unwrap()
+            .unwrap();
+        let mut scanned_formats = scan
+            .candidates
+            .iter()
+            .map(|candidate| candidate.format.as_str())
+            .collect::<Vec<_>>();
+        scanned_formats.sort_unstable();
+        scanned_formats.dedup();
+
+        let mut declared_formats = SUPPORTED_FORMATS.to_vec();
+        declared_formats.sort_unstable();
+        assert_eq!(scanned_formats, declared_formats);
+    }
+
+    #[test]
     #[ignore = "requires the hash-pinned independent exFAT reference image"]
     fn carves_independent_exfat_image_files_against_upstream_hashes() {
         let image_path = std::env::var_os("DAEMONCORE_CARVING_REFERENCE_IMAGE")
