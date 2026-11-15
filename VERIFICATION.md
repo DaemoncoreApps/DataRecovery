@@ -13,7 +13,7 @@ in the account's Billing & Licensing settings to block overage across the
 account.
 
 The local `npm run validate` gate passed against the current worktree: frontend
-build, 61 core tests passed with 3 ignored, 153 desktop tests passed with 9
+build, 61 core tests passed with 3 ignored, 154 desktop tests passed with 9
 ignored, formatting checks, and both Clippy checks. The ignored tests require
 external fixtures or Windows volume behavior unavailable in this local run.
 
@@ -22,7 +22,7 @@ external fixtures or Windows volume behavior unavailable in this local run.
 `npm exec -- tauri build --verbose` built the production frontend and optimized
 Windows executable against the current worktree. The executable is
 `src-tauri/target/release/daemoncore.exe` (15,442,432 bytes, SHA-256
-`a0cdaa2375822febe481371d7ca53695d4952d749bd3ca7315a88d381130c121`).
+`6492e354d326218fa0aaf066126e6a20a6abcaaacac18c4f672245d2b1e159fe`).
 Authenticode reports `NotSigned`. The executable was not launched; this proves
 compilation only, not runtime behavior.
 
@@ -31,11 +31,15 @@ when the sandbox launched `makensis.exe`. Retrying the same build outside the
 restricted process sandbox succeeded. Tauri embedded its offline WebView2
 runtime and produced the unsigned NSIS setup at
 `src-tauri/target/release/bundle/nsis/DaemonCore Data Recovery_0.1.0_x64-setup.exe`
-(222,898,703 bytes, SHA-256
-`97bb16e7372214dda8f0322b99bac5ea9c1f2f8b9ab31c767772084a5ee5425b`).
+(222,898,592 bytes, SHA-256
+`816b4361fdf9b6049ca640b87062887b626b9cec4b24220d8e20b9e080affebf`).
 Authenticode reports `NotSigned`. NSIS emitted warning 6040 for
-`choowHowToInstall`. The setup is staged only; it has not been installed or
-launched. A previous file at this path was dated 2026-10-31 and was stale.
+`choowHowToInstall`; the generated script uses the correctly spelled
+`chooseHowToInstall` and keeps the misspelled string as an empty compatibility
+fallback. The setup is staged only; it has not been installed or launched. A
+Windows regression now verifies that the acquisition source handle blocks new
+write opens until released; it cannot revoke an existing writer, so a validated
+hardware write blocker remains required.
 
 ## Independent GIF carving fixture — 2026-11-15
 
