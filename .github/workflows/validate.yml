@@ -253,8 +253,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --yes exfatprogs
-          mkfs.exfat --help
-          fsck.exfat --version
+          command -v mkfs.exfat >/dev/null
+          command -v fsck.exfat >/dev/null
       - name: Format, mount, write, and delete the independent fixture
         run: bash ./src-tauri/tests/fixtures/make-exfat-deleted-fixture.sh "$GITHUB_WORKSPACE/.ci-fixtures/exfat-deleted-reference"
       - name: Save independent exFAT fixture for the Windows job
