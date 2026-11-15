@@ -1474,3 +1474,20 @@ The exFAT core can now inventory checksum-valid inactive file entry sets alongsi
 
 
 Full validation passes after exFAT deleted-entry metadata inventory: frontend typecheck/build, 57 core tests (3 ignored), 134 desktop tests (6 ignored), formatting, and Clippy with warnings denied. The hash-pinned independent exFAT image test remains ignored locally and is required in hosted validation.
+
+## Independent NTFS deleted-file export — 2026-11-15
+
+Hosted run [43687748018](https://github.com/DaemoncoreApps/DataRecovery/actions/runs/43687748018)
+passed all eight validation jobs. The Linux NTFS fixture job formatted a 256 MiB
+image with `mkntfs`, copied and deleted a deterministic 65,536-byte file using
+`ntfs-3g`, then required Sleuth Kit to list its deleted MFT entry and recover
+the original bytes with `icat -r`. The fixture image and expected bytes were
+transferred to Windows and SHA-256 checked. The native NTFS scan rediscovered
+the deleted record, the production exporter wrote the recovery package, the
+package verifier accepted it as complete, and the exported file matched the
+independently retained bytes exactly. The same hosted run passed baseline
+Windows validation, independent FAT32 and exFAT checks, Linux MD RAID 5
+reconstruction, and all three bounded parser fuzz campaigns. This establishes
+one independent NTFS deleted-file pattern; additional NTFS versions, fragmented
+files, reallocated records, damaged volumes, overwrite/TRIM behavior, and
+large-volume performance remain unqualified.
