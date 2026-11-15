@@ -1319,3 +1319,27 @@ readable sectors around a bad sector are preserved, the bad sector is mapped
 precisely, a disconnected source publishes no image, and the package verifier
 accepts the updated acquisition-method declaration. These simulated faults do
 not qualify physical media behavior or write-blocker hardware.
+
+## Partial acquisition package verification — 2026-11-15
+
+The acquisition verifier previously required every unreadable range to start on
+a 1 MiB boundary and span the full capture chunk. That rejected correctly
+captured partial images when only an interior sector was unreadable. It now
+accepts non-overlapping ranges aligned to the device sector size, bounded to one
+capture chunk and the image extent; sector geometry is constrained to the
+supported 512–65,536 byte range. The regression captures a 1 MiB fixture with a
+single unreadable 512-byte sector, confirms surrounding bytes remain intact,
+then verifies the published package as partial with one failed range.
+
+`npm run validate` passed: frontend build, formatting, 54 core tests passed (3
+ignored), 123 desktop tests passed (6 ignored), and both Clippy checks completed.
+These are local Windows fixture tests, not physical-device qualification.
+
+Hosted run [43664566586](https://github.com/DaemoncoreApps/DataRecovery/actions/runs/43664566586)
+for commit `f1a477b` confirmed the independent exFAT validation and Linux FAT32
+fixture generation/mapping steps passed. The FAT32 and Linux MD RAID fixture
+artifact uploads failed because the repository Actions artifact storage quota
+was exhausted; dependent Windows integration checks were skipped. Linux MD
+array creation and known-image hash checks passed. At the time of this record,
+the parser fuzz campaigns were still running, so the hosted run does not prove
+all validation gates.
