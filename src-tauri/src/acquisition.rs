@@ -84,10 +84,7 @@ impl DeviceSource {
             ));
         }
         let path = PathBuf::from(format!(r"\\.\PhysicalDrive{number}"));
-        let file = OpenOptions::new()
-            .read(true)
-            .share_mode(3)
-            .open(path)
+        let file = open_device_read_only(&path)
             .map_err(|error| classify_device_open_error(number, error))?;
         let mut geometry = [0u8; 64];
         let geometry_bytes =
@@ -110,6 +107,12 @@ impl DeviceSource {
             },
         })
     }
+}
+
+fn open_device_read_only(path: &Path) -> std::io::Result<File> {
+    // Deny new write handles while acquisition runs. This cannot revoke an existing writer,
+    // so the operator must still use a validated hardware write blocker.
+    OpenOptions::new().read(true).share_mode(1).open(path)
 }
 
 fn classify_device_open_error(number: u32, error: std::io::Error) -> DeviceProbeError {
@@ -1195,6 +1198,24 @@ mod tests {
             }
             DeviceProbeError::Unavailable => panic!("access denied must be visible"),
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn acquisition_read_handle_blocks_new_writers_until_released() {
+        let root = test_directory();
+        let path = root.join("source.raw");
+        fs::write(&path, b"controlled source").unwrap();
+
+        let source = open_device_read_only(&path).unwrap();
+        let write_attempt = OpenOptions::new().write(true).open(&path);
+        assert!(write_attempt.is_err());
+
+        drop(source);
+        let mut writer = OpenOptions::new().write(true).open(&path).unwrap();
+        writer.write_all(b"updated").unwrap();
+        drop(writer);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
