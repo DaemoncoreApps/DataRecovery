@@ -7,6 +7,7 @@ on:
         description: "This runs the full Windows and Linux validation matrix using Actions minutes."
         required: true
         type: choice
+        default: "Cancel (default)"
         options:
           - "Cancel (default)"
           - "Run full validation"
