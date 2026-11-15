@@ -1453,3 +1453,7 @@ The full `npm run validate` passes on Windows after this change: frontend typech
 A 10,001-BMP scale regression verifies that carving retains only the configured 10,000-candidate maximum, sets the limited-results flag, and completes the full source digest/coverage pass rather than silently presenting the capped list as exhaustive. The focused test passes in 1.98 seconds on the local Windows runner. This is a bounded fixture, not a representative large-image throughput or UI responsiveness benchmark.
 
 Full `npm run validate` passes after the candidate-limit regression: frontend typecheck/build, 55 core tests (3 ignored), 132 desktop tests (6 ignored), formatting, and Clippy with warnings denied.
+
+Archived carving scan listing now stores audit payloads only for the requested case and joins them to persisted scan sessions by ID. This removes the former repeated linear scan of every carving audit event for every saved session and avoids retaining unrelated cases' audit payloads. A regression loads one target scan alongside 5,000 unrelated case audit records and verifies the target snapshot remains valid. This still scans the audit table sequentially; a database index or paginated candidate archive remains future scale work.
+
+The full `npm run validate` passes after the archive lookup change: frontend typecheck/build, 55 core tests (3 ignored), 133 desktop tests (6 ignored), formatting, and Clippy with warnings denied.

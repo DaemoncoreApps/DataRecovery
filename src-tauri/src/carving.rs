@@ -83,11 +83,18 @@ pub fn list_case_scan_sessions_from(
         .prepare("SELECT payload FROM audit WHERE event='carve_scan_persisted'")
         .map_err(crate::err)?;
     let mut audit_rows = audit_statement.query([]).map_err(crate::err)?;
-    let mut audit_payloads = Vec::new();
+    let mut audit_payloads = std::collections::BTreeMap::new();
     while let Some(row) = audit_rows.next().map_err(crate::err)? {
-        let payload: String = row.get(0).map_err(crate::err)?;
-        audit_payloads
-            .push(serde_json::from_str::<serde_json::Value>(&payload).map_err(crate::err)?);
+        let encoded: String = row.get(0).map_err(crate::err)?;
+        let payload: serde_json::Value = serde_json::from_str(&encoded).map_err(crate::err)?;
+        if payload["case_id"].as_i64() == Some(case_id) {
+            let scan_id = payload["scan_session_id"].as_i64().unwrap_or_default();
+            if audit_payloads.insert(scan_id, payload).is_some() {
+                return Err(format!(
+                    "Carving scan {scan_id} has duplicate audit references."
+                ));
+            }
+        }
     }
     let mut statement = db
         .prepare("SELECT id,evidence_id,source_sha256,completed_at,scanned_bytes,candidates_json,snapshot_sha256,candidates_limited FROM carve_scan_sessions WHERE case_id=?1 ORDER BY id")
@@ -114,19 +121,9 @@ pub fn list_case_scan_sessions_from(
         {
             return Err(format!("Carving scan {id} has invalid persisted metadata."));
         }
-        let matching_audits = audit_payloads
-            .iter()
-            .filter(|payload| {
-                payload["case_id"].as_i64() == Some(case_id)
-                    && payload["scan_session_id"].as_i64() == Some(id)
-            })
-            .collect::<Vec<_>>();
-        if matching_audits.len() != 1 {
-            return Err(format!(
-                "Carving scan {id} has missing or duplicate audit references."
-            ));
-        }
-        let payload = matching_audits[0];
+        let payload = audit_payloads
+            .get(&id)
+            .ok_or_else(|| format!("Carving scan {id} has no matching audit reference."))?;
         let candidates: Vec<CarvedCandidate> = serde_json::from_str(&candidates_json)
             .map_err(|error| format!("Carving scan {id} candidate snapshot is invalid: {error}"))?;
         let limited = candidates_limited == 1;
@@ -181,12 +178,9 @@ pub fn list_case_scan_sessions_from(
             candidates,
         });
     }
-    for payload in &audit_payloads {
-        if payload["case_id"].as_i64() == Some(case_id) {
-            let id = payload["scan_session_id"].as_i64().unwrap_or_default();
-            if !seen_ids.contains(&id) {
-                return Err(format!("Carving audit record refers to missing scan {id}."));
-            }
+    for id in audit_payloads.keys() {
+        if !seen_ids.contains(id) {
+            return Err(format!("Carving audit record refers to missing scan {id}."));
         }
     }
     Ok(sessions)
@@ -1325,6 +1319,63 @@ mod tests {
             buffer.copy_from_slice(&self.0[start..end]);
             Ok(())
         }
+    }
+
+    #[test]
+    fn archived_carve_scan_lookup_scopes_audit_memory_to_the_selected_case() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE audit(event TEXT NOT NULL,payload TEXT NOT NULL);
+             CREATE TABLE carve_scan_sessions(
+                id INTEGER PRIMARY KEY,
+                evidence_id INTEGER NOT NULL,
+                case_id INTEGER NOT NULL,
+                source_sha256 TEXT NOT NULL,
+                completed_at TEXT NOT NULL,
+                scanned_bytes INTEGER NOT NULL,
+                candidates_json TEXT NOT NULL,
+                snapshot_sha256 TEXT NOT NULL,
+                candidates_limited INTEGER NOT NULL
+             );",
+        )
+        .unwrap();
+
+        for id in 1..=5_000 {
+            db.execute(
+                "INSERT INTO audit(event,payload) VALUES ('carve_scan_persisted',?1)",
+                [format!("{{\"case_id\":99,\"scan_session_id\":{id}}}")],
+            )
+            .unwrap();
+        }
+
+        let source_sha256 = "a".repeat(64);
+        let candidates_json = "[]";
+        let snapshot_sha256 = snapshot_digest(&source_sha256, 4096, false, candidates_json);
+        db.execute(
+            "INSERT INTO carve_scan_sessions(id,evidence_id,case_id,source_sha256,completed_at,scanned_bytes,candidates_json,snapshot_sha256,candidates_limited) VALUES (1,2,7,?1,'1',4096,?2,?3,0)",
+            rusqlite::params![source_sha256, candidates_json, snapshot_sha256],
+        )
+        .unwrap();
+        let payload = serde_json::json!({
+            "case_id": 7,
+            "scan_session_id": 1,
+            "evidence_record_id": 2,
+            "source_sha256": source_sha256,
+            "scanned_bytes": 4096,
+            "candidates": 0,
+            "candidates_limited": false,
+            "snapshot_sha256": snapshot_sha256,
+        });
+        db.execute(
+            "INSERT INTO audit(event,payload) VALUES ('carve_scan_persisted',?1)",
+            [payload.to_string()],
+        )
+        .unwrap();
+
+        let sessions = list_case_scan_sessions_from(&db, 7).unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, 1);
+        assert!(sessions[0].candidates.is_empty());
     }
 
     struct FailAfterFirstFullRead {
