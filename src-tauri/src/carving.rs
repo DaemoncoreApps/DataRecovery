@@ -694,19 +694,20 @@ pub fn scan_supported_files(
     let mut skip_until = 0u64;
     let mut candidates = Vec::new();
     let mut candidates_limited = false;
+    let mut chunk = vec![0; READ_CHUNK];
+    let mut window = Vec::with_capacity(READ_CHUNK + MAX_SIGNATURE_LEN - 1);
     while cursor < source.len() {
         if cancel.load(Ordering::Relaxed) {
             return Ok(None);
         }
         let count = (source.len() - cursor).min(READ_CHUNK as u64) as usize;
-        let mut chunk = vec![0; count];
         source
-            .read_exact_at(cursor, &mut chunk)
+            .read_exact_at(cursor, &mut chunk[..count])
             .map_err(|error| error.to_string())?;
-        source_digest.update(&chunk);
-        let mut window = Vec::with_capacity(carry.len() + chunk.len());
+        source_digest.update(&chunk[..count]);
+        window.clear();
         window.extend_from_slice(&carry);
-        window.extend_from_slice(&chunk);
+        window.extend_from_slice(&chunk[..count]);
         let window_start = cursor - carry.len() as u64;
         for (index, bytes) in window.windows(2).enumerate() {
             let offset = window_start + index as u64;

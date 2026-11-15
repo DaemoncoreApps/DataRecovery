@@ -1421,3 +1421,9 @@ fails package verification.
 An additional integration regression injects a failure during the final source
 stability recheck after a real carved file has been written; the export error
 includes the actual staged package path, and the verifier rejects that package.
+
+The full-image carving loop now reuses its 1 MiB read buffer and signature
+window across chunks to avoid repeated large allocations. All 12 runnable
+carving tests pass, including signatures split across a chunk boundary. This
+reduces allocation churn; representative large-image throughput and memory
+benchmarks remain open.
