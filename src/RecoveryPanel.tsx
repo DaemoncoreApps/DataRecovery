@@ -312,7 +312,7 @@ export function RecoveryPanel({ source, job, busy, run, onJob }: Props) {
               <FileSearch size={17} />
               <h2>FAT32 directory examination</h2>
             </div>
-            <p>Records live and deleted short-name directory entries to the active case.</p>
+            <p>Records FAT32 directory entries to the active case. A deleted long-name lead may be partial and is identified separately.</p>
           </div>
           <span className="tag">READ ONLY · AUDITED</span>
         </div>
@@ -336,7 +336,7 @@ export function RecoveryPanel({ source, job, busy, run, onJob }: Props) {
                 <h3>FAT32 directory entries</h3>
                 <p>
                   {fat32Summary.entries.toLocaleString()} entries ·{" "}
-                  {fat32Summary.deleted_entries.toLocaleString()} deleted short names ·{" "}
+                  {fat32Summary.deleted_entries.toLocaleString()} deleted entries ·{" "}
                   scan SC-{String(fat32Summary.scan_session_id).padStart(6, "0")}
                 </p>
               </div>
@@ -406,6 +406,13 @@ export function RecoveryPanel({ source, job, busy, run, onJob }: Props) {
                 <h3 title={path.join("/")}>
                   {path.join("/") || entry.long_name || "(unnamed)"}
                 </h3>
+                {entry.deleted_long_name_lead && (
+                  <p className="warning" role="note">
+                    Deleted long-name lead; it may be partial. Adjacent LFN slots
+                    and the reconstructed short-name checksum do not prove this text
+                    was the original name: {entry.deleted_long_name_lead}
+                  </p>
+                )}
                 <span>
                   {entry.size.toLocaleString()} bytes · cluster {entry.first_cluster} · {entry.attributes.toString(16).padStart(2, "0")} attributes
                 </span>

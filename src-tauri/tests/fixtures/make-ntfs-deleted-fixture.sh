@@ -28,7 +28,14 @@ mkntfs --force --quick --label DCRTEST "$image"
 sudo mount -t ntfs-3g -o loop,rw "$image" "$mount_dir"
 sudo cp "$expected" "$mount_dir/RECOVER.BIN"
 head -c 32768 "$expected" | sudo tee "$mount_dir/RECOVER_FRAGMENTED.BIN" >/dev/null
-sudo dd if=/dev/zero of="$mount_dir/INTERLEAVE.BIN" bs=32768 count=1 status=none
+sudo dd if=/dev/zero of="$mount_dir/INTERLEAVE.BIN" bs=1048576 count=1 status=none
+sync
+sudo umount "$mount_dir"
+# Reserve the second target extent after an allocated blocker so NTFS cannot
+# satisfy the append by extending the first extent contiguously.
+sudo ntfsfallocate --no-size-change --offset 32768 --length 32768 \
+  "$image" /RECOVER_FRAGMENTED.BIN
+sudo mount -t ntfs-3g -o loop,rw "$image" "$mount_dir"
 tail -c +32769 "$expected" | sudo tee -a "$mount_dir/RECOVER_FRAGMENTED.BIN" >/dev/null
 sync
 test -f "$mount_dir/RECOVER.BIN"
@@ -60,6 +67,7 @@ deleted_inode() {
 
 inode="$(deleted_inode RECOVER.BIN)"
 fragmented_inode="$(deleted_inode RECOVER_FRAGMENTED.BIN)"
+istat -f ntfs "$image" "$fragmented_inode"
 icat -r -f ntfs "$image" "$inode" > "$independent_recovery"
 icat -r -f ntfs "$image" "$fragmented_inode" > "$fragmented_recovery"
 cmp "$expected" "$independent_recovery"

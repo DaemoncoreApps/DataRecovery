@@ -298,7 +298,7 @@ pub fn start_fat32_scan(offset: u64, app: tauri::AppHandle, state: State<AppStat
                                 job.state = "completed".into();
                                 job.discovered = deleted_entries;
                                 job.message = Some(format!(
-                                    "{entry_count} directory entries recorded; {deleted_entries} are deleted short-name records."
+                                    "{entry_count} directory entries recorded; {deleted_entries} are deleted records."
                                 ));
                             }
                             Err(error) => {
@@ -669,7 +669,14 @@ pub fn fat32_scan_results(
         .entries
         .iter()
         .filter(|entry| !deleted_only || entry.entry.deleted)
-        .filter(|entry| entry.entry.display_name().to_lowercase().contains(&query))
+        .filter(|entry| {
+            entry.entry.display_name().to_lowercase().contains(&query)
+                || entry
+                    .entry
+                    .deleted_long_name_lead
+                    .as_ref()
+                    .is_some_and(|lead| lead.to_lowercase().contains(&query))
+        })
         .cloned()
         .collect::<Vec<_>>();
     Ok(Fat32Page {
@@ -856,6 +863,7 @@ mod tests {
                 raw_record,
                 short_name: *b"?ILE    TXT",
                 long_name: None,
+                deleted_long_name_lead: None,
                 deleted,
                 attributes: 0x20,
                 first_cluster: 10,

@@ -1011,12 +1011,17 @@ function App() {
                       )}
                     </div>
                     <p className="warning" role="status">
-                      This archived directory inventory is review-only. FAT32 file recovery and export are not yet available.
+                      This archived directory inventory is review-only. Reopen the hash-verified evidence and run a fresh scan before attempting recovery; archived snapshots cannot be exported directly.
                     </p>
                     {archivedFat32Page.rows.map(({ path, entry }) => (
                       <div className="case" key={entry.source_offset}>
                         <code>{entry.deleted ? "DELETED" : "LIVE"} · 0x{entry.source_offset.toString(16)}</code>
                         <h3 title={path.join("/")}>{path.join("/") || "(unnamed)"}</h3>
+                        {entry.deleted_long_name_lead && (
+                          <p className="warning" role="note">
+                            Deleted long-name lead; it may be partial and is not proof of the original name: {entry.deleted_long_name_lead}
+                          </p>
+                        )}
                         <span>{entry.size.toLocaleString()} bytes · cluster {entry.first_cluster}</span>
                       </div>
                     ))}
@@ -1206,7 +1211,7 @@ function App() {
           <div className="reportIntro">
             <p>
               Export the active case register, verified evidence metadata,
-              completed NTFS scans, FAT32 directory scans, PNG/BMP/JPEG carving
+              completed NTFS scans, FAT32 directory scans, PNG/BMP/JPEG/GIF carving
               snapshots, hash-chained imaging/RAID records, and recovery export
               and package verification records as canonical JSON or a printable
               HTML report with the complete JSON data included.
@@ -1261,10 +1266,10 @@ function App() {
           <section className="panel">
             <div className="panelTitle">
               <h2>Validated file carving</h2>
-              <span className="tag">PNG + BMP + JPEG · FULL IMAGE</span>
+              <span className="tag">PNG + BMP + JPEG + GIF · FULL IMAGE</span>
             </div>
             <p className="muted">
-              Searches the complete, SHA-256-verified image. PNG candidates pass chunk CRC checks and image decoding; JPEG candidates pass bounded marker parsing and pixel decoding; BMP candidates pass header, geometry, pixel-array, and bounded pixel-decode checks. Carving does not restore original names, paths, timestamps, or allocation state, or prove a file was deleted.
+              Searches the complete, SHA-256-verified image. PNG candidates pass chunk CRC checks and image decoding; JPEG candidates pass bounded marker parsing and pixel decoding; BMP candidates pass header, geometry, pixel-array, and bounded pixel-decode checks; GIF candidates pass block-structure checks and bounded decoding of every frame. Carving does not restore original names, paths, timestamps, or allocation state, or prove a file was deleted.
             </p>
             <div className="actions">
               <button className="primary" disabled={!source?.sha256 || busy || job.state === "running"} onClick={startCarving}>

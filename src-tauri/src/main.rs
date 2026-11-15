@@ -371,7 +371,7 @@ fn start_file_carving(app: tauri::AppHandle, state: State<AppState>) -> Result<(
                 if let Ok(mut job) = state.job.lock() {
                     job.state = "completed".into();
                     job.processed = job.total;
-                    job.message = Some("File carve scan complete. PNG passed CRC and decode checks; BMP and JPEG candidates passed bounded pixel decoding. Original names and allocation are unknown.".into());
+                    job.message = Some("File carve scan complete. PNG passed CRC and decode checks; BMP, JPEG, and GIF candidates passed format-specific bounded decoding. Original names and allocation are unknown.".into());
                 }
             }
             Ok(None) => {

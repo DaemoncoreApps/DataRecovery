@@ -55,6 +55,11 @@ pub struct DirectoryEntry {
     pub short_name: [u8; 11],
     /// A checksum-verified long name, when its complete LFN sequence is valid.
     pub long_name: Option<String>,
+    /// A deleted-name lead reconstructed from adjacent deleted LFN slots and
+    /// the short-name checksum. This is not proof that the slots belonged to
+    /// this entry or that their name data was not altered.
+    #[serde(default)]
+    pub deleted_long_name_lead: Option<String>,
     pub deleted: bool,
     pub attributes: u8,
     pub first_cluster: u32,
@@ -287,6 +292,9 @@ impl Volume {
         let mut lfn_parts: Option<Vec<Option<[u16; 13]>>> = None;
         let mut lfn_expected = None;
         let mut lfn_checksum = None;
+        let mut deleted_lfn_parts = Vec::<[u16; 13]>::new();
+        let mut deleted_lfn_checksum = None;
+        let mut deleted_lfn_invalid = false;
         loop {
             if !visited.insert(cluster) {
                 return Err("FAT32 directory chain contains a cycle".into());
@@ -310,13 +318,40 @@ impl Volume {
                     break;
                 }
                 let deleted = record[0] == 0xe5;
-                if deleted {
+                if deleted && record[11] == 0x0f {
                     lfn_parts = None;
                     lfn_expected = None;
                     lfn_checksum = None;
-                    if !include_deleted || record[11] == 0x0f || record[11] & 0x08 != 0 {
-                        continue;
+                    if !include_deleted {
+                        deleted_lfn_parts.clear();
+                        deleted_lfn_checksum = None;
+                        deleted_lfn_invalid = false;
+                    } else if !deleted_lfn_invalid {
+                        if record[12] != 0
+                            || record[26..28] != [0, 0]
+                            || deleted_lfn_checksum.is_some_and(|checksum| checksum != record[13])
+                            || deleted_lfn_parts.len() >= 20
+                        {
+                            deleted_lfn_invalid = true;
+                            deleted_lfn_parts.clear();
+                            deleted_lfn_checksum = None;
+                        } else {
+                            deleted_lfn_checksum.get_or_insert(record[13]);
+                            deleted_lfn_parts.push(lfn_units(record));
+                        }
                     }
+                    continue;
+                }
+                if !deleted {
+                    deleted_lfn_parts.clear();
+                    deleted_lfn_checksum = None;
+                    deleted_lfn_invalid = false;
+                }
+                if deleted && (!include_deleted || record[11] & 0x08 != 0) {
+                    deleted_lfn_parts.clear();
+                    deleted_lfn_checksum = None;
+                    deleted_lfn_invalid = false;
+                    continue;
                 }
                 if !deleted && record[11] == 0x0f {
                     let ordinal = record[0] & 0x1f;
@@ -343,13 +378,7 @@ impl Volume {
                         lfn_checksum = None;
                         continue;
                     }
-                    let mut units = [0; 13];
-                    for (slot, source) in [(0..5, 1..11), (5..11, 14..26), (11..13, 28..32)] {
-                        for (unit_index, byte_index) in slot.zip(source.step_by(2)) {
-                            units[unit_index] =
-                                u16::from_le_bytes([record[byte_index], record[byte_index + 1]]);
-                        }
-                    }
+                    let units = lfn_units(record);
                     if let Some(parts) = lfn_parts.as_mut() {
                         parts[ordinal as usize - 1] = Some(units);
                         lfn_expected = Some(ordinal - 1);
@@ -361,6 +390,16 @@ impl Volume {
                 }
                 let mut short_name = [0; 11];
                 short_name.copy_from_slice(&record[..11]);
+                let deleted_long_name_lead = if deleted && include_deleted && !deleted_lfn_invalid {
+                    deleted_lfn_checksum.and_then(|checksum| {
+                        read_deleted_long_name_lead(&deleted_lfn_parts, checksum, &short_name)
+                    })
+                } else {
+                    None
+                };
+                deleted_lfn_parts.clear();
+                deleted_lfn_checksum = None;
+                deleted_lfn_invalid = false;
                 let long_name = if !deleted
                     && lfn_expected == Some(0)
                     && lfn_checksum == Some(lfn_short_name_checksum(&short_name))
@@ -381,6 +420,7 @@ impl Volume {
                     raw_record,
                     short_name,
                     long_name,
+                    deleted_long_name_lead,
                     deleted,
                     attributes: record[11],
                     first_cluster: (high << 16) | low,
@@ -403,9 +443,8 @@ impl Volume {
         self.read_tree_records(source, false)
     }
 
-    /// Include deleted short-name directory records in the traversal result.
-    /// Deleted long-name slots are not emitted as files because their original
-    /// ordinals are overwritten by the deletion marker.
+    /// Include deleted short-name records and any adjacent deleted long-name
+    /// text leads in the traversal result. Leads remain separate from paths.
     pub fn read_tree_including_deleted(&self, source: &dyn BlockSource) -> Result<Vec<TreeEntry>> {
         self.read_tree_records(source, true)
     }
@@ -695,6 +734,46 @@ impl Volume {
         }
         Ok(())
     }
+}
+
+fn lfn_units(record: &[u8; 32]) -> [u16; 13] {
+    let mut units = [0; 13];
+    for (slot, source) in [(0..5, 1..11), (5..11, 14..26), (11..13, 28..32)] {
+        for (unit_index, byte_index) in slot.zip(source.step_by(2)) {
+            units[unit_index] = u16::from_le_bytes([record[byte_index], record[byte_index + 1]]);
+        }
+    }
+    units
+}
+
+fn read_deleted_long_name_lead(
+    deleted_slots_in_directory_order: &[[u16; 13]],
+    checksum: u8,
+    deleted_short_name: &[u8; 11],
+) -> Option<String> {
+    if deleted_slots_in_directory_order.is_empty() || deleted_slots_in_directory_order.len() > 20 {
+        return None;
+    }
+
+    // Deletion replaces each slot's ordinal and the short name's first byte.
+    // The LFN checksum lets us reconstruct the missing short-name byte so the
+    // surviving long-name slots can be associated as a lead, not as a verified name.
+    let first_byte = (0..=u8::MAX).find(|candidate| {
+        let mut short_name = *deleted_short_name;
+        short_name[0] = *candidate;
+        lfn_short_name_checksum(&short_name) == checksum
+    })?;
+    if first_byte == 0 || first_byte == 0xe5 {
+        return None;
+    }
+
+    let parts = deleted_slots_in_directory_order
+        .iter()
+        .rev()
+        .copied()
+        .map(Some)
+        .collect::<Vec<_>>();
+    decode_lfn_parts(&parts)
 }
 
 fn lfn_short_name_checksum(short_name: &[u8; 11]) -> u8 {
@@ -1140,6 +1219,76 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].long_name, None);
         assert_eq!(entries[0].display_name(), "RECOVE~1.TXT");
+    }
+
+    #[test]
+    fn deleted_lfn_slots_produce_a_name_lead_without_replacing_the_short_name() {
+        let mut image = fixture();
+        let short_name = b"RECOVE~1TXT";
+        set_lfn_entries(&mut image, 0, "Recovered evidence.txt", short_name);
+        set_directory_entry(&mut image, 2, short_name, 0x20, 3, 700);
+        let directory_offset = 1056 * 512;
+        image[directory_offset] = 0xe5;
+        image[directory_offset + 32] = 0xe5;
+        image[directory_offset + 2 * 32] = 0xe5;
+
+        let source = SliceSource(&image);
+        let volume = Volume::open(&source, 0, source.len()).unwrap();
+        let tree = volume.read_tree_including_deleted(&source).unwrap();
+        assert_eq!(tree.len(), 1);
+        assert_eq!(tree[0].path, ["?ECOVE~1.TXT"]);
+        assert!(tree[0].entry.deleted);
+        assert_eq!(tree[0].entry.long_name, None);
+        assert_eq!(
+            tree[0].entry.deleted_long_name_lead.as_deref(),
+            Some("Recovered evidence.txt")
+        );
+        assert_eq!(tree[0].entry.display_name(), "?ECOVE~1.TXT");
+    }
+
+    #[test]
+    fn deleted_lfn_lead_is_rejected_when_slots_disagree_or_are_separated() {
+        let mut image = fixture();
+        let short_name = b"RECOVE~1TXT";
+        set_lfn_entries(&mut image, 0, "Recovered evidence.txt", short_name);
+        set_directory_entry(&mut image, 2, short_name, 0x20, 3, 700);
+        let directory_offset = 1056 * 512;
+        image[directory_offset] = 0xe5;
+        image[directory_offset + 32] = 0xe5;
+        image[directory_offset + 32 + 13] ^= 1;
+        image[directory_offset + 2 * 32] = 0xe5;
+
+        let source = SliceSource(&image);
+        let volume = Volume::open(&source, 0, source.len()).unwrap();
+        let tree = volume.read_tree_including_deleted(&source).unwrap();
+        assert_eq!(tree[0].entry.deleted_long_name_lead, None);
+        drop(source);
+
+        let mut image = fixture();
+        set_lfn_entries(&mut image, 0, "Recovered evidence.txt", short_name);
+        set_directory_entry(&mut image, 2, b"OTHER   TXT", 0x20, 4, 20);
+        set_directory_entry(&mut image, 3, short_name, 0x20, 3, 700);
+        image[directory_offset] = 0xe5;
+        image[directory_offset + 3 * 32] = 0xe5;
+        let source = SliceSource(&image);
+        let volume = Volume::open(&source, 0, source.len()).unwrap();
+        let tree = volume.read_tree_including_deleted(&source).unwrap();
+        let deleted = tree.iter().find(|entry| entry.entry.deleted).unwrap();
+        assert_eq!(deleted.entry.deleted_long_name_lead, None);
+
+        let mut image = fixture();
+        set_lfn_entries(&mut image, 0, "Recovered evidence.txt", short_name);
+        set_directory_entry(&mut image, 2, b"VOLUME     ", 0x08, 0, 0);
+        set_directory_entry(&mut image, 3, short_name, 0x20, 3, 700);
+        image[directory_offset] = 0xe5;
+        image[directory_offset + 32] = 0xe5;
+        image[directory_offset + 2 * 32] = 0xe5;
+        image[directory_offset + 3 * 32] = 0xe5;
+        let source = SliceSource(&image);
+        let volume = Volume::open(&source, 0, source.len()).unwrap();
+        let tree = volume.read_tree_including_deleted(&source).unwrap();
+        let deleted = tree.iter().find(|entry| entry.entry.deleted).unwrap();
+        assert_eq!(deleted.entry.deleted_long_name_lead, None);
     }
 
     #[test]

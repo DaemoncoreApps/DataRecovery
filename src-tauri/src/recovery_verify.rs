@@ -585,6 +585,12 @@ fn verify_carve_package(
             {
                 "jpg"
             }
+            "GIF"
+                if candidate.validation
+                    == "GIF structure valid; all frames decoded within limits" =>
+            {
+                "gif"
+            }
             _ => {
                 return Err(
                     "Carving manifest contains an unsupported format validation claim.".into(),

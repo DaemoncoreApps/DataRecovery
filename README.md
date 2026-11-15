@@ -113,7 +113,7 @@ export is not digitally signed or externally anchored.
   layout assumption, per-file result, destination hashes, checksums, and completion
   state. Overlap checks cover the selected entries only. FAT32 does not preserve a
   deleted file's former chain, so fragmented files can be reconstructed incorrectly;
-  destination hash verification does not establish original-content integrity.
+  destination hash verification does not establish original-content integrity. Adjacent deleted LFN slots may expose an unverified, possibly partial name lead when their checksum can be tied to the short-name record; the lead is not used as the path or export filename.
 
 ## Current limits
 
@@ -142,16 +142,18 @@ and a fresh scan is completed.
 FAT32 live/deleted short-entry review and exFAT live-directory inventory are available
 in limited scope. The exFAT inventory has been checked against one independent volume
 fixture; broader volume compatibility and damaged-media behavior are not qualified.
-General FAT32 allocation-history analysis, deleted-LFN recovery, and exFAT deleted-file
+General FAT32 allocation-history analysis, verified deleted-LFN recovery beyond the unverified name lead, and exFAT deleted-file
 recovery remain pending. Physical-device acquisition and operator-configured RAID
 0/1/full-member RAID 5 reconstruction are available in limited scope: member identity, layout, degraded-array
 handling, and hardware qualification remain explicit release gates. PNG carving
 validates chunk CRCs and decodes complete images; JPEG carving validates bounded
 marker/scan structure and decodes pixels; BMP carving checks header, geometry,
-and pixel-array bounds. All three formats can export selected candidates to
-audited, checksummed packages; carving cannot infer original names, deletion state,
-or allocation, and the recovery workspace can verify those packages' inventories, output hashes,
-and completion markers. PDF/Office formats and archive-time candidate review
+and pixel-array bounds; GIF carving validates its block structure and decodes all
+frames within explicit size and frame limits. All four formats can export selected
+candidates to audited, checksummed packages; carving cannot infer original names,
+deletion state, or allocation, and the recovery workspace can verify those packages'
+inventories, output hashes, and completion markers. GIF is a Service Mark of
+CompuServe Incorporated. PDF/Office formats and archive-time candidate review
 remain pending. FAT32
 deleted-file export is limited to a contiguous-cluster assumption and cannot establish
 original-content integrity. Report generation is available as unsigned, unanchored

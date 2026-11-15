@@ -1,5 +1,79 @@
 # Recovery validation — 2026-10-31
 
+## GitHub Actions spend safeguard — 2026-11-15
+
+Removed the repository's hosted validation and installer workflows after the
+DaemoncoreApps account exhausted its included Actions minutes. Also disabled
+Actions in the GitHub repository settings. A read-back returned
+`enabled=false` and zero registered workflows on `main` at commit `29a6ef1`.
+The control is repository-scoped; billing budgets for the wider organization
+and its other repositories were not changed. Validation and packaging now run
+locally.
+
+The local `npm run validate` gate passes against the current worktree: frontend
+build, 61 core tests passed with 3 ignored, 152 desktop tests passed with 9
+ignored, formatting checks, and both Clippy checks. The ignored tests require
+external fixtures or Windows volume behavior unavailable in this local run.
+
+## Current optimized Windows build — 2026-11-15
+
+`npm exec -- tauri build --no-bundle` completed successfully against the
+current worktree, including GIF carving support. The release executable is
+`src-tauri/target/release/daemoncore.exe` (15,442,432 bytes, SHA-256
+`2e7e3d7bbd61775061f66fd40bd8e41cd774a0d529081f948471cc9b92d8e379`).
+Authenticode reports `NotSigned`. The executable was not launched; this build
+proves optimized compilation only, not packaged runtime or installer behavior.
+
+## Latest release-stage check — 2026-11-15
+
+The unsigned NSIS installer workflow was dispatched for commit `fcf9f37`
+(run [43690279137](https://github.com/DaemoncoreApps/DataRecovery/actions/runs/43690279137)).
+GitHub rejected the `stage-nsis` job before allocating a runner or starting any
+steps because recent account payments failed or the Actions spending limit
+needs to be increased. No installer artifact was produced by this run. This is
+an account billing gate; it provides no evidence about whether the current
+installer build succeeds. Earlier staged artifacts remain historical evidence
+only and do not qualify the current commit.
+
+## Fragmented NTFS fixture check — 2026-11-15
+
+Hosted run [43690068613](https://github.com/DaemoncoreApps/DataRecovery/actions/runs/43690068613)
+passed the baseline Windows validation, FAT32/exFAT/RAID reference checks, and
+the three parser fuzz campaigns. Its Windows deleted-NTFS export test failed
+because the supposed fragmented file had one 16-cluster data run at LCN 12392.
+That is evidence of a contiguous fixture, not fragmented recovery. The local
+fixture-generator change now reserves the second extent with `ntfsfallocate`
+after an allocated blocker and prints the run layout with `istat`; it has not
+yet been run on Linux or passed the Windows exporter assertion. WSL is denied
+by this host and the Docker Linux engine is unavailable, so the fixture remains
+unverified and fragmented NTFS recovery is not qualified.
+
+## FAT32 deleted-name leads — 2026-11-15
+
+The FAT32 directory reader now preserves a deleted long-name text lead only
+when adjacent deleted LFN slots have consistent metadata and checksum and the
+short-name checksum can be matched after reconstructing its erased first byte.
+The lead stays separate from the directory path and recovery filename because
+the LFN text may be partial or altered; it is not proof of the original name.
+Synthetic tests pass for a reconstructed lead, checksum disagreement, an
+intervening deleted entry, deleted volume label, and preventing a deleted LFN
+from attaching to a live short entry. On 2026-11-15, `npm run validate` passed
+with 61 core tests and 148 desktop tests; three core and nine fixture-dependent
+desktop tests were ignored. Clippy and formatting passed. Independent
+deleted-LFN images remain untested, so compatibility is not qualified.
+
+## Bounded PNG chunk validation — 2026-11-15
+
+PNG chunk payloads are now read directly into the bounded candidate buffer in
+fixed 1 MiB pieces while the CRC is calculated, avoiding a second temporary
+allocation proportional to an untrusted chunk length. A regression inserts a
+valid ancillary chunk larger than 1 MiB and uses a source that rejects larger
+individual reads; the PNG is still fully CRC-checked and decoded. The focused
+test passes, and `npm run validate` passes with 61 core tests and 149 desktop
+tests; three core and nine fixture-dependent desktop tests are ignored. This
+reduces duplicate peak buffering for PNG chunks but does not establish a total
+process-memory ceiling or large-image performance qualification.
+
 ## UI error recovery and NTFS stream disclosure — 2026-11-15
 
 The frontend now distinguishes background status and data-loading failures from
@@ -17,6 +91,10 @@ build, Rust formatting, 59 core tests, 148 desktop tests, and both Clippy
 checks with warnings denied. Three core and nine desktop fixture-dependent
 tests remain ignored in the local environment; hosted reference-image and
 fuzz validation is tracked separately.
+
+The same full validation was rerun after syncing the current `main` branch and
+passed with the same test counts. This does not run the ignored external-image
+and fixture-dependent tests.
 
 The NTFS synthetic deleted-file test now includes a named `$DATA` attribute
 (alternate data stream) and confirms the candidate says that only unnamed
@@ -1220,7 +1298,7 @@ Connected selected FAT32 deleted short-name entries to the existing destination 
 
 Three deterministic native regressions pass: exact bytes are recovered into a package accepted by the independent package verifier; a candidate whose clusters are allocated is not exported and yields a partial package; and two selected deleted entries that claim overlapping free clusters are both rejected. `npm run validate` passed on Windows with the frontend production build, 47 core tests (2 ignored), 82 desktop tests (3 ignored), formatting, and Clippy with warnings denied. Rust emitted the existing incremental-cache hard-link fallback warnings only.
 
-This is limited FAT32 deleted short-name recovery, not general FAT32 recovery. The exporter has not yet been exercised with an independently formatted/deleted image or through the packaged native UI; the separate ignored mtools/Sleuth Kit regression currently validates core cluster mapping only. It does not recover deleted long names, reconstruct historical fragmented chains, or establish original file-content integrity. exFAT recovery, signature carving, physical-device acquisition, RAID reconstruction, independently anchored reports, and production qualification remain open.
+This is limited FAT32 deleted short-name recovery, not general FAT32 recovery. The exporter has not yet been exercised with an independently formatted/deleted image or through the packaged native UI; the separate ignored mtools/Sleuth Kit regression currently validates core cluster mapping only. The parser may show an unverified, possibly partial deleted-LFN text lead, but it does not establish the original name, reconstruct historical fragmented chains, or establish original file-content integrity. exFAT recovery, signature carving, physical-device acquisition, RAID reconstruction, independently anchored reports, and production qualification remain open.
 
 ## 2026-11-02 audited hex pattern search
 

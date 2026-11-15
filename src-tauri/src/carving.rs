@@ -1,5 +1,5 @@
 use daemoncore_ntfs_core::storage::BlockSource;
-use image::ImageDecoder;
+use image::{AnimationDecoder, ImageDecoder};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -13,12 +13,15 @@ use std::{
 const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
 const BMP_SIGNATURE: &[u8; 2] = b"BM";
 const JPEG_SIGNATURE: &[u8; 2] = b"\xff\xd8";
-pub const SUPPORTED_FORMATS: &[&str] = &["PNG", "BMP", "JPEG"];
+const GIF_SIGNATURE: &[u8; 3] = b"GIF";
+pub const SUPPORTED_FORMATS: &[&str] = &["PNG", "BMP", "JPEG", "GIF"];
 const MAX_SIGNATURE_LEN: usize = 8;
 const READ_CHUNK: usize = 1024 * 1024;
 const MAX_FILE_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_PNG_CHUNK_BYTES: u32 = 64 * 1024 * 1024;
 const MAX_DECODED_BYTES: usize = 256 * 1024 * 1024;
+const MAX_GIF_DECODED_BYTES: usize = 512 * 1024 * 1024;
+const MAX_GIF_FRAMES: usize = 1_000;
 const MAX_CANDIDATES: usize = 10_000;
 
 fn try_zeroed_buffer(length: usize, purpose: &str) -> Result<Vec<u8>, String> {
@@ -200,6 +203,7 @@ fn candidate_format_metadata_valid(candidate: &CarvedCandidate) -> bool {
                 | "BMP header, geometry, and pixel bounds valid"
         ),
         "JPEG" => candidate.validation == "JPEG decoded; dimensions and allocation bounds valid",
+        "GIF" => candidate.validation == "GIF structure valid; all frames decoded within limits",
         _ => false,
     }
 }
@@ -209,6 +213,7 @@ fn extension(format: &str) -> Option<&'static str> {
         "PNG" => Some("png"),
         "BMP" => Some("bmp"),
         "JPEG" => Some("jpg"),
+        "GIF" => Some("gif"),
         _ => None,
     }
 }
@@ -727,6 +732,8 @@ pub fn scan_supported_files(
                 ("JPEG", validate_jpeg(source, offset)?)
             } else if bytes == &PNG_SIGNATURE[..2] {
                 ("PNG", validate_png(source, offset)?)
+            } else if bytes == &GIF_SIGNATURE[..2] {
+                ("GIF", validate_gif(source, offset)?)
             } else {
                 continue;
             };
@@ -743,6 +750,7 @@ pub fn scan_supported_files(
                             "PNG" => "PNG chunks and CRCs valid; image decoded",
                             "BMP" => "BMP pixels decoded; bounded dimensions and allocation valid",
                             "JPEG" => "JPEG decoded; dimensions and allocation bounds valid",
+                            "GIF" => "GIF structure valid; all frames decoded within limits",
                             _ => unreachable!(),
                         }
                         .into(),
@@ -775,6 +783,7 @@ fn validate_candidate(
         "PNG" => validate_png(source, candidate.offset),
         "BMP" => validate_bmp(source, candidate.offset),
         "JPEG" => validate_jpeg(source, candidate.offset),
+        "GIF" => validate_gif(source, candidate.offset),
         _ => Err("Unsupported carved file format.".into()),
     }
 }
@@ -1039,15 +1048,34 @@ fn validate_png(source: &dyn BlockSource, offset: u64) -> Result<Option<(u64, St
             return Ok(None);
         }
         let data_start = position + 8;
-        let mut data = try_zeroed_buffer(length as usize, "PNG chunk validation")?;
-        if !data.is_empty() {
-            source
-                .read_exact_at(data_start, &mut data)
-                .map_err(|error| error.to_string())?;
-        }
+        let data_length = usize::try_from(length).map_err(|_| "PNG chunk is too large")?;
+        let candidate_growth = header
+            .len()
+            .checked_add(data_length)
+            .and_then(|size| size.checked_add(4))
+            .ok_or("PNG candidate size overflow")?;
+        candidate
+            .try_reserve(candidate_growth)
+            .map_err(|error| format!("Could not grow the bounded PNG candidate buffer: {error}"))?;
+        candidate.extend_from_slice(&header);
+        let candidate_data_start = candidate.len();
+        candidate.resize(candidate_data_start + data_length, 0);
         let mut crc = crc32fast::Hasher::new();
         crc.update(kind);
-        crc.update(&data);
+        let mut copied = 0usize;
+        while copied < data_length {
+            let count = (data_length - copied).min(READ_CHUNK);
+            let candidate_start = candidate_data_start + copied;
+            let candidate_end = candidate_start + count;
+            source
+                .read_exact_at(
+                    data_start + copied as u64,
+                    &mut candidate[candidate_start..candidate_end],
+                )
+                .map_err(|error| error.to_string())?;
+            crc.update(&candidate[candidate_start..candidate_end]);
+            copied += count;
+        }
         let mut stored_crc = [0; 4];
         source
             .read_exact_at(data_start + u64::from(length), &mut stored_crc)
@@ -1055,16 +1083,6 @@ fn validate_png(source: &dyn BlockSource, offset: u64) -> Result<Option<(u64, St
         if crc.finalize() != u32::from_be_bytes(stored_crc) {
             return Ok(None);
         }
-        let candidate_growth = header
-            .len()
-            .checked_add(data.len())
-            .and_then(|size| size.checked_add(stored_crc.len()))
-            .ok_or("PNG candidate size overflow")?;
-        candidate
-            .try_reserve(candidate_growth)
-            .map_err(|error| format!("Could not grow the bounded PNG candidate buffer: {error}"))?;
-        candidate.extend_from_slice(&header);
-        candidate.extend_from_slice(&data);
         candidate.extend_from_slice(&stored_crc);
         chunk_count += 1;
         position = chunk_end;
@@ -1093,6 +1111,227 @@ fn validate_png(source: &dyn BlockSource, offset: u64) -> Result<Option<(u64, St
             )));
         }
     }
+}
+
+fn gif_read_exact(reader: &mut impl Read, buffer: &mut [u8]) -> Result<bool, String> {
+    match reader.read_exact(buffer) {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => Ok(false),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+fn gif_skip_sub_blocks(reader: &mut SourceRangeReader<'_>) -> Result<Option<bool>, String> {
+    let mut saw_payload = false;
+    loop {
+        let mut length = [0];
+        if !gif_read_exact(reader, &mut length)? {
+            return Ok(None);
+        }
+        if length[0] == 0 {
+            return Ok(Some(saw_payload));
+        }
+        saw_payload = true;
+        if reader
+            .seek(SeekFrom::Current(i64::from(length[0])))
+            .is_err()
+        {
+            return Ok(None);
+        }
+    }
+}
+
+fn gif_decoder_source_error(error: &image::ImageError) -> Option<String> {
+    let mut cause = std::error::Error::source(error);
+    while let Some(current) = cause {
+        if let Some(source_error) = current.downcast_ref::<io::Error>() {
+            return Some(source_error.to_string());
+        }
+        cause = current.source();
+    }
+    None
+}
+
+fn validate_gif(source: &dyn BlockSource, offset: u64) -> Result<Option<(u64, String)>, String> {
+    let Some(available) = source.len().checked_sub(offset) else {
+        return Ok(None);
+    };
+    if available < 13 {
+        return Ok(None);
+    }
+    let mut reader = SourceRangeReader {
+        source,
+        start: offset,
+        length: available.min(MAX_FILE_BYTES),
+        position: 0,
+    };
+    let mut header = [0; 6];
+    if !gif_read_exact(&mut reader, &mut header)? || !matches!(&header, b"GIF87a" | b"GIF89a") {
+        return Ok(None);
+    }
+    let mut screen = [0; 7];
+    if !gif_read_exact(&mut reader, &mut screen)? {
+        return Ok(None);
+    }
+    let canvas_width = u16::from_le_bytes([screen[0], screen[1]]) as u32;
+    let canvas_height = u16::from_le_bytes([screen[2], screen[3]]) as u32;
+    let screen_flags = screen[4];
+    if canvas_width == 0
+        || canvas_height == 0
+        || canvas_width > 32_768
+        || canvas_height > 32_768
+        || canvas_width
+            .checked_mul(canvas_height)
+            .and_then(|pixels| pixels.checked_mul(4))
+            .is_none_or(|bytes| bytes > MAX_DECODED_BYTES as u32)
+    {
+        return Ok(None);
+    }
+    if screen_flags & 0x80 != 0 {
+        let table_bytes = 3usize << (usize::from(screen_flags & 0x07) + 1);
+        if reader.seek(SeekFrom::Current(table_bytes as i64)).is_err() {
+            return Ok(None);
+        }
+    }
+
+    let mut frame_count = 0usize;
+    let mut block_count = 0usize;
+    let length = loop {
+        block_count += 1;
+        if block_count > 100_000 {
+            return Ok(None);
+        }
+        let mut introducer = [0];
+        if !gif_read_exact(&mut reader, &mut introducer)? {
+            return Ok(None);
+        }
+        match introducer[0] {
+            0x3b if frame_count > 0 => {
+                break reader
+                    .stream_position()
+                    .map_err(|error| error.to_string())?
+            }
+            0x21 => {
+                let mut label = [0];
+                if !gif_read_exact(&mut reader, &mut label)?
+                    || gif_skip_sub_blocks(&mut reader)?.is_none()
+                {
+                    return Ok(None);
+                }
+            }
+            0x2c => {
+                let mut descriptor = [0; 9];
+                if !gif_read_exact(&mut reader, &mut descriptor)? {
+                    return Ok(None);
+                }
+                let left = u16::from_le_bytes([descriptor[0], descriptor[1]]) as u32;
+                let top = u16::from_le_bytes([descriptor[2], descriptor[3]]) as u32;
+                let width = u16::from_le_bytes([descriptor[4], descriptor[5]]) as u32;
+                let height = u16::from_le_bytes([descriptor[6], descriptor[7]]) as u32;
+                let flags = descriptor[8];
+                if width == 0
+                    || height == 0
+                    || left.checked_add(width).is_none_or(|end| end > canvas_width)
+                    || top
+                        .checked_add(height)
+                        .is_none_or(|end| end > canvas_height)
+                {
+                    return Ok(None);
+                }
+                if flags & 0x80 != 0 {
+                    let table_bytes = 3usize << (usize::from(flags & 0x07) + 1);
+                    if reader.seek(SeekFrom::Current(table_bytes as i64)).is_err() {
+                        return Ok(None);
+                    }
+                }
+                let mut lzw_minimum_code_size = [0];
+                if !gif_read_exact(&mut reader, &mut lzw_minimum_code_size)?
+                    || !(2..=8).contains(&lzw_minimum_code_size[0])
+                    || gif_skip_sub_blocks(&mut reader)? != Some(true)
+                {
+                    return Ok(None);
+                }
+                frame_count += 1;
+                if frame_count > MAX_GIF_FRAMES {
+                    return Ok(None);
+                }
+            }
+            _ => return Ok(None),
+        }
+    };
+    if length == 0 || length > MAX_FILE_BYTES {
+        return Ok(None);
+    }
+
+    let decoder_reader = BufReader::with_capacity(
+        READ_CHUNK,
+        SourceRangeReader {
+            source,
+            start: offset,
+            length,
+            position: 0,
+        },
+    );
+    let mut decoder = match image::codecs::gif::GifDecoder::new(decoder_reader) {
+        Ok(decoder) => decoder,
+        Err(image::ImageError::IoError(error)) if error.kind() != io::ErrorKind::UnexpectedEof => {
+            return Err(error.to_string());
+        }
+        Err(error) => {
+            return match gif_decoder_source_error(&error) {
+                Some(error) => Err(error),
+                None => Ok(None),
+            }
+        }
+    };
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(32_768);
+    limits.max_image_height = Some(32_768);
+    limits.max_alloc = Some(MAX_DECODED_BYTES as u64);
+    if decoder.set_limits(limits).is_err() {
+        return Ok(None);
+    }
+    let mut decoded_bytes = 0usize;
+    let mut decoded_frames = 0usize;
+    for frame in decoder.into_frames() {
+        let frame = match frame {
+            Ok(frame) => frame,
+            Err(image::ImageError::IoError(error))
+                if error.kind() != io::ErrorKind::UnexpectedEof =>
+            {
+                return Err(error.to_string());
+            }
+            Err(error) => {
+                return match gif_decoder_source_error(&error) {
+                    Some(error) => Err(error),
+                    None => Ok(None),
+                }
+            }
+        };
+        decoded_bytes = decoded_bytes
+            .checked_add(frame.buffer().as_raw().len())
+            .ok_or("GIF decoded output size overflow")?;
+        decoded_frames += 1;
+        if decoded_bytes > MAX_GIF_DECODED_BYTES || decoded_frames > MAX_GIF_FRAMES {
+            return Ok(None);
+        }
+    }
+    if decoded_frames != frame_count {
+        return Ok(None);
+    }
+
+    let mut digest = Sha256::new();
+    let mut buffer = vec![0; READ_CHUNK];
+    let mut position = 0u64;
+    while position < length {
+        let count = (length - position).min(buffer.len() as u64) as usize;
+        source
+            .read_exact_at(offset + position, &mut buffer[..count])
+            .map_err(|error| error.to_string())?;
+        digest.update(&buffer[..count]);
+        position += count as u64;
+    }
+    Ok(Some((length, format!("{:x}", digest.finalize()))))
 }
 
 struct CandidateReader<'a> {
@@ -1322,6 +1561,24 @@ mod tests {
         }
     }
 
+    struct ReadLimitedSource<'a> {
+        source: &'a dyn BlockSource,
+        maximum_read: usize,
+    }
+
+    impl BlockSource for ReadLimitedSource<'_> {
+        fn len(&self) -> u64 {
+            self.source.len()
+        }
+
+        fn read_exact_at(&self, offset: u64, buffer: &mut [u8]) -> std::io::Result<()> {
+            if buffer.len() > self.maximum_read {
+                return Err(std::io::Error::other("read exceeded the configured bound"));
+            }
+            self.source.read_exact_at(offset, buffer)
+        }
+    }
+
     #[test]
     fn archived_carve_scan_lookup_scopes_audit_memory_to_the_selected_case() {
         let db = rusqlite::Connection::open_in_memory().unwrap();
@@ -1492,7 +1749,7 @@ mod tests {
 
         fn read_exact_at(&self, offset: u64, buffer: &mut [u8]) -> std::io::Result<()> {
             if offset == self.failing_offset && buffer.len() == self.failing_length {
-                return Err(std::io::Error::other("injected BMP pixel read failure"));
+                return Err(std::io::Error::other("injected image read failure"));
             }
             let start =
                 usize::try_from(offset).map_err(|_| std::io::Error::other("offset overflow"))?;
@@ -1534,11 +1791,27 @@ mod tests {
         include_bytes!("../tests/fixtures/forensic-jpeg-16x12.jpg").to_vec()
     }
 
+    fn valid_gif() -> Vec<u8> {
+        let frames = [
+            image::Rgba([0xff, 0x20, 0x30, 0xff]),
+            image::Rgba([0x10, 0x80, 0xe0, 0xff]),
+        ]
+        .into_iter()
+        .map(|pixel| image::Frame::new(image::RgbaImage::from_pixel(2, 2, pixel)))
+        .collect::<Vec<_>>();
+        let mut output = Vec::new();
+        image::codecs::gif::GifEncoder::new(Cursor::new(&mut output))
+            .encode_frames(frames)
+            .unwrap();
+        output
+    }
+
     #[test]
     fn supported_format_inventory_matches_scanner_output() {
         let mut image = valid_png();
         image.extend_from_slice(&valid_bmp());
         image.extend_from_slice(&valid_jpeg());
+        image.extend_from_slice(&valid_gif());
         let scan = scan_supported_files(&TestSource(image), &AtomicBool::new(false), |_, _| {})
             .unwrap()
             .unwrap();
@@ -1607,6 +1880,136 @@ mod tests {
         assert_eq!(result.candidates.len(), 1);
         assert_eq!(result.candidates[0].offset, offset as u64);
         assert_eq!(result.candidates[0].length, png.len() as u64);
+    }
+
+    #[test]
+    fn validates_large_png_chunks_with_bounded_source_reads() {
+        let mut png = valid_png();
+        let payload = vec![0x5a; READ_CHUNK + 17];
+        let kind = *b"npAD";
+        let mut crc = crc32fast::Hasher::new();
+        crc.update(&kind);
+        crc.update(&payload);
+        let mut chunk = Vec::with_capacity(payload.len() + 12);
+        chunk.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+        chunk.extend_from_slice(&kind);
+        chunk.extend_from_slice(&payload);
+        chunk.extend_from_slice(&crc.finalize().to_be_bytes());
+        // Insert an ancillary chunk after IHDR to exercise multi-read handling.
+        png.splice(8 + 25..8 + 25, chunk);
+
+        let source = TestSource(png);
+        let limited = ReadLimitedSource {
+            source: &source,
+            maximum_read: READ_CHUNK,
+        };
+        let result = scan_supported_files(&limited, &AtomicBool::new(false), |_, _| {})
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(result.candidates.len(), 1);
+        assert_eq!(result.candidates[0].format, "PNG");
+        assert_eq!(result.candidates[0].length, source.len());
+    }
+
+    #[test]
+    fn finds_and_verifies_animated_gif_across_scan_boundary() {
+        let gif = valid_gif();
+        let offset = READ_CHUNK - 1;
+        let mut image = vec![0x5a; offset];
+        image.extend_from_slice(&gif);
+        image.extend_from_slice(&[0; 20]);
+        let expected_source_sha256 = format!("{:x}", Sha256::digest(&image));
+        let source = TestSource(image);
+        let scan = scan_supported_files(&source, &AtomicBool::new(false), |_, _| {})
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(scan.candidates.len(), 1);
+        let candidate = &scan.candidates[0];
+        assert_eq!(candidate.format, "GIF");
+        assert_eq!(candidate.offset, offset as u64);
+        assert_eq!(candidate.length, gif.len() as u64);
+        assert_eq!(candidate.sha256, format!("{:x}", Sha256::digest(&gif)));
+        assert_eq!(
+            candidate.validation,
+            "GIF structure valid; all frames decoded within limits"
+        );
+
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target/t")
+            .join(format!(
+                "gif-{}-{}",
+                std::process::id(),
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+        fs::create_dir_all(&root).unwrap();
+        let package = export_selected(
+            &source,
+            &scan.candidates,
+            &root,
+            ExportIdentity {
+                case_id: 4,
+                evidence_record_id: 9,
+                scan_session_id: 12,
+                source_id: 7,
+                source_path: "synthetic.raw",
+                source_sha256: &expected_source_sha256,
+            },
+            &AtomicBool::new(false),
+            |_, _| {},
+        )
+        .unwrap();
+        let output = Path::new(&package.directory).join(format!("carved-{offset:016x}.gif"));
+        assert_eq!(fs::read(output).unwrap(), gif);
+        let verified = crate::recovery_verify::verify_package(Path::new(&package.directory))
+            .expect("GIF carving package should pass native verification");
+        assert_eq!(verified.exported, 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rejects_truncated_and_incomplete_gif_candidates() {
+        let gif = valid_gif();
+        let mut truncated = gif.clone();
+        truncated.truncate(truncated.len() - 1);
+        assert!(
+            scan_supported_files(&TestSource(truncated), &AtomicBool::new(false), |_, _| {},)
+                .unwrap()
+                .unwrap()
+                .candidates
+                .is_empty()
+        );
+
+        let mut invalid = gif;
+        let trailer = invalid.len() - 1;
+        invalid[trailer] = 0;
+        assert!(
+            scan_supported_files(&TestSource(invalid), &AtomicBool::new(false), |_, _| {})
+                .unwrap()
+                .unwrap()
+                .candidates
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn surfaces_gif_source_read_errors_instead_of_skipping_the_candidate() {
+        let gif = valid_gif();
+        let offset = 17;
+        let mut bytes = vec![0x5a; offset];
+        bytes.extend_from_slice(&gif);
+        let source = DecoderReadFailure {
+            bytes,
+            failing_offset: offset as u64,
+            failing_length: gif.len(),
+        };
+        let error = scan_supported_files(&source, &AtomicBool::new(false), |_, _| {})
+            .expect_err("a GIF source read error must stop the scan");
+        assert!(error.contains("injected image read failure"));
     }
 
     #[test]
@@ -1772,7 +2175,7 @@ mod tests {
 
         let error = scan_supported_files(&source, &AtomicBool::new(false), |_, _| {})
             .expect_err("a source read failure during BMP decode must stop the scan");
-        assert!(error.contains("injected BMP pixel read failure"));
+        assert!(error.contains("injected image read failure"));
     }
 
     #[test]

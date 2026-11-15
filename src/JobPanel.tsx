@@ -13,7 +13,7 @@ export function JobPanel({ job, cancel }: Props) {
       : job.kind === "fat32_scan"
         ? "FAT32 directory scan"
         : job.kind === "carving_scan"
-          ? "PNG, BMP, and JPEG file carving scan"
+          ? "PNG, BMP, JPEG, and GIF file carving scan"
           : job.kind === "carving_export"
             ? "Carved file export & verification"
         : job.kind === "fat32_recovery_export"

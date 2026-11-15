@@ -125,6 +125,7 @@ export interface Fat32TreeEntry {
     raw_record: number[];
     short_name: number[];
     long_name: string | null;
+    deleted_long_name_lead: string | null;
     deleted: boolean;
     attributes: number;
     first_cluster: number;
