@@ -44,7 +44,7 @@ listing="$(fls -f ntfs -d -p "$image")"
 deleted_inode() {
   local name="$1"
   local line inode
-  line="$(printf '%s\n' "$listing" | grep -iF ": $name" | head -n 1 || true)"
+  line="$(printf '%s\n' "$listing" | grep -iF "$name" | head -n 1 || true)"
   if [[ -z "$line" ]]; then
     printf 'Sleuth Kit did not list deleted %s. Deleted-entry listing:\n%s\n' \
       "$name" "$listing" >&2
