@@ -11,7 +11,7 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     path::{Path, PathBuf},
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -173,6 +173,28 @@ impl Drop for PartialOutput {
         let _ = fs::remove_file(&self.0);
     }
 }
+
+static PARTIAL_OUTPUT_ID: AtomicU64 = AtomicU64::new(0);
+
+fn create_partial_output(parent: &Path, filename: &str) -> Result<(PartialOutput, File), String> {
+    // A process crash can leave an older partial behind. Give each attempt its own
+    // create-new path so recovery can be retried without touching that evidence.
+    for _ in 0..16 {
+        let id = PARTIAL_OUTPUT_ID.fetch_add(1, Ordering::Relaxed);
+        let path = parent.join(format!(".{filename}.partial-{}-{id}", std::process::id()));
+        match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(file) => return Ok((PartialOutput(path), file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(format!(
+                    "Could not create staged output {}: {error}",
+                    path.display()
+                ))
+            }
+        }
+    }
+    Err("Could not allocate a unique staged recovery output after repeated collisions.".into())
+}
 fn write_checksums(directory: &Path) -> Result<(), String> {
     let mut files = Vec::new();
     let mut pending = vec![(directory.to_path_buf(), String::new())];
@@ -297,17 +319,7 @@ fn extract_one(
     let stream = stream_for_candidate(source, scan, candidate)?;
     let (parent, filename) = ensure_output_parent(directory, relative_name)?;
     let final_path = parent.join(&filename);
-    let partial = PartialOutput(parent.join(format!(".{filename}.partial")));
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&partial.0)
-        .map_err(|e| {
-            format!(
-                "Could not create staged output {}: {e}",
-                partial.0.display()
-            )
-        })?;
+    let (partial, mut file) = create_partial_output(&parent, &filename)?;
     let mut buffer = vec![0; 1024 * 1024];
     let mut position = 0;
     let mut digest = Sha256::new();
@@ -549,17 +561,7 @@ fn extract_fat32_one(
     }
     let (parent, filename) = ensure_output_parent(context.directory, relative_name)?;
     let final_path = parent.join(&filename);
-    let partial = PartialOutput(parent.join(format!(".{filename}.partial")));
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&partial.0)
-        .map_err(|error| {
-            format!(
-                "Could not create staged output {}: {error}",
-                partial.0.display()
-            )
-        })?;
+    let (partial, mut file) = create_partial_output(&parent, &filename)?;
     let mut buffer = vec![0; 1024 * 1024];
     let mut position = 0_u64;
     let mut digest = Sha256::new();
@@ -971,6 +973,24 @@ mod tests {
             .join(format!("{label}-{}-{stamp}", std::process::id()));
         fs::create_dir_all(&directory).unwrap();
         directory
+    }
+
+    #[test]
+    fn interrupted_partial_does_not_block_a_new_recovery_attempt() {
+        let directory = recovery_test_directory("stale-partial");
+        let stale = directory.join(".recovered.bin.partial");
+        fs::write(&stale, b"preserve interrupted output").unwrap();
+
+        let (partial, mut file) = create_partial_output(&directory, "recovered.bin").unwrap();
+        assert_ne!(partial.0, stale);
+        file.write_all(b"new verified output").unwrap();
+        drop(file);
+        let staged_path = partial.0.clone();
+        drop(partial);
+
+        assert_eq!(fs::read(&stale).unwrap(), b"preserve interrupted output");
+        assert!(!staged_path.exists());
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
