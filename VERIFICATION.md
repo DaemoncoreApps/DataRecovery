@@ -1394,7 +1394,8 @@ escaping check; the frontend production build passes. Native Windows save-dialog
 and generated-file viewing checks remain outstanding.
 
 Acquisition staging is retained after an ordinary error once image output has
-started and receives an `INCOMPLETE.txt` warning; the normal package verifier
-rejects this unfinalized folder. User cancellation continues to remove staging.
-All twelve acquisition tests pass. This does not provide resume support or
-guarantee recovery of bytes after abrupt power loss.
+started, receives an `INCOMPLETE.txt` warning, and its path is returned in the
+job error; the normal package verifier rejects this unpublished folder. User
+cancellation continues to remove staging. All twelve acquisition tests pass.
+This does not provide resume support or guarantee recovery of bytes after abrupt
+power loss.

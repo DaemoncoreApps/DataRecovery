@@ -484,7 +484,7 @@ impl Drop for StagingDirectory {
                     .open(path.join("INCOMPLETE.txt"))
                 {
                     let _ = marker.write_all(
-                        b"INCOMPLETE ACQUISITION: this image was not finalized or verified. Do not use it as evidence or pass it to the recovery package verifier.\n",
+                        b"UNPUBLISHED ACQUISITION: this staged image was not published as a completed, verified package. Do not treat it as verified evidence or use the recovery package verifier as proof of completeness.\n",
                     );
                     let _ = marker.sync_all();
                 }
@@ -565,6 +565,43 @@ fn capture(
     cancel: &AtomicBool,
     mut progress: impl FnMut(u64, u64, usize),
 ) -> Result<Option<PublishedAcquisition>> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(err)?
+        .as_nanos();
+    let final_directory = destination.join(format!("DaemonCore-Acquisition-{now}"));
+    let staging_path = destination.join(format!(".DaemonCore-Acquisition-{now}.partial"));
+    let result = capture_into(
+        source,
+        device,
+        case_id,
+        &final_directory,
+        &staging_path,
+        now,
+        write_blocker_attested,
+        cancel,
+        &mut progress,
+    );
+    match result {
+        Err(error) if staging_path.exists() => Err(format!(
+            "{error} Unpublished acquisition data may remain at {}. It is marked incomplete and is not a verified package.",
+            staging_path.display()
+        )),
+        result => result,
+    }
+}
+
+fn capture_into(
+    source: &dyn BlockSource,
+    device: &PhysicalDevice,
+    case_id: i64,
+    final_directory: &Path,
+    staging_path: &Path,
+    now: u128,
+    write_blocker_attested: bool,
+    cancel: &AtomicBool,
+    progress: &mut impl FnMut(u64, u64, usize),
+) -> Result<Option<PublishedAcquisition>> {
     if !write_blocker_attested {
         return Err(
             "Attest to a validated hardware write blocker before acquiring a device.".into(),
@@ -578,14 +615,8 @@ fn capture(
     {
         return Err("The selected device geometry changed or is invalid.".into());
     }
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(err)?
-        .as_nanos();
-    let final_directory = destination.join(format!("DaemonCore-Acquisition-{now}"));
-    let staging_path = destination.join(format!(".DaemonCore-Acquisition-{now}.partial"));
-    fs::create_dir(&staging_path).map_err(err)?;
-    let mut staging = StagingDirectory(Some(staging_path.clone()));
+    fs::create_dir(staging_path).map_err(err)?;
+    let mut staging = StagingDirectory(Some(staging_path.to_path_buf()));
     let mut errors = OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -702,7 +733,7 @@ fn capture(
             read_error_ranges: error_ranges,
         },
     )?;
-    crate::destination::publish_new(&staging_path, &final_directory).map_err(|error| {
+    crate::destination::publish_new(staging_path, final_directory).map_err(|error| {
         format!(
             "Could not publish the staged acquisition package from {} to {}: {error}",
             staging_path.display(),
@@ -711,7 +742,7 @@ fn capture(
     })?;
     staging.0 = None;
     Ok(Some(PublishedAcquisition {
-        directory: final_directory.clone(),
+        directory: final_directory.to_path_buf(),
         image_path: final_directory.join(image_name),
         image_sha256: verified_digest,
         size_bytes: source.len(),
@@ -1430,6 +1461,10 @@ mod tests {
             .ends_with(".partial"));
         assert!(partial.join("INCOMPLETE.txt").is_file());
         assert!(partial.join("image.raw").is_file());
+        assert!(error.contains(&partial.to_string_lossy().to_string()));
+        assert!(fs::read_to_string(partial.join("INCOMPLETE.txt"))
+            .unwrap()
+            .contains("UNPUBLISHED ACQUISITION"));
         assert!(crate::recovery_verify::verify_package(&partial).is_err());
         fs::remove_dir_all(destination).unwrap();
     }
