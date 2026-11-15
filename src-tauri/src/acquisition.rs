@@ -458,10 +458,39 @@ struct PublishedAcquisition {
 
 struct StagingDirectory(Option<PathBuf>);
 
+impl StagingDirectory {
+    fn discard(&mut self) -> Result<()> {
+        if let Some(path) = self.0.as_ref() {
+            fs::remove_dir_all(path).map_err(err)?;
+        }
+        self.0 = None;
+        Ok(())
+    }
+}
+
 impl Drop for StagingDirectory {
     fn drop(&mut self) {
         if let Some(path) = self.0.take() {
-            let _ = fs::remove_dir_all(path);
+            let image_path = path.join("image.raw");
+            if image_path.is_file() {
+                // Keep work from a failed long-running acquisition, but make it
+                // impossible to mistake the unverified image for a package.
+                if let Ok(image) = File::open(&image_path) {
+                    let _ = image.sync_all();
+                }
+                if let Ok(mut marker) = OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(path.join("INCOMPLETE.txt"))
+                {
+                    let _ = marker.write_all(
+                        b"INCOMPLETE ACQUISITION: this image was not finalized or verified. Do not use it as evidence or pass it to the recovery package verifier.\n",
+                    );
+                    let _ = marker.sync_all();
+                }
+            } else {
+                let _ = fs::remove_dir_all(path);
+            }
         }
     }
 }
@@ -580,6 +609,7 @@ fn capture(
 
     while offset < source.len() {
         if cancel.load(Ordering::SeqCst) {
+            staging.discard()?;
             return Ok(None);
         }
         let count = (source.len() - offset).min(buffer.len() as u64) as usize;
@@ -592,6 +622,7 @@ fn capture(
             cancel,
             &mut chunk_errors,
         )? {
+            staging.discard()?;
             return Ok(None);
         }
         if error_ranges
@@ -633,6 +664,7 @@ fn capture(
         return Err("Acquired image bytes failed destination SHA-256 verification.".into());
     }
     if cancel.load(Ordering::SeqCst) {
+        staging.discard()?;
         return Ok(None);
     }
 
@@ -1388,7 +1420,17 @@ mod tests {
         .expect("a disconnected source must not be converted into a partial image");
 
         assert!(error.contains("source became unavailable"));
-        assert_eq!(fs::read_dir(&destination).unwrap().count(), 0);
+        let mut entries = fs::read_dir(&destination).unwrap();
+        let partial = entries.next().unwrap().unwrap().path();
+        assert!(entries.next().is_none());
+        assert!(partial
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .ends_with(".partial"));
+        assert!(partial.join("INCOMPLETE.txt").is_file());
+        assert!(partial.join("image.raw").is_file());
+        assert!(crate::recovery_verify::verify_package(&partial).is_err());
         fs::remove_dir_all(destination).unwrap();
     }
 
