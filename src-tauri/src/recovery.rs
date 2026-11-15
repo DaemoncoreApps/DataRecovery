@@ -1395,6 +1395,43 @@ mod tests {
         for record in root[64..160].chunks_exact_mut(32) {
             record[0] &= 0x7f;
         }
+        let mut second = [[0_u8; 32]; 3];
+        second[0][0] = 0x85;
+        second[0][1] = 2;
+        second[0][4..6].copy_from_slice(&0x20_u16.to_le_bytes());
+        second[1][0] = 0xc0;
+        second[1][1] = 3;
+        second[1][3] = 12;
+        second[1][8..16].copy_from_slice(&512_u64.to_le_bytes());
+        second[1][20..24].copy_from_slice(&5_u32.to_le_bytes());
+        second[1][24..32].copy_from_slice(&512_u64.to_le_bytes());
+        second[2][0] = 0xc1;
+        let second_name: Vec<u16> = "RECOVER2.BIN".encode_utf16().collect();
+        let mut second_name_hash = 0_u16;
+        for (index, unit) in second_name.iter().enumerate() {
+            second[2][2 + index * 2..4 + index * 2].copy_from_slice(&unit.to_le_bytes());
+            for byte in unit.to_le_bytes() {
+                second_name_hash = second_name_hash
+                    .rotate_right(1)
+                    .wrapping_add(u16::from(byte));
+            }
+        }
+        second[1][4..6].copy_from_slice(&second_name_hash.to_le_bytes());
+        let mut second_checksum = 0_u16;
+        for (record_index, record) in second.iter().enumerate() {
+            for (byte_index, byte) in record.iter().enumerate() {
+                if record_index != 0 || !matches!(byte_index, 2 | 3) {
+                    second_checksum = second_checksum
+                        .rotate_right(1)
+                        .wrapping_add(u16::from(*byte));
+                }
+            }
+        }
+        second[0][2..4].copy_from_slice(&second_checksum.to_le_bytes());
+        for (index, record) in second.iter_mut().enumerate() {
+            record[0] &= 0x7f;
+            root[160 + index * 32..192 + index * 32].copy_from_slice(record);
+        }
         image[heap..heap + SECTOR].copy_from_slice(&root);
         image[heap + SECTOR..heap + SECTOR + upcase.len()].copy_from_slice(&upcase);
         image[heap + 2 * SECTOR] = 0b0000_0111;
@@ -1652,6 +1689,47 @@ mod tests {
             crate::recovery_verify::verify_package(&PathBuf::from(&summary.directory)).unwrap();
         assert_eq!(verification.state, "partial");
         assert_eq!(verification.failed, 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn exfat_export_rejects_overlapping_selected_cluster_ranges() {
+        let (source, _) = exfat_deleted_fixture();
+        let volume = daemoncore_ntfs_core::exfat::Volume::open(&source, 0, source.len()).unwrap();
+        let selected = volume
+            .read_tree_with_deleted(&source)
+            .unwrap()
+            .into_iter()
+            .filter(|tree_entry| tree_entry.entry.deleted)
+            .collect::<Vec<_>>();
+        assert_eq!(selected.len(), 2);
+        let digest = hash_source(&source, &AtomicBool::new(false), |_| {})
+            .unwrap()
+            .unwrap();
+        let root = recovery_test_directory("exfat-overlap-export");
+        let summary = export_exfat_to(
+            &source,
+            0,
+            &selected,
+            &root,
+            SourceIdentity {
+                case_id: 1,
+                evidence_record_id: 1,
+                scan_session_id: 1,
+                id: 1,
+                path: "overlapping-exfat.img",
+                sha256: &digest,
+            },
+            &AtomicBool::new(false),
+            |_, _| {},
+        )
+        .unwrap();
+        assert_eq!(summary.exported, 0);
+        assert_eq!(summary.failed, 2);
+        let verification =
+            crate::recovery_verify::verify_package(&PathBuf::from(&summary.directory)).unwrap();
+        assert_eq!(verification.state, "partial");
+        assert_eq!(verification.failed, 2);
         fs::remove_dir_all(root).unwrap();
     }
 
