@@ -31,6 +31,43 @@ import { RecoveryPanel } from "./RecoveryPanel";
 import { DiskImagingPanel } from "./DiskImagingPanel";
 import { RaidPanel } from "./RaidPanel";
 import { bytes } from "./format";
+class AppErrorBoundary extends React.Component<
+  React.PropsWithChildren,
+  { error: Error | null }
+> {
+  state = { error: null as Error | null };
+
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+
+  componentDidCatch(error: Error, info: React.ErrorInfo) {
+    console.error("Unhandled application render error", error, info.componentStack);
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <main className="workspace">
+          <section className="panel" role="alert">
+            <div className="panelTitle">
+              <h1>Interface stopped unexpectedly</h1>
+              <span className="tag">VERIFY BEFORE CONTINUING</span>
+            </div>
+            <div className="empty">
+              <p>The interface could not render safely. A native operation may have completed, failed, or still be running. Reopen the app, check its recorded status, and verify any output package before using it as evidence.</p>
+              <pre className="warning">{this.state.error.message || "Unexpected rendering error"}</pre>
+              <button className="primary" onClick={() => window.location.reload()}>
+                Reopen interface
+              </button>
+            </div>
+          </section>
+        </main>
+      );
+    }
+    return this.props.children;
+  }
+}
 const emptyJob: Job = {
   kind: "hash",
   discovered: 0,
@@ -1274,6 +1311,8 @@ function App() {
 }
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <App />
+    <AppErrorBoundary>
+      <App />
+    </AppErrorBoundary>
   </React.StrictMode>,
 );
