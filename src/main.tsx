@@ -47,6 +47,7 @@ function App() {
     [source, setSource] = useState<Source | null>(null),
     [job, setJob] = useState<Job>(emptyJob),
     [error, setError] = useState(""),
+    [statusError, setStatusError] = useState(""),
     [cases, setCases] = useState<Case[]>([]),
     [caseEvidence, setCaseEvidence] = useState<CaseEvidenceRecord[]>([]),
     [caseScans, setCaseScans] = useState<CaseScanSession[]>([]),
@@ -158,18 +159,38 @@ function App() {
   }, [activeCaseId, job.state]);
   useEffect(() => {
     if (!native) return;
-    const id = setInterval(() => {
-      command<Job>("job_status")
-        .then(setJob)
-        .catch((e) => setError(String(e)));
+    let active = true;
+    let timer: ReturnType<typeof setTimeout>;
+    let delay = 700;
+    const poll = async () => {
       const generation = sourceGeneration.current;
-      command<Source | null>("source_status")
-        .then((currentSource) => {
-          if (generation === sourceGeneration.current) setSource(currentSource);
-        })
-        .catch((e) => setError(String(e)));
-    }, 700);
-    return () => clearInterval(id);
+      const [jobResult, sourceResult] = await Promise.allSettled([
+        command<Job>("job_status"),
+        command<Source | null>("source_status"),
+      ] as const);
+      if (!active) return;
+
+      const failures: string[] = [];
+      if (jobResult.status === "fulfilled") setJob(jobResult.value);
+      else failures.push(`Job status: ${String(jobResult.reason)}`);
+      if (sourceResult.status === "fulfilled") {
+        if (generation === sourceGeneration.current) setSource(sourceResult.value);
+      } else failures.push(`Evidence source status: ${String(sourceResult.reason)}`);
+
+      if (failures.length) {
+        setStatusError(`${failures.join("; ")} Retrying automatically.`);
+        delay = Math.min(delay * 2, 8_000);
+      } else {
+        setStatusError("");
+        delay = 700;
+      }
+      timer = setTimeout(poll, delay);
+    };
+    void poll();
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
   }, []);
   useEffect(() => {
     if (
@@ -477,6 +498,11 @@ function App() {
   return (
     <WorkspaceShell page={page} setPage={setPage} source={source} job={job}>
       {heading}
+      {statusError && (
+        <div className="warning" role="status">
+          Background status is temporarily unavailable. {statusError}
+        </div>
+      )}
       {error && (
         <div className="warning" role="alert">
           {error}
