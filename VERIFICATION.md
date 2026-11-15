@@ -1399,3 +1399,11 @@ job error; the normal package verifier rejects this unpublished folder. User
 cancellation continues to remove staging. All twelve acquisition tests pass.
 This does not provide resume support or guarantee recovery of bytes after abrupt
 power loss.
+
+RAID reconstruction now follows the same failure rule: if a failed reconstruction
+has written image bytes, the staged image is retained, a clear incomplete marker
+is attempted, and the job error includes the staging path. The ordinary package
+verifier rejects the staged directory. User cancellation explicitly removes
+staging, including when cancellation occurs after output writing begins. Seven
+RAID tests pass, with the independent Linux MD reference test skipped locally
+because its fixture is provided by hosted CI.

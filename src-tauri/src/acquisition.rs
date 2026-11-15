@@ -584,7 +584,7 @@ fn capture(
     );
     match result {
         Err(error) if staging_path.exists() => Err(format!(
-            "{error} Unpublished acquisition data may remain at {}. It is marked incomplete and is not a verified package.",
+            "{error} Unpublished acquisition data may remain at {}. Treat it as unverified; the normal package verifier must pass before use.",
             staging_path.display()
         )),
         result => result,

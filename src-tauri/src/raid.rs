@@ -106,10 +106,37 @@ pub struct ReconstructionRequest<'a> {
 
 struct Staging(Option<PathBuf>);
 
+impl Staging {
+    fn discard(&mut self) -> Result<()> {
+        if let Some(path) = self.0.as_ref() {
+            fs::remove_dir_all(path).map_err(crate::err)?;
+        }
+        self.0 = None;
+        Ok(())
+    }
+}
+
 impl Drop for Staging {
     fn drop(&mut self) {
         if let Some(path) = self.0.take() {
-            let _ = fs::remove_dir_all(path);
+            let image_path = path.join("image.raw");
+            if image_path.is_file() {
+                if let Ok(image) = File::open(&image_path) {
+                    let _ = image.sync_all();
+                }
+                if let Ok(mut marker) = OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(path.join("INCOMPLETE.txt"))
+                {
+                    let _ = marker.write_all(
+                        b"UNPUBLISHED RAID RECONSTRUCTION: this staged image did not pass all reconstruction and package checks. Do not treat it as a verified image or package.\n",
+                    );
+                    let _ = marker.sync_all();
+                }
+            } else {
+                let _ = fs::remove_dir_all(path);
+            }
         }
     }
 }
@@ -232,6 +259,38 @@ pub fn reconstruct_package(
     cancel: &AtomicBool,
     mut progress: impl FnMut(u64, u64),
 ) -> Result<Option<RaidPackage>> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(crate::err)?
+        .as_nanos();
+    let package_name = format!("DaemonCore-RAID-Reconstruction-{now}");
+    let staging_path = request.destination.join(format!(".{package_name}.partial"));
+    let final_path = request.destination.join(package_name);
+    let result = reconstruct_package_into(
+        request,
+        cancel,
+        &mut progress,
+        now,
+        &staging_path,
+        &final_path,
+    );
+    match result {
+        Err(error) if staging_path.exists() => Err(format!(
+            "{error} Unpublished RAID reconstruction data may remain at {}. Treat it as unverified; the normal package verifier must pass before use.",
+            staging_path.display()
+        )),
+        result => result,
+    }
+}
+
+fn reconstruct_package_into(
+    request: ReconstructionRequest<'_>,
+    cancel: &AtomicBool,
+    progress: &mut impl FnMut(u64, u64),
+    now: u128,
+    staging_path: &Path,
+    final_path: &Path,
+) -> Result<Option<RaidPackage>> {
     let ReconstructionRequest {
         level_name,
         member_paths,
@@ -239,7 +298,7 @@ pub fn reconstruct_package(
         stripe_size_bytes,
         bytes_per_sector,
         case_id,
-        destination,
+        destination: _,
     } = request;
     let level = RaidLevel::parse(level_name)?;
     if !(MIN_MEMBERS..=MAX_MEMBERS).contains(&member_paths.len()) {
@@ -278,15 +337,8 @@ pub fn reconstruct_package(
             RaidLevel::Raid0 => Some(sum),
         })
         .ok_or("RAID operation progress size overflow")?;
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(crate::err)?
-        .as_nanos();
-    let package_name = format!("DaemonCore-RAID-Reconstruction-{now}");
-    let staging_path = destination.join(format!(".{package_name}.partial"));
-    let final_path = destination.join(package_name);
-    fs::create_dir(&staging_path).map_err(crate::err)?;
-    let mut staging = Staging(Some(staging_path.clone()));
+    fs::create_dir(staging_path).map_err(crate::err)?;
+    let mut staging = Staging(Some(staging_path.to_path_buf()));
 
     let mut processed = 0u64;
     progress(processed, total);
@@ -297,6 +349,7 @@ pub fn reconstruct_package(
             progress(processed.min(total), total);
         })?;
         let Some(digest) = digest else {
+            staging.discard()?;
             return Ok(None);
         };
         member_hashes.push(digest);
@@ -307,6 +360,7 @@ pub fn reconstruct_package(
         let mut position = 0u64;
         while position < member_data_size {
             if cancel.load(Ordering::SeqCst) {
+                staging.discard()?;
                 return Ok(None);
             }
             let count = (member_data_size - position).min(buffer.len() as u64) as usize;
@@ -346,6 +400,8 @@ pub fn reconstruct_package(
             for stripe in 0..stripe_count {
                 for member in &members {
                     if cancel.load(Ordering::SeqCst) {
+                        drop(output);
+                        staging.discard()?;
                         return Ok(None);
                     }
                     let mut within = 0u64;
@@ -368,6 +424,8 @@ pub fn reconstruct_package(
             let mut position = 0u64;
             while position < member_data_size {
                 if cancel.load(Ordering::SeqCst) {
+                    drop(output);
+                    staging.discard()?;
                     return Ok(None);
                 }
                 let count = (member_data_size - position).min(buffer.len() as u64) as usize;
@@ -387,6 +445,8 @@ pub fn reconstruct_package(
             let mut observed_parity = vec![0; buffer.len()];
             for stripe in 0..stripe_count {
                 if cancel.load(Ordering::SeqCst) {
+                    drop(output);
+                    staging.discard()?;
                     return Ok(None);
                 }
                 let parity_rotation = usize::try_from(stripe % members.len() as u64)
@@ -395,6 +455,8 @@ pub fn reconstruct_package(
                 let member_offset = data_offset_bytes + stripe * stripe_size_bytes;
                 for within in (0..stripe_size_bytes).step_by(buffer.len()) {
                     if cancel.load(Ordering::SeqCst) {
+                        drop(output);
+                        staging.discard()?;
                         return Ok(None);
                     }
                     let count = (stripe_size_bytes - within).min(buffer.len() as u64) as usize;
@@ -446,16 +508,18 @@ pub fn reconstruct_package(
             progress(processed.min(total), total);
         })?;
         let Some(current_hash) = current_hash else {
+            staging.discard()?;
             return Ok(None);
         };
         if current_hash != *expected_hash {
             return Err(
-                "A RAID member changed during reconstruction. The staged package was discarded."
+                "A RAID member changed during reconstruction. No output package was published."
                     .into(),
             );
         }
     }
     if cancel.load(Ordering::SeqCst) {
+        staging.discard()?;
         return Ok(None);
     }
 
@@ -522,7 +586,7 @@ pub fn reconstruct_package(
     destination::publish_new(&staging_path, &final_path).map_err(crate::err)?;
     staging.0 = None;
     Ok(Some(RaidPackage {
-        directory: final_path.clone(),
+        directory: final_path.to_path_buf(),
         image_path: final_path.join("image.raw"),
         image_sha256: verified_hash,
         size_bytes: output_size,
@@ -988,7 +1052,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_raid5_parity_mismatch_and_removes_staged_output() {
+    fn rejects_raid5_parity_mismatch_and_retains_marked_staging() {
         let root = root();
         let mut members = raid5_members();
         members[2][0] ^= 1;
@@ -1017,7 +1081,16 @@ mod tests {
         .expect("mismatched parity must not publish a RAID 5 image");
 
         assert!(error.contains("RAID 5 XOR parity mismatch at stripe row 0"));
-        assert_eq!(fs::read_dir(&root).unwrap().count(), 3);
+        let partial = fs::read_dir(&root)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| path.is_dir() && path.join("image.raw").exists())
+            .expect("failed reconstruction staging remains available");
+        assert!(error.contains(&partial.to_string_lossy().to_string()));
+        assert!(fs::read_to_string(partial.join("INCOMPLETE.txt"))
+            .unwrap()
+            .contains("UNPUBLISHED RAID RECONSTRUCTION"));
+        assert!(crate::recovery_verify::verify_package(&partial).is_err());
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1141,6 +1214,39 @@ mod tests {
             |_, _| {},
         )
         .unwrap();
+        assert!(result.is_none());
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 2);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cancellation_after_output_begins_removes_raid_staging() {
+        let root = root();
+        let a = root.join("a.raw");
+        let b = root.join("b.raw");
+        let data = vec![0x11; 4096];
+        write_member(&a, &data);
+        write_member(&b, &data);
+        let cancel = AtomicBool::new(false);
+        let result = reconstruct_package(
+            ReconstructionRequest {
+                level_name: "raid1",
+                member_paths: &[a, b],
+                data_offset_bytes: 0,
+                stripe_size_bytes: 0,
+                bytes_per_sector: 512,
+                case_id: 7,
+                destination: &root,
+            },
+            &cancel,
+            |processed, _| {
+                if processed > 16_384 {
+                    cancel.store(true, Ordering::SeqCst);
+                }
+            },
+        )
+        .unwrap();
+
         assert!(result.is_none());
         assert_eq!(fs::read_dir(&root).unwrap().count(), 2);
         fs::remove_dir_all(root).unwrap();
