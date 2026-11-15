@@ -115,3 +115,15 @@ package-export checks were skipped. The workflow's overall conclusion is
 therefore failure even though its baseline Windows and parser-fuzz jobs passed.
 This improves visibility of test outcomes but does not close the two Windows
 reference gates.
+
+On [run 43666164749](https://github.com/DaemoncoreApps/DataRecovery/actions/runs/43666164749)
+for commit `be2e820`, all six workflow jobs passed. The per-run, per-attempt
+cross-OS cache restored both Linux-generated fixture sets on Windows and their
+SHA-256 checks passed. Windows reconstructed the Linux MD RAID 5 fixture and
+matched exact logical bytes; it also exported the deleted FAT32 file and matched
+the Sleuth Kit expected bytes. Baseline Windows validation, independent FAT32
+multi-cluster reading, exFAT validation/carving, and the three bounded parser
+fuzz campaigns passed. This closes the artifact-quota fixture-transfer blocker
+and the hosted FAT32/RAID reference checks. Physical-device qualification,
+degraded RAID, sustained fuzzing, crash/resume, large-image performance, trusted
+installer signing/lifecycle, and other release criteria remain open.

@@ -1301,7 +1301,8 @@ mismatch rejection, and removal of unpublished staging output. Independent array
 fixture validation is now part of the Windows/Linux workflow: Linux MD creates a
 loop-backed array, writes and reads a known logical image, and pins its SHA-256.
 Windows CI reconstructs from the captured member data and compares exact bytes.
-The first hosted workflow run is still required to establish that gate as passing. The
+Hosted run [43666164749](https://github.com/DaemoncoreApps/DataRecovery/actions/runs/43666164749)
+passed the independent Linux MD fixture reconstruction and byte comparison. The
 fixture validates data layout only; it strips metadata outside the captured
 component extents. Vendor metadata discovery and degraded reconstruction remain
 open.
@@ -1362,3 +1363,22 @@ and Windows package export against the deleted FAT32 fixture and Windows RAID 5
 reconstruction against Linux MD member data remain unverified. Splitting the jobs
 keeps ordinary Windows validation visible but does not replace those reference
 checks.
+
+## Cross-OS forensic reference fixtures — 2026-11-15
+
+Run [43666164749](https://github.com/DaemoncoreApps/DataRecovery/actions/runs/43666164749)
+passed all six jobs. The independently generated FAT32 deleted-file fixture and
+Linux MD RAID 5 reference members were saved under run-and-attempt-scoped GitHub
+Actions cache keys, restored by Windows with cross-OS archives enabled, then
+checked against their expected SHA-256 values before use. This avoids the
+exhausted workflow-artifact quota while retaining an exact-hash gate on the
+transferred data.
+
+The Windows reference job reconstructed the Linux MD RAID 5 logical image and
+matched exact bytes. It also exported the FAT32 deleted file and matched the
+independent Sleuth Kit expected bytes. Baseline Windows validation, independent
+FAT32 multi-cluster reading, exFAT inventory and carving checks, and all three
+bounded parser fuzz campaigns passed in the same workflow. This closes the
+cross-platform reference fixture handoff gate; physical-device acquisition,
+degraded RAID, installer lifecycle/signing, large-scale performance, and broader
+damaged-media qualification remain open.
