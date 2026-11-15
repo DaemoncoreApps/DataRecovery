@@ -70,6 +70,18 @@ carver regression requires that exact byte length, hash, and decoded-candidate
 status. This is a controlled known-content fixture, not a broad external BMP
 corpus.
 
+## GIF decode reference
+
+`forensic-gif-16x12.gif` was encoded by Windows GDI+ `System.Drawing`,
+independently of the Rust `image` decoder. It is a 16 × 12 image with a
+repeating 2 × 2 pattern: row 0 alternates black and white, and row 1 alternates
+red and lime. GDI+ reopened the saved GIF and confirmed those four colors
+exactly. The checked-in GIF is 854 bytes
+with SHA-256
+`4d1be0dda7762d6527f6aac405befa4ecabed5746dd04c9eb1f11ef1b057d170`; the
+carving regression requires that exact length, hash, offset, and decoded status.
+This is a controlled known-content fixture, not a broad external GIF corpus.
+
 ## Linux MD RAID 5 reference array
 
 `make-raid5-reference-fixture.sh` creates three loop-backed member devices and

@@ -1829,6 +1829,55 @@ mod tests {
     }
 
     #[test]
+    fn decodes_independently_generated_gif_against_known_bytes() {
+        let gif = include_bytes!("../tests/fixtures/forensic-gif-16x12.gif");
+        let offset = 23;
+        let mut image = vec![0x5a; offset];
+        image.extend_from_slice(gif);
+        let scan = scan_supported_files(&TestSource(image), &AtomicBool::new(false), |_, _| {})
+            .unwrap()
+            .unwrap();
+        let candidate = scan
+            .candidates
+            .iter()
+            .find(|candidate| candidate.format == "GIF")
+            .expect("GDI+-encoded GIF should decode");
+
+        assert_eq!(candidate.offset, offset as u64);
+        assert_eq!(candidate.length, 854);
+        assert_eq!(
+            candidate.sha256,
+            "4d1be0dda7762d6527f6aac405befa4ecabed5746dd04c9eb1f11ef1b057d170"
+        );
+        assert_eq!(
+            candidate.validation,
+            "GIF structure valid; all frames decoded within limits"
+        );
+
+        let frames = image::codecs::gif::GifDecoder::new(Cursor::new(gif.as_slice()))
+            .unwrap()
+            .into_frames()
+            .collect_frames()
+            .unwrap();
+        assert_eq!(frames.len(), 1);
+        let expected = [
+            [
+                image::Rgba([0, 0, 0, 255]),
+                image::Rgba([255, 255, 255, 255]),
+            ],
+            [image::Rgba([255, 0, 0, 255]), image::Rgba([0, 255, 0, 255])],
+        ];
+        for y in 0..12 {
+            for x in 0..16 {
+                assert_eq!(
+                    *frames[0].buffer().get_pixel(x, y),
+                    expected[(y % 2) as usize][(x % 2) as usize]
+                );
+            }
+        }
+    }
+
+    #[test]
     #[ignore = "requires the hash-pinned independent exFAT reference image"]
     fn carves_independent_exfat_image_files_against_upstream_hashes() {
         let image_path = std::env::var_os("DAEMONCORE_CARVING_REFERENCE_IMAGE")

@@ -10,8 +10,8 @@ The control is repository-scoped; billing budgets for the wider organization
 and its other repositories were not changed. Validation and packaging now run
 locally.
 
-The local `npm run validate` gate passes against the current worktree: frontend
-build, 61 core tests passed with 3 ignored, 152 desktop tests passed with 9
+The local `npm run validate` gate passed against the current worktree: frontend
+build, 61 core tests passed with 3 ignored, 153 desktop tests passed with 9
 ignored, formatting checks, and both Clippy checks. The ignored tests require
 external fixtures or Windows volume behavior unavailable in this local run.
 
@@ -24,16 +24,28 @@ current worktree, including GIF carving support. The release executable is
 Authenticode reports `NotSigned`. The executable was not launched; this build
 proves optimized compilation only, not packaged runtime or installer behavior.
 
+## Independent GIF carving fixture — 2026-11-15
+
+Added `forensic-gif-16x12.gif`, encoded with Windows GDI+ `System.Drawing`
+rather than the Rust decoder/encoder. GDI+ readback confirmed the fixture's
+16 × 12 pattern: black/white on row 0, red/lime on row 1. The carver finds the
+854-byte image at a
+nonzero source offset, decodes it, and matches SHA-256
+`4d1be0dda7762d6527f6aac405befa4ecabed5746dd04c9eb1f11ef1b057d170`. A
+separate two-frame generated GIF exercises animated decoding, chunk-boundary
+detection, exact export, and package verification. The full local validation
+gate passes with 61 core tests (3 ignored) and 153 desktop tests (9 ignored).
+These controlled fixtures do not qualify a broad external GIF corpus.
+
 ## Latest release-stage check — 2026-11-15
 
-The unsigned NSIS installer workflow was dispatched for commit `fcf9f37`
-(run [43690279137](https://github.com/DaemoncoreApps/DataRecovery/actions/runs/43690279137)).
-GitHub rejected the `stage-nsis` job before allocating a runner or starting any
-steps because recent account payments failed or the Actions spending limit
-needs to be increased. No installer artifact was produced by this run. This is
-an account billing gate; it provides no evidence about whether the current
-installer build succeeds. Earlier staged artifacts remain historical evidence
-only and do not qualify the current commit.
+An unsigned NSIS installer workflow was dispatched historically for commit
+`fcf9f37` (run
+[43690279137](https://github.com/DaemoncoreApps/DataRecovery/actions/runs/43690279137)).
+GitHub rejected the job before allocating a runner because of account billing
+state, so it produced no installer artifact and gives no evidence about whether
+that installer build succeeded. Hosted workflows and repository Actions have
+since been disabled; validation and packaging are performed locally.
 
 ## Fragmented NTFS fixture check — 2026-11-15
 
