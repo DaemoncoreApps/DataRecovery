@@ -88,3 +88,16 @@ unsigned; they have not been installed or launched.
 Test totals and detailed scope are recorded in `VERIFICATION.md`; capability
 boundaries and hard release gates are maintained in `CAPABILITIES.md`. This
 audit is a status ledger, not a substitute for the missing tests or evidence.
+
+## Hosted validation update — 2026-11-15
+
+On [run 43663379647](https://github.com/DaemoncoreApps/DataRecovery/actions/runs/43663379647),
+the Linux FAT32 fixture was generated, independently checked with Sleuth Kit, and
+matched against the core deleted-file mapper's expected bytes. The independent
+exFAT reference-volume inventory passed. Linux MD created the RAID 5 reference array
+and verified the known logical-image hash. GitHub rejected both cross-job fixture
+uploads because the repository's Actions artifact storage quota was exhausted, so
+the dependent Windows FAT32 export and RAID reconstruction checks were skipped.
+The MFT record fuzz campaign passed on run 43663566673; the whole-image and
+partition-image campaigns were still running when this update was written. These
+Linux checks do not establish the missing Windows end-to-end behavior.
