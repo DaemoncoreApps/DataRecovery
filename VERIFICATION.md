@@ -6,9 +6,11 @@ Removed the repository's hosted validation and installer workflows after the
 DaemoncoreApps account exhausted its included Actions minutes. Also disabled
 Actions in the GitHub repository settings. A read-back returned
 `enabled=false` and zero registered workflows on `main` at commit `29a6ef1`.
-The control is repository-scoped; billing budgets for the wider organization
-and its other repositories were not changed. Validation and packaging now run
-locally.
+The control is repository-scoped; the account-level Actions budget for this
+account and its other repositories was not changed. Validation and packaging
+now run locally. A $0 Actions budget with stop-at-limit enabled is still needed
+in the account's Billing & Licensing settings to block overage across the
+account.
 
 The local `npm run validate` gate passed against the current worktree: frontend
 build, 61 core tests passed with 3 ignored, 153 desktop tests passed with 9
