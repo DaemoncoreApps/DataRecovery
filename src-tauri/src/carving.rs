@@ -573,7 +573,7 @@ fn export_selected_into(
         summary.source_sha256_after = None;
     }
     write_new_json(&directory.join("summary.json"), &summary)?;
-    let checksums = write_package_checksums(&directory)?;
+    let checksums = write_package_checksums(directory)?;
     let completion = serde_json::json!({
         "state": if summary.cancelled || summary.failed > 0 { "partial" } else { "complete" },
         "checksums_sha256": format!("{:x}", Sha256::digest(&checksums)),

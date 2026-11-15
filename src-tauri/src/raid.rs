@@ -583,7 +583,7 @@ fn reconstruct_package_into(
             checksums_sha256: format!("{:x}", Sha256::digest(checksums.as_bytes())),
         },
     )?;
-    destination::publish_new(&staging_path, &final_path).map_err(crate::err)?;
+    destination::publish_new(staging_path, final_path).map_err(crate::err)?;
     staging.0 = None;
     Ok(Some(RaidPackage {
         directory: final_path.to_path_buf(),

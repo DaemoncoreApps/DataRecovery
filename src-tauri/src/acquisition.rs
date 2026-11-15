@@ -456,6 +456,17 @@ struct PublishedAcquisition {
     read_error_ranges: usize,
 }
 
+struct AcquisitionTarget<'a> {
+    final_directory: &'a Path,
+    staging_path: &'a Path,
+    created_unix_ns: u128,
+}
+
+struct AcquisitionOptions {
+    case_id: i64,
+    write_blocker_attested: bool,
+}
+
 struct StagingDirectory(Option<PathBuf>);
 
 impl StagingDirectory {
@@ -574,11 +585,15 @@ fn capture(
     let result = capture_into(
         source,
         device,
-        case_id,
-        &final_directory,
-        &staging_path,
-        now,
-        write_blocker_attested,
+        AcquisitionTarget {
+            final_directory: &final_directory,
+            staging_path: &staging_path,
+            created_unix_ns: now,
+        },
+        AcquisitionOptions {
+            case_id,
+            write_blocker_attested,
+        },
         cancel,
         &mut progress,
     );
@@ -594,15 +609,12 @@ fn capture(
 fn capture_into(
     source: &dyn BlockSource,
     device: &PhysicalDevice,
-    case_id: i64,
-    final_directory: &Path,
-    staging_path: &Path,
-    now: u128,
-    write_blocker_attested: bool,
+    target: AcquisitionTarget<'_>,
+    options: AcquisitionOptions,
     cancel: &AtomicBool,
     progress: &mut impl FnMut(u64, u64, usize),
 ) -> Result<Option<PublishedAcquisition>> {
-    if !write_blocker_attested {
+    if !options.write_blocker_attested {
         return Err(
             "Attest to a validated hardware write blocker before acquiring a device.".into(),
         );
@@ -615,12 +627,12 @@ fn capture_into(
     {
         return Err("The selected device geometry changed or is invalid.".into());
     }
-    fs::create_dir(staging_path).map_err(err)?;
-    let mut staging = StagingDirectory(Some(staging_path.to_path_buf()));
+    fs::create_dir(target.staging_path).map_err(err)?;
+    let mut staging = StagingDirectory(Some(target.staging_path.to_path_buf()));
     let mut errors = OpenOptions::new()
         .write(true)
         .create_new(true)
-        .open(staging_path.join("read-errors.jsonl"))
+        .open(target.staging_path.join("read-errors.jsonl"))
         .map_err(err)?;
     let mut image_digest = Sha256::new();
     let mut buffer = vec![0; READ_CHUNK];
@@ -635,7 +647,7 @@ fn capture_into(
     let mut image_file = OpenOptions::new()
         .write(true)
         .create_new(true)
-        .open(staging_path.join("image.raw"))
+        .open(target.staging_path.join("image.raw"))
         .map_err(err)?;
 
     while offset < source.len() {
@@ -688,7 +700,7 @@ fn capture_into(
     // filename also avoids a rename after the potentially large image is flushed.
     let image_name = "image.raw";
     let observed_digest = format!("{:x}", image_digest.finalize());
-    let verified_digest = hash_file(&staging_path.join(image_name), |count| {
+    let verified_digest = hash_file(&target.staging_path.join(image_name), |count| {
         progress(source.len().saturating_add(count), total, error_ranges);
     })?;
     if observed_digest != verified_digest {
@@ -703,29 +715,29 @@ fn capture_into(
         tool: "DaemonCore Data Recovery",
         version: env!("CARGO_PKG_VERSION"),
         package_type: "physical_device_acquisition",
-        case_id,
-        created_unix_ns: now.to_string(),
+        case_id: options.case_id,
+        created_unix_ns: target.created_unix_ns.to_string(),
         device_number: device.number,
         device_identity: device,
         source_size_bytes: source.len(),
         bytes_per_sector: device.bytes_per_sector,
         retries_per_range: MAX_RETRIES,
-        hardware_write_blocker_attested: write_blocker_attested,
+        hardware_write_blocker_attested: options.write_blocker_attested,
         acquisition_method: "Windows raw physical-drive read through a handle opened without write access; failed ranges are retried with binary subdivision through the reported sector size",
         image_name,
         image_sha256: &verified_digest,
         read_error_ranges: error_ranges,
         limitations: "The image digest covers bytes written to the output, including zero-filled read-error ranges. read-errors.jsonl identifies ranges that could not be read after retries. Software read-only access does not prove a point-in-time source state; use a validated hardware write blocker and an offline source.",
     };
-    write_json(&staging_path.join("manifest.json"), &manifest)?;
-    let checksums = write_checksums(&staging_path, image_name)?;
+    write_json(&target.staging_path.join("manifest.json"), &manifest)?;
+    let checksums = write_checksums(target.staging_path, image_name)?;
     let state = if error_ranges == 0 {
         "complete"
     } else {
         "partial"
     };
     write_json(
-        &staging_path.join("completion.json"),
+        &target.staging_path.join("completion.json"),
         &AcquisitionCompletion {
             state,
             image_sha256: &verified_digest,
@@ -733,17 +745,19 @@ fn capture_into(
             read_error_ranges: error_ranges,
         },
     )?;
-    crate::destination::publish_new(staging_path, final_directory).map_err(|error| {
-        format!(
-            "Could not publish the staged acquisition package from {} to {}: {error}",
-            staging_path.display(),
-            final_directory.display()
-        )
-    })?;
+    crate::destination::publish_new(target.staging_path, target.final_directory).map_err(
+        |error| {
+            format!(
+                "Could not publish the staged acquisition package from {} to {}: {error}",
+                target.staging_path.display(),
+                target.final_directory.display()
+            )
+        },
+    )?;
     staging.0 = None;
     Ok(Some(PublishedAcquisition {
-        directory: final_directory.to_path_buf(),
-        image_path: final_directory.join(image_name),
+        directory: target.final_directory.to_path_buf(),
+        image_path: target.final_directory.join(image_name),
         image_sha256: verified_digest,
         size_bytes: source.len(),
         read_error_ranges: error_ranges,

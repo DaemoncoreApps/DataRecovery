@@ -30,6 +30,11 @@ pub struct SourceIdentity<'a> {
     pub path: &'a str,
     pub sha256: &'a str,
 }
+
+struct ExportFolder<'a> {
+    created_unix_ns: u128,
+    directory: &'a Path,
+}
 fn hash_source(
     source: &dyn BlockSource,
     cancel: &AtomicBool,
@@ -388,8 +393,10 @@ pub fn export_to(
         identity,
         cancel,
         &mut progress,
-        stamp,
-        &directory,
+        ExportFolder {
+            created_unix_ns: stamp,
+            directory: &directory,
+        },
     );
     report_incomplete_export_path(result, &directory)
 }
@@ -414,9 +421,10 @@ fn export_to_directory(
     identity: SourceIdentity<'_>,
     cancel: &AtomicBool,
     progress: &mut impl FnMut(u64, u64),
-    stamp: u128,
-    directory: &Path,
+    folder: ExportFolder<'_>,
 ) -> Result<ExportSummary, String> {
+    let stamp = folder.created_unix_ns;
+    let directory = folder.directory;
     let total = selected
         .iter()
         .try_fold(0u64, |n, c| n.checked_add(c.size.checked_mul(2)?))
@@ -680,8 +688,10 @@ pub fn export_fat32_to(
         identity,
         cancel,
         &mut progress,
-        stamp,
-        &directory,
+        ExportFolder {
+            created_unix_ns: stamp,
+            directory: &directory,
+        },
     );
     report_incomplete_export_path(result, &directory)
 }
@@ -693,9 +703,10 @@ fn export_fat32_to_directory(
     identity: SourceIdentity<'_>,
     cancel: &AtomicBool,
     progress: &mut impl FnMut(u64, u64),
-    stamp: u128,
-    directory: &Path,
+    folder: ExportFolder<'_>,
 ) -> Result<ExportSummary, String> {
+    let stamp = folder.created_unix_ns;
+    let directory = folder.directory;
     let volume = daemoncore_ntfs_core::fat32::Volume::open(
         source,
         volume_offset,
