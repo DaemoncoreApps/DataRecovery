@@ -40,7 +40,7 @@ if [[ -z "$line" ]]; then
     "$listing" >&2
   exit 1
 fi
-inode="$(printf '%s\n' "$line" | awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^[0-9]+(-[0-9]+-[0-9]+)?:$/) { sub(/:.*/, "", $i); split($i, parts, "-"); print parts[1]; exit }')"
+inode="$(printf '%s\n' "$line" | awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^[0-9]+(-[0-9]+-[0-9]+)?:$/) { sub(/:.*/, "", $i); split($i, parts, "-"); print parts[1]; exit } }')"
 if [[ -z "$inode" ]]; then
   printf 'Could not identify the deleted entry MFT record from: %s\n' "$line" >&2
   exit 1
