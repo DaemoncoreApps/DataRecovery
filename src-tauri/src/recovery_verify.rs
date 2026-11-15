@@ -781,6 +781,7 @@ fn verify_acquisition_package(
         || manifest.source_size_bytes == 0
         || manifest.device_identity.size_bytes != manifest.source_size_bytes
         || manifest.bytes_per_sector < 512
+        || manifest.bytes_per_sector > 65_536
         || !manifest.bytes_per_sector.is_power_of_two()
         || manifest.device_identity.bytes_per_sector != manifest.bytes_per_sector
         || !manifest
@@ -899,26 +900,25 @@ fn verify_acquisition_error_map(
         }
         let record: AcquisitionReadError = serde_json::from_slice(&line[..line.len() - 1])
             .map_err(|error| format!("Invalid acquisition read-error record: {error}"))?;
-        let expected_length = manifest
-            .source_size_bytes
-            .saturating_sub(record.offset)
-            .min(1024 * 1024);
+        let sector_bytes = u64::from(manifest.bytes_per_sector);
+        let end = record.offset.checked_add(record.length);
         if record.offset < previous_end
             || record.offset >= manifest.source_size_bytes
-            || !record.offset.is_multiple_of(1024 * 1024)
+            || !record.offset.is_multiple_of(sector_bytes)
             || record.length == 0
-            || record.length != expected_length
-            || record
-                .offset
-                .checked_add(record.length)
-                .is_none_or(|end| end > manifest.source_size_bytes)
+            || record.length > 1024 * 1024
+            || !record.length.is_multiple_of(sector_bytes)
+            || end.is_none_or(|end| {
+                end > manifest.source_size_bytes
+                    || record.offset / (1024 * 1024) != (end - 1) / (1024 * 1024)
+            })
             || record.attempts != manifest.retries_per_range
             || record.error.is_empty()
             || record.error.len() > 4096
         {
             return Err("Acquisition read-error range is invalid or out of order.".into());
         }
-        previous_end = record.offset + record.length;
+        previous_end = end.ok_or("Acquisition read-error range overflowed.")?;
         count += 1;
         if count > MAX_ACQUISITION_ERROR_RANGES {
             return Err("Acquisition read-error map exceeds its range limit.".into());

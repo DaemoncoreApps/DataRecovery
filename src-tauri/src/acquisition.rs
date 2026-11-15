@@ -1364,6 +1364,10 @@ mod tests {
         assert_eq!(record["offset"], bad_start as u64);
         assert_eq!(record["length"], 512);
         assert_eq!(record["attempts"], MAX_RETRIES);
+        let verification = crate::recovery_verify::verify_package(&package.directory)
+            .expect("single-sector read-error package verifies");
+        assert_eq!(verification.state, "partial");
+        assert_eq!(verification.failed, 1);
         fs::remove_dir_all(destination).unwrap();
     }
 
