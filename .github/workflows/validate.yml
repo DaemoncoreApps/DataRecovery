@@ -87,27 +87,39 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
-      - name: Download independently verified FAT32 deleted-file fixture
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+      - name: Restore independently verified FAT32 deleted-file fixture
+        uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57
         with:
-          name: daemoncore-fat32-deleted-reference
-          path: ${{ runner.temp }}\daemoncore-fat32-deleted-reference
-      - name: Download Linux MD RAID 5 reference fixture
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+          key: daemoncore-fat32-deleted-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            .ci-fixtures/fat32-deleted-reference/deleted-fat32.img
+            .ci-fixtures/fat32-deleted-reference/deleted-fat32.img.sha256
+            .ci-fixtures/fat32-deleted-reference/RECOVER.BIN.expected
+          enableCrossOsArchive: true
+          fail-on-cache-miss: true
+      - name: Restore Linux MD RAID 5 reference fixture
+        uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57
         with:
-          name: daemoncore-raid5-reference
-          path: ${{ runner.temp }}\daemoncore-raid5-reference
+          key: daemoncore-raid5-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            .ci-fixtures/daemoncore-raid5-reference/member0.raw
+            .ci-fixtures/daemoncore-raid5-reference/member1.raw
+            .ci-fixtures/daemoncore-raid5-reference/member2.raw
+            .ci-fixtures/daemoncore-raid5-reference/logical-image.raw
+            .ci-fixtures/daemoncore-raid5-reference/SHA256SUMS
+          enableCrossOsArchive: true
+          fail-on-cache-miss: true
       - name: Verify transferred reference fixture hashes
         shell: pwsh
         run: |
-          $fat32Dir = Join-Path $env:RUNNER_TEMP "daemoncore-fat32-deleted-reference"
+          $fat32Dir = Join-Path $env:GITHUB_WORKSPACE ".ci-fixtures/fat32-deleted-reference"
           $fat32Image = Join-Path $fat32Dir "deleted-fat32.img"
           $fat32Expected = Join-Path $fat32Dir "RECOVER.BIN.expected"
           $fat32Digest = (Get-Content (Join-Path $fat32Dir "deleted-fat32.img.sha256") -TotalCount 1).Split(' ')[0]
           if ((Get-FileHash $fat32Image -Algorithm SHA256).Hash.ToLowerInvariant() -ne $fat32Digest) { throw "Transferred FAT32 image digest mismatch" }
           if ((Get-FileHash $fat32Expected -Algorithm SHA256).Hash.ToLowerInvariant() -ne "7daca2095d0438260fa849183dfc67faa459fdf4936e1bc91eec6b281b27e4c2") { throw "FAT32 expected content digest mismatch" }
 
-          $raidDir = Join-Path $env:RUNNER_TEMP "daemoncore-raid5-reference"
+          $raidDir = Join-Path $env:GITHUB_WORKSPACE ".ci-fixtures/daemoncore-raid5-reference"
           $expectedFiles = @("member0.raw", "member1.raw", "member2.raw", "logical-image.raw")
           foreach ($line in Get-Content (Join-Path $raidDir "SHA256SUMS")) {
             if ($line -notmatch '^([0-9a-f]{64})\s+(.+)$') { throw "Malformed RAID 5 reference checksum line" }
@@ -137,8 +149,8 @@ jobs:
         run: cargo test --manifest-path src-tauri/Cargo.toml --offline reconstructs_independent_linux_md_raid5_reference_array -- --ignored --nocapture
       - name: Test deleted-file package export against independent bytes
         env:
-          DAEMONCORE_FAT32_DELETED_IMAGE: ${{ runner.temp }}\daemoncore-fat32-deleted-reference\deleted-fat32.img
-          DAEMONCORE_FAT32_DELETED_EXPECTED: ${{ runner.temp }}\daemoncore-fat32-deleted-reference\RECOVER.BIN.expected
+          DAEMONCORE_FAT32_DELETED_IMAGE: ${{ github.workspace }}\.ci-fixtures\fat32-deleted-reference\deleted-fat32.img
+          DAEMONCORE_FAT32_DELETED_EXPECTED: ${{ github.workspace }}\.ci-fixtures\fat32-deleted-reference\RECOVER.BIN.expected
         run: cargo test --manifest-path src-tauri/Cargo.toml --offline exports_deleted_file_from_independent_fat32_image_against_sleuthkit_bytes -- --ignored --nocapture
 
   raid5-reference-validation:
@@ -154,19 +166,23 @@ jobs:
           uname -a
       - name: Create and verify a Linux MD RAID 5 reference array
         shell: bash
-        run: sudo bash ./src-tauri/tests/fixtures/make-raid5-reference-fixture.sh "$RUNNER_TEMP/daemoncore-raid5-reference"
-      - name: Upload Linux MD RAID 5 reference fixture
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        run: |
+          fixture_dir="$GITHUB_WORKSPACE/.ci-fixtures/daemoncore-raid5-reference"
+          mkdir -p "$fixture_dir"
+          sudo bash ./src-tauri/tests/fixtures/make-raid5-reference-fixture.sh "$fixture_dir"
+      # The fixture is recreated and hash-checked for each run. A short-lived,
+      # run-scoped cache avoids consuming the repository's artifact quota.
+      - name: Save Linux MD RAID 5 reference fixture for the Windows job
+        uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57
         with:
-          name: daemoncore-raid5-reference
+          key: daemoncore-raid5-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            ${{ runner.temp }}/daemoncore-raid5-reference/member0.raw
-            ${{ runner.temp }}/daemoncore-raid5-reference/member1.raw
-            ${{ runner.temp }}/daemoncore-raid5-reference/member2.raw
-            ${{ runner.temp }}/daemoncore-raid5-reference/logical-image.raw
-            ${{ runner.temp }}/daemoncore-raid5-reference/SHA256SUMS
-          if-no-files-found: error
-          retention-days: 1
+            .ci-fixtures/daemoncore-raid5-reference/member0.raw
+            .ci-fixtures/daemoncore-raid5-reference/member1.raw
+            .ci-fixtures/daemoncore-raid5-reference/member2.raw
+            .ci-fixtures/daemoncore-raid5-reference/logical-image.raw
+            .ci-fixtures/daemoncore-raid5-reference/SHA256SUMS
+          enableCrossOsArchive: true
 
   fat32-deleted-recovery-validation:
     runs-on: ubuntu-24.04
@@ -182,26 +198,27 @@ jobs:
           fls -V
           icat -V
       - name: Format, delete, and independently verify the fixture
-        run: bash ./src-tauri/tests/fixtures/make-fat32-deleted-fixture.sh "$RUNNER_TEMP/fat32-deleted-fixture"
+        run: bash ./src-tauri/tests/fixtures/make-fat32-deleted-fixture.sh "$GITHUB_WORKSPACE/.ci-fixtures/fat32-deleted-reference"
       - name: Test deleted-file mapping against independent bytes
         env:
-          DAEMONCORE_FAT32_DELETED_IMAGE: ${{ runner.temp }}/fat32-deleted-fixture/deleted-fat32.img
-          DAEMONCORE_FAT32_DELETED_EXPECTED: ${{ runner.temp }}/fat32-deleted-fixture/RECOVER.BIN.expected
+          DAEMONCORE_FAT32_DELETED_IMAGE: ${{ github.workspace }}/.ci-fixtures/fat32-deleted-reference/deleted-fat32.img
+          DAEMONCORE_FAT32_DELETED_EXPECTED: ${{ github.workspace }}/.ci-fixtures/fat32-deleted-reference/RECOVER.BIN.expected
         run: cargo test --locked --manifest-path ntfs-core/Cargo.toml maps_and_reads_a_deleted_file_from_an_independent_fat32_fixture -- --ignored --nocapture
-      - name: Record and upload independently verified deleted-file fixture
+      - name: Record independently verified deleted-file fixture digest
         shell: bash
         run: |
-          sha256sum "$RUNNER_TEMP/fat32-deleted-fixture/deleted-fat32.img" > "$RUNNER_TEMP/fat32-deleted-fixture/deleted-fat32.img.sha256"
-      - name: Upload independently verified deleted-file fixture
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+          sha256sum "$GITHUB_WORKSPACE/.ci-fixtures/fat32-deleted-reference/deleted-fat32.img" > "$GITHUB_WORKSPACE/.ci-fixtures/fat32-deleted-reference/deleted-fat32.img.sha256"
+      # The fixture is recreated and independently checked for each run. Use a
+      # run-scoped cross-OS cache because the Actions artifact quota is exhausted.
+      - name: Save independently verified deleted-file fixture for the Windows job
+        uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57
         with:
-          name: daemoncore-fat32-deleted-reference
+          key: daemoncore-fat32-deleted-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            ${{ runner.temp }}/fat32-deleted-fixture/deleted-fat32.img
-            ${{ runner.temp }}/fat32-deleted-fixture/deleted-fat32.img.sha256
-            ${{ runner.temp }}/fat32-deleted-fixture/RECOVER.BIN.expected
-          if-no-files-found: error
-          retention-days: 1
+            .ci-fixtures/fat32-deleted-reference/deleted-fat32.img
+            .ci-fixtures/fat32-deleted-reference/deleted-fat32.img.sha256
+            .ci-fixtures/fat32-deleted-reference/RECOVER.BIN.expected
+          enableCrossOsArchive: true
 
   exfat-reference-validation:
     runs-on: ubuntu-24.04
