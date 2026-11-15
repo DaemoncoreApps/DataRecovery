@@ -38,6 +38,18 @@ export function JobPanel({ job, cancel }: Props) {
     job.state === "idle"
       ? "Idle"
       : job.state.charAt(0).toUpperCase() + job.state.slice(1);
+  const ioDisclosure =
+    job.kind === "disk_acquisition"
+      ? "Physical source opened read-only · hardware write blocker required"
+      : job.kind === "raid_reconstruction"
+        ? "Member images read-only · output written to destination"
+        : job.kind === "case_report_export"
+          ? "Evidence database read · report written to destination"
+          : job.kind === "recovery_export" ||
+              job.kind === "fat32_recovery_export" ||
+              job.kind === "carving_export"
+            ? "Source image read-only · recovered files written to destination"
+            : "Source image read-only";
   return (
     <section className="panel jobPanel">
       <div className="panelTitle">
@@ -133,7 +145,7 @@ export function JobPanel({ job, cancel }: Props) {
                 : "SHA-256"}
         </span>
         <span className="miniDivider" />
-        <span>Read only</span>
+        <span>{ioDisclosure}</span>
         <span className="jobFootState">
           {job.state === "running" ? "Processing" : "No active operation"}
         </span>

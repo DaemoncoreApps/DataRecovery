@@ -1465,3 +1465,7 @@ The full `npm run validate` passes after the database lock-wait change: frontend
 Case reports now filter operation events by the selected case ID in SQLite before parsing the payload and applying the 1 MiB per-record limit. The query guards JSON extraction with `json_valid`; an unrelated case's oversized operation record no longer blocks the selected report, while an oversized matching record remains a hard error. The regression exercises both cases. This relies on the bundled SQLite JSON functions and leaves whole-chain audit verification as the report's integrity gate.
 
 The full `npm run validate` passes after report scoping: frontend typecheck/build, 55 core tests (3 ignored), 134 desktop tests (6 ignored), formatting, and Clippy with warnings denied.
+
+The operation monitor now describes I/O by operation: source images and RAID member images are labeled read-only, while recovery/report outputs are explicitly identified as destination writes. Physical disk acquisition states that it opens the source read-only and still requires a hardware write blocker. This replaces the ambiguous generic “Read only” footer. Frontend production build and complete native validation are recorded after the UI change.
+
+Full `npm run validate` passes after the operation-monitor disclosure: frontend typecheck/build, 55 core tests (3 ignored), 134 desktop tests (6 ignored), formatting, and Clippy with warnings denied. Packaged runtime visual review remains open.
