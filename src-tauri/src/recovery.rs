@@ -1055,11 +1055,14 @@ fn export_exfat_to_directory(
             return Err("Selected exFAT files exceed the 1,000,000-cluster recovery limit.".into());
         }
         if let Ok(mapping) = &mappings[index] {
-            for cluster in u64::from(mapping.first_cluster())
-                ..u64::from(mapping.first_cluster())
-                    + mapping.data_length().div_ceil(volume.cluster_size())
-            {
-                cluster_owners.entry(cluster).or_default().push(index);
+            for cluster_index in 0..mapping.cluster_count() {
+                let cluster = mapping
+                    .cluster_at(cluster_index)
+                    .ok_or("Validated exFAT cluster map is incomplete.")?;
+                cluster_owners
+                    .entry(u64::from(cluster))
+                    .or_default()
+                    .push(index);
             }
         }
     }
@@ -1108,7 +1111,7 @@ fn export_exfat_to_directory(
                 "output_name": safe_name(entry.source_offset, &entry.name),
                 "path_restored": false,
                 "size": entry.data_length,
-                "storage": "contiguous_declared",
+                "storage": if entry.no_fat_chain { "contiguous_declared" } else { "retained_fat_chain_unverified" },
                 "allocation": "free_in_current_bitmap",
                 "record_sha256": format!("{:x}", Sha256::digest(raw)),
             })
@@ -1140,8 +1143,8 @@ fn export_exfat_to_directory(
             "cluster_size": volume.cluster_size(),
             "cluster_count": volume.cluster_count(),
             "root_cluster": volume.root_cluster(),
-            "deleted_file_layout": "contiguous_declared_by_entry_set_and_free_in_allocation_bitmap",
-            "selected_cluster_overlap_check": "overlapping_selected_ranges_are_not_exported",
+            "deleted_file_layout": "contiguous_entry_set_or_retained_fat_chain; all selected clusters must be free in current allocation bitmap; neither proves original file content",
+            "selected_cluster_overlap_check": "overlapping_selected_cluster_maps_are_not_exported",
         },
         "selected_records": selected_records,
         "state": "incomplete_until_completion_marker_exists",
@@ -1642,11 +1645,90 @@ mod tests {
         assert_eq!(manifest["volume"]["filesystem"], "exFAT");
         assert_eq!(
             manifest["volume"]["deleted_file_layout"],
-            "contiguous_declared_by_entry_set_and_free_in_allocation_bitmap"
+            "contiguous_entry_set_or_retained_fat_chain; all selected clusters must be free in current allocation bitmap; neither proves original file content"
         );
         assert_eq!(
             manifest["selected_records"][0]["allocation"],
             "free_in_current_bitmap"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn exfat_export_follows_a_retained_fat_chain_and_verifies_the_package() {
+        let (mut source, _) = exfat_deleted_fixture();
+        let heap = 40 * 512;
+        let fat = 24 * 512;
+        source.0[fat + 5 * 4..fat + 5 * 4 + 4].copy_from_slice(&7_u32.to_le_bytes());
+        source.0[fat + 7 * 4..fat + 7 * 4 + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+        source.0[heap + 96 + 1] = 1; // Keep allocation possible; clear NoFatChain.
+        source.0[heap + 96 + 8..heap + 96 + 16].copy_from_slice(&700_u64.to_le_bytes());
+        source.0[heap + 96 + 24..heap + 96 + 32].copy_from_slice(&700_u64.to_le_bytes());
+        let mut records = source.0[heap + 64..heap + 160]
+            .chunks_exact(32)
+            .map(|record| record.try_into().unwrap())
+            .collect::<Vec<[u8; 32]>>();
+        for record in &mut records {
+            record[0] |= 0x80;
+        }
+        let mut checksum = 0_u16;
+        for (record_index, record) in records.iter().enumerate() {
+            for (byte_index, byte) in record.iter().enumerate() {
+                if record_index != 0 || !matches!(byte_index, 2 | 3) {
+                    checksum = checksum.rotate_right(1).wrapping_add(u16::from(*byte));
+                }
+            }
+        }
+        source.0[heap + 66..heap + 68].copy_from_slice(&checksum.to_le_bytes());
+        source.0[heap + 5 * 512..heap + 5 * 512 + 188].fill(0x77);
+        let mut expected = vec![0x5a; 512];
+        expected.extend(vec![0x77; 188]);
+
+        let volume = daemoncore_ntfs_core::exfat::Volume::open(&source, 0, source.len()).unwrap();
+        let entry = volume
+            .read_tree_with_deleted(&source)
+            .unwrap()
+            .into_iter()
+            .find(|tree_entry| tree_entry.entry.name == "RECOVER.BIN")
+            .unwrap();
+        assert!(!entry.entry.no_fat_chain);
+        let digest = hash_source(&source, &AtomicBool::new(false), |_| {})
+            .unwrap()
+            .unwrap();
+        let root = recovery_test_directory("exfat-retained-chain-export");
+        let summary = export_exfat_to(
+            &source,
+            0,
+            &[entry.clone()],
+            &root,
+            SourceIdentity {
+                case_id: 1,
+                evidence_record_id: 1,
+                scan_session_id: 1,
+                id: 1,
+                path: "controlled-exfat-chain.img",
+                sha256: &digest,
+            },
+            &AtomicBool::new(false),
+            |_, _| {},
+        )
+        .unwrap();
+
+        assert_eq!(summary.exported, 1);
+        assert_eq!(summary.failed, 0);
+        let package = PathBuf::from(&summary.directory);
+        let verification = crate::recovery_verify::verify_package(&package).unwrap();
+        assert_eq!(verification.state, "complete");
+        assert_eq!(
+            fs::read(package.join(safe_name(entry.entry.source_offset, &entry.entry.name)))
+                .unwrap(),
+            expected
+        );
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(package.join("manifest.json")).unwrap()).unwrap();
+        assert_eq!(
+            manifest["selected_records"][0]["storage"],
+            "retained_fat_chain_unverified"
         );
         fs::remove_dir_all(root).unwrap();
     }

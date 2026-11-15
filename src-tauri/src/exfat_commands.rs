@@ -341,7 +341,8 @@ pub async fn export_exfat_deleted(
         "name": item.entry.name,
         "size": item.entry.data_length,
         "first_cluster": item.entry.first_cluster,
-        "recovery_assumption": "contiguous_declared_and_currently_free_clusters",
+        "no_fat_chain": item.entry.no_fat_chain,
+        "recovery_assumption": if item.entry.no_fat_chain { "contiguous_declared_and_currently_free_clusters" } else { "retained_fat_chain_and_currently_free_clusters; original content unverified" },
     })).collect::<Vec<_>>();
     {
         let db = state.db.lock().map_err(err)?;

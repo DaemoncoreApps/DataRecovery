@@ -1232,10 +1232,16 @@ pub(crate) fn verify_package(directory: &Path) -> Result<RecoveryExportVerificat
                 || root_cluster
                     .zip(cluster_count)
                     .is_none_or(|(root, count)| !(2..=count.saturating_add(1)).contains(&root))
-                || manifest.volume["deleted_file_layout"]
-                    != "contiguous_declared_by_entry_set_and_free_in_allocation_bitmap"
-                || manifest.volume["selected_cluster_overlap_check"]
-                    != "overlapping_selected_ranges_are_not_exported"
+                || !matches!(
+                    manifest.volume["deleted_file_layout"].as_str(),
+                    Some("contiguous_declared_by_entry_set_and_free_in_allocation_bitmap")
+                        | Some("contiguous_entry_set_or_retained_fat_chain; all selected clusters must be free in current allocation bitmap; neither proves original file content")
+                )
+                || !matches!(
+                    manifest.volume["selected_cluster_overlap_check"].as_str(),
+                    Some("overlapping_selected_ranges_are_not_exported")
+                        | Some("overlapping_selected_cluster_maps_are_not_exported")
+                )
             {
                 return Err("exFAT recovery manifest has invalid geometry or omits its recovery assumptions.".into());
             }
@@ -1334,7 +1340,10 @@ pub(crate) fn verify_package(directory: &Path) -> Result<RecoveryExportVerificat
                 || record.parent_path.is_some()
                 || !record.filename_references.is_empty()
                 || record.path_restored != Some(false)
-                || record.storage != "contiguous_declared"
+                || !matches!(
+                    record.storage.as_str(),
+                    "contiguous_declared" | "retained_fat_chain_unverified"
+                )
                 || record.allocation != "free_in_current_bitmap"
                 || record.output_name.as_deref()
                     != Some(safe_name(record.record, &record.name).as_str())

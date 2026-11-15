@@ -551,7 +551,7 @@ function App() {
                 <h2>exFAT directory analysis</h2>
                 <span className="tag">READ ONLY · SOURCE VERIFIED</span>
               </div>
-              <p>Validates boot regions, the allocation bitmap, up-case table, live streams, and checksum-valid deleted entry sets. Deleted-file export is an attempt based on the entry set’s declared contiguous range being free in the current bitmap; that does not prove the bytes belong to the original file.</p>
+              <p>Validates boot regions, the allocation bitmap, up-case table, live streams, and checksum-valid deleted entry sets. Deleted-file export uses either the entry set’s contiguous layout or a retained FAT chain, and requires every candidate cluster to be free in the current bitmap. Deleted metadata cannot prove the bytes still belong to the original file.</p>
               <div className="actions">
                 <label>Volume byte offset <input value={filesystemOffset} onChange={(event) => setFilesystemOffset(event.target.value)} placeholder="0 or 0x..." /></label>
                 <button className="primary" disabled={!source?.sha256 || busy || job.state === "running"} onClick={() => void run(async () => {
@@ -590,13 +590,13 @@ function App() {
                             if (next.has(entry.source_offset)) next.delete(entry.source_offset);
                             else if (next.size < 1000) next.add(entry.source_offset);
                             return next;
-                          })} aria-label={`Select ${path.join("/")} for contiguous-assumed exFAT recovery`} />
+                          })} aria-label={`Select ${path.join("/")} for attempted exFAT recovery using ${entry.no_fat_chain ? "declared contiguous layout" : "retained FAT chain"}`} />
                           Eligible to attempt
                         </label>
                       )}
                       <code>0x{entry.source_offset.toString(16).padStart(12, "0")}</code>
                       <h3 title={path.join("/")}>{path.join("/")}</h3>
-                      <span>{entry.deleted ? "Deleted metadata lead · contiguous allocation assumed" : "Live entry"} · {entry.data_length.toLocaleString()} bytes · cluster {entry.first_cluster || "—"} · {entry.attributes & 0x10 ? "directory" : "file"}{entry.no_fat_chain ? " · contiguous allocation" : ""}</span>
+                      <span>{entry.deleted ? `Deleted metadata lead · ${entry.no_fat_chain ? "contiguous allocation assumed" : "retained FAT chain unverified"}` : "Live entry"} · {entry.data_length.toLocaleString()} bytes · cluster {entry.first_cluster || "—"} · {entry.attributes & 0x10 ? "directory" : "file"}</span>
                     </div>
                   ))}
                   {!exfatPage.total && <p className="muted">The volume is valid and contains no supported file entry sets.</p>}
