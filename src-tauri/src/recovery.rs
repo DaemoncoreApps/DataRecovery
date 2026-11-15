@@ -376,6 +376,47 @@ pub fn export_to(
     cancel: &AtomicBool,
     mut progress: impl FnMut(u64, u64),
 ) -> Result<ExportSummary, String> {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| error.to_string())?
+        .as_nanos();
+    let directory = destination.join(format!("DaemonCore-Recovery-{stamp}"));
+    let result = export_to_directory(
+        source,
+        scan,
+        selected,
+        identity,
+        cancel,
+        &mut progress,
+        stamp,
+        &directory,
+    );
+    report_incomplete_export_path(result, &directory)
+}
+
+fn report_incomplete_export_path<T>(
+    result: Result<T, String>,
+    directory: &Path,
+) -> Result<T, String> {
+    match result {
+        Err(error) if directory.exists() => Err(format!(
+            "{error} A partial recovery folder may remain at {}. Treat it as unverified until the package verifier accepts it.",
+            directory.display()
+        )),
+        result => result,
+    }
+}
+
+fn export_to_directory(
+    source: &dyn BlockSource,
+    scan: &ScanResult,
+    selected: &[Candidate],
+    identity: SourceIdentity<'_>,
+    cancel: &AtomicBool,
+    progress: &mut impl FnMut(u64, u64),
+    stamp: u128,
+    directory: &Path,
+) -> Result<ExportSummary, String> {
     let total = selected
         .iter()
         .try_fold(0u64, |n, c| n.checked_add(c.size.checked_mul(2)?))
@@ -392,12 +433,7 @@ pub fn export_to(
     if before != identity.sha256 {
         return Err("Source SHA-256 changed before export. No recovery folder was created; reopen and investigate the image.".into());
     }
-    let stamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|e| e.to_string())?
-        .as_nanos();
-    let directory = destination.join(format!("DaemonCore-Recovery-{stamp}"));
-    fs::create_dir(&directory).map_err(|e| e.to_string())?;
+    fs::create_dir(directory).map_err(|e| e.to_string())?;
     let mut manifest = OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -454,7 +490,7 @@ pub fn export_to(
             summary.cancelled = true;
             break;
         }
-        let result = extract_one(source, scan, candidate, &directory, name, cancel, |n| {
+        let result = extract_one(source, scan, candidate, directory, name, cancel, |n| {
             processed += n;
             progress(processed, total);
         });
@@ -478,7 +514,7 @@ pub fn export_to(
                 }
             }
             Err(e) => {
-                remove_empty_parent_dirs(&directory, name);
+                remove_empty_parent_dirs(directory, name);
                 summary.failed += 1;
                 InventoryEntry {
                     record: candidate.id,
@@ -515,8 +551,8 @@ pub fn export_to(
         serde_json::to_writer_pretty(&mut final_manifest, &summary).map_err(|e| e.to_string())?;
         final_manifest.sync_all().map_err(|e| e.to_string())?;
         drop(final_manifest);
-        write_checksums(&directory)?;
-        write_completion_marker(&directory, &summary)?;
+        write_checksums(directory)?;
+        write_completion_marker(directory, &summary)?;
         return Ok(summary);
     }
     let after = hash_source(source, cancel, |count| {
@@ -537,8 +573,8 @@ pub fn export_to(
     serde_json::to_writer_pretty(&mut final_manifest, &summary).map_err(|e| e.to_string())?;
     final_manifest.sync_all().map_err(|e| e.to_string())?;
     drop(final_manifest);
-    write_checksums(&directory)?;
-    write_completion_marker(&directory, &summary)?;
+    write_checksums(directory)?;
+    write_completion_marker(directory, &summary)?;
     Ok(summary)
 }
 
@@ -631,6 +667,34 @@ pub fn export_fat32_to(
     identity: SourceIdentity<'_>,
     cancel: &AtomicBool,
     mut progress: impl FnMut(u64, u64),
+) -> Result<ExportSummary, String> {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| error.to_string())?
+        .as_nanos();
+    let directory = destination.join(format!("DaemonCore-Recovery-{stamp}"));
+    let result = export_fat32_to_directory(
+        source,
+        volume_offset,
+        selected,
+        identity,
+        cancel,
+        &mut progress,
+        stamp,
+        &directory,
+    );
+    report_incomplete_export_path(result, &directory)
+}
+
+fn export_fat32_to_directory(
+    source: &dyn BlockSource,
+    volume_offset: u64,
+    selected: &[daemoncore_ntfs_core::fat32::TreeEntry],
+    identity: SourceIdentity<'_>,
+    cancel: &AtomicBool,
+    progress: &mut impl FnMut(u64, u64),
+    stamp: u128,
+    directory: &Path,
 ) -> Result<ExportSummary, String> {
     let volume = daemoncore_ntfs_core::fat32::Volume::open(
         source,
@@ -731,16 +795,11 @@ pub fn export_fat32_to(
     if before != identity.sha256 {
         return Err("Source SHA-256 changed before FAT32 export. No recovery folder was created; reopen and investigate the image.".into());
     }
-    let stamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(err)?
-        .as_nanos();
-    let directory = destination.join(format!("DaemonCore-Recovery-{stamp}"));
-    fs::create_dir(&directory).map_err(err)?;
+    fs::create_dir(directory).map_err(err)?;
     let extract_context = Fat32ExportContext {
         source,
         volume: &volume,
-        directory: &directory,
+        directory,
         cancel,
     };
     let selected_records = entries
@@ -887,8 +946,8 @@ pub fn export_fat32_to(
         serde_json::to_writer_pretty(&mut final_summary, &summary).map_err(err)?;
         final_summary.sync_all().map_err(err)?;
         drop(final_summary);
-        write_checksums(&directory)?;
-        write_completion_marker(&directory, &summary)?;
+        write_checksums(directory)?;
+        write_completion_marker(directory, &summary)?;
         return Ok(summary);
     }
     let after = hash_source(source, cancel, |count| {
@@ -909,8 +968,8 @@ pub fn export_fat32_to(
     serde_json::to_writer_pretty(&mut final_summary, &summary).map_err(err)?;
     final_summary.sync_all().map_err(err)?;
     drop(final_summary);
-    write_checksums(&directory)?;
-    write_completion_marker(&directory, &summary)?;
+    write_checksums(directory)?;
+    write_completion_marker(directory, &summary)?;
     Ok(summary)
 }
 
@@ -991,6 +1050,29 @@ mod tests {
         assert_eq!(fs::read(&stale).unwrap(), b"preserve interrupted output");
         assert!(!staged_path.exists());
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn failed_recovery_export_reports_the_unverified_folder_path() {
+        let root = recovery_test_directory("failed-export-path");
+        let partial = root.join("DaemonCore-Recovery-incomplete");
+        fs::create_dir(&partial).unwrap();
+
+        let error = report_incomplete_export_path::<()>(Err("source changed".into()), &partial)
+            .unwrap_err();
+
+        assert!(error.contains("source changed"));
+        assert!(error.contains(&partial.to_string_lossy().to_string()));
+        assert!(error.contains("Treat it as unverified"));
+        assert!(crate::recovery_verify::verify_package(&partial).is_err());
+        let no_folder_error = report_incomplete_export_path::<()>(
+            Err("source changed before output".into()),
+            &root.join("not-created"),
+        )
+        .unwrap_err();
+        assert!(no_folder_error.contains("source changed before output"));
+        assert!(!no_folder_error.contains("not-created"));
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

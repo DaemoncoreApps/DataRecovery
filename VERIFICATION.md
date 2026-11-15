@@ -1407,3 +1407,9 @@ verifier rejects the staged directory. User cancellation explicitly removes
 staging, including when cancellation occurs after output writing begins. Seven
 RAID tests pass, with the independent Linux MD reference test skipped locally
 because its fixture is provided by hosted CI.
+
+NTFS and FAT32 package export errors now include the path when a recovery folder
+was created, and label that output unverified until the package verifier accepts
+it. This makes interrupted or failed workspace exports locatable while keeping
+their existing incomplete manifest and completion-marker rules. Seven recovery
+tests pass, including path reporting and rejection of an empty incomplete folder.
