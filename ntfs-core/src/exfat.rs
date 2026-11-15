@@ -42,6 +42,16 @@ pub struct TreeEntry {
     pub entry: DirectoryEntry,
 }
 
+/// A deleted exFAT file stream whose full contiguous cluster range was
+/// validated as free in the current allocation bitmap.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeletedFileStream {
+    first_cluster: u32,
+    data_length: u64,
+    valid_data_length: u64,
+    cluster_size: u64,
+}
+
 #[derive(Clone, Debug)]
 struct Bitmap {
     clusters: Vec<u32>,
@@ -272,6 +282,110 @@ impl Volume {
 
     pub fn bytes_per_sector(&self) -> u32 {
         self.bytes_per_sector
+    }
+
+    /// Validate a deleted file's contiguous allocation before any recovery
+    /// reads. Chained deleted files are refused because their former FAT chain
+    /// cannot be trusted after deletion.
+    pub fn prepare_deleted_file(
+        &self,
+        source: &dyn BlockSource,
+        entry: &DirectoryEntry,
+    ) -> Result<DeletedFileStream> {
+        let current_entry = self
+            .read_tree_with_deleted(source)?
+            .into_iter()
+            .find(|tree_entry| tree_entry.entry.source_offset == entry.source_offset)
+            .ok_or("Selected exFAT entry is no longer present in the source volume.")?;
+        if current_entry.entry != *entry {
+            return Err("Selected exFAT entry changed since it was inventoried.".into());
+        }
+        if !entry.deleted || entry.attributes & 0x10 != 0 || entry.data_length == 0 {
+            return Err("Selected exFAT record is not a nonempty deleted file.".into());
+        }
+        if !entry.no_fat_chain {
+            return Err(
+                "Deleted exFAT file uses a cluster chain; its former allocation cannot be trusted."
+                    .into(),
+            );
+        }
+        if entry.valid_data_length > entry.data_length {
+            return Err("Deleted exFAT valid-data length exceeds its file length.".into());
+        }
+        let clusters = entry
+            .data_length
+            .checked_add(self.cluster_size - 1)
+            .ok_or("Deleted exFAT stream cluster count overflow.")?
+            / self.cluster_size;
+        if clusters == 0 || clusters > u64::from(self.cluster_count) {
+            return Err("Deleted exFAT stream exceeds the cluster heap.".into());
+        }
+        let end = u64::from(entry.first_cluster)
+            .checked_add(clusters - 1)
+            .ok_or("Deleted exFAT contiguous stream range overflow.")?;
+        if end > u64::from(self.cluster_count) + 1 {
+            return Err("Deleted exFAT contiguous stream exceeds the cluster heap.".into());
+        }
+        for cluster in u64::from(entry.first_cluster)..=end {
+            if self.cluster_allocated(source, cluster as u32)? {
+                return Err(format!(
+                    "Deleted exFAT cluster {cluster} is allocated; recovery stopped to avoid mixing live data."
+                ));
+            }
+        }
+        Ok(DeletedFileStream {
+            first_cluster: entry.first_cluster,
+            data_length: entry.data_length,
+            valid_data_length: entry.valid_data_length,
+            cluster_size: self.cluster_size,
+        })
+    }
+
+    /// Read a bounded range from a previously validated deleted file stream.
+    /// Bytes beyond ValidDataLength are returned as zero per exFAT semantics.
+    pub fn read_deleted_file_range(
+        &self,
+        source: &dyn BlockSource,
+        stream: &DeletedFileStream,
+        offset: u64,
+        output: &mut [u8],
+    ) -> Result<()> {
+        let end = offset
+            .checked_add(output.len() as u64)
+            .ok_or("Deleted exFAT read range overflow.")?;
+        if end > stream.data_length {
+            return Err("Deleted exFAT read range exceeds the file length.".into());
+        }
+        output.fill(0);
+        let initialized_end = end.min(stream.valid_data_length);
+        if offset >= initialized_end {
+            return Ok(());
+        }
+        let mut source_position = offset;
+        let mut output_position = 0usize;
+        let initialized_bytes = (initialized_end - offset) as usize;
+        while output_position < initialized_bytes {
+            let relative_cluster = source_position / stream.cluster_size;
+            let within_cluster = source_position % stream.cluster_size;
+            let cluster = u64::from(stream.first_cluster)
+                .checked_add(relative_cluster)
+                .ok_or("Deleted exFAT cluster number overflow.")?;
+            let count = (initialized_bytes - output_position)
+                .min((stream.cluster_size - within_cluster) as usize);
+            let source_offset = self
+                .cluster_offset(u32::try_from(cluster).map_err(|_| "Invalid exFAT cluster.")?)?
+                .checked_add(within_cluster)
+                .ok_or("Deleted exFAT source offset overflow.")?;
+            source
+                .read_exact_at(
+                    source_offset,
+                    &mut output[output_position..output_position + count],
+                )
+                .map_err(|error| format!("Could not read deleted exFAT file data: {error}"))?;
+            source_position += count as u64;
+            output_position += count;
+        }
+        Ok(())
     }
 
     pub fn read_tree(&self, source: &dyn BlockSource) -> Result<Vec<TreeEntry>> {
@@ -1466,6 +1580,50 @@ mod tests {
             .read_tree_with_deleted(&source)
             .unwrap_err()
             .contains("entry-set checksum is invalid"));
+    }
+
+    #[test]
+    fn reads_only_free_contiguous_deleted_exfat_data_and_zeroes_uninitialized_tail() {
+        let mut source = fixture();
+        let heap_start = 40 * 512;
+        let mut deleted = test_file_set("RECOVER.BIN", 0x20, 5, 700, true);
+        deleted[1][8..16].copy_from_slice(&600_u64.to_le_bytes());
+        let checksum = entry_set_checksum(&deleted);
+        deleted[0][2..4].copy_from_slice(&checksum.to_le_bytes());
+        for record in &mut deleted {
+            record[0] &= 0x7f;
+        }
+        for (index, record) in deleted.iter().enumerate() {
+            source.0[heap_start + 160 + index * 32..heap_start + 192 + index * 32]
+                .copy_from_slice(record);
+        }
+        source.0[heap_start + 3 * 512..heap_start + 4 * 512].fill(0x5a);
+        source.0[heap_start + 4 * 512..heap_start + 5 * 512].fill(0x6b);
+
+        let volume = Volume::open(&source, 0, source.len()).unwrap();
+        let entries = volume.read_tree_with_deleted(&source).unwrap();
+        let entry = &entries[1].entry;
+        let stream = volume.prepare_deleted_file(&source, entry).unwrap();
+        let mut output = vec![0; 700];
+        volume
+            .read_deleted_file_range(&source, &stream, 0, &mut output)
+            .unwrap();
+        assert!(output[..512].iter().all(|byte| *byte == 0x5a));
+        assert!(output[512..600].iter().all(|byte| *byte == 0x6b));
+        assert!(output[600..].iter().all(|byte| *byte == 0));
+
+        source.0[heap_start + 2 * 512] |= 1 << 3;
+        assert!(volume
+            .prepare_deleted_file(&source, entry)
+            .unwrap_err()
+            .contains("allocated"));
+        source.0[heap_start + 2 * 512] &= !(1 << 3);
+        let mut chained_entry = entry.clone();
+        chained_entry.no_fat_chain = false;
+        assert!(volume
+            .prepare_deleted_file(&source, &chained_entry)
+            .unwrap_err()
+            .contains("changed since it was inventoried"));
     }
 
     #[test]
