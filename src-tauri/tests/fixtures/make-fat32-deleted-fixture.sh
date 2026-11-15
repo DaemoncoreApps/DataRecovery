@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
+trap 'status=$?; printf "FAT32 fixture generation failed at line %s while running: %s (exit %s)\n" "$LINENO" "$BASH_COMMAND" "$status" >&2' ERR
 
 output_dir="${1:?usage: make-fat32-deleted-fixture.sh OUTPUT_DIRECTORY}"
 mkdir -p "$output_dir"

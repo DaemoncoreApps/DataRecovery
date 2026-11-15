@@ -21,6 +21,36 @@ const FAT32_TOTAL_SECTORS: u32 = 32 + 2 * FAT32_SECTORS_PER_FAT + FAT32_CLUSTER_
 const FAT32_IMAGE_SIZE: u64 = FAT32_TOTAL_SECTORS as u64 * SECTOR_SIZE as u64;
 const FAT32_FAT_PREFIX_BYTES: usize = 66 * 4;
 
+struct SliceBlockSource<'a> {
+    bytes: &'a [u8],
+}
+
+impl<'a> SliceBlockSource<'a> {
+    fn new(bytes: &'a [u8]) -> Self {
+        Self { bytes }
+    }
+}
+
+impl BlockSource for SliceBlockSource<'_> {
+    fn len(&self) -> u64 {
+        self.bytes.len() as u64
+    }
+
+    fn read_exact_at(&self, offset: u64, buffer: &mut [u8]) -> io::Result<()> {
+        let start = usize::try_from(offset)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "offset is too large"))?;
+        let end = start
+            .checked_add(buffer.len())
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "read range overflows"))?;
+        let source = self
+            .bytes
+            .get(start..end)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "read exceeds image"))?;
+        buffer.copy_from_slice(source);
+        Ok(())
+    }
+}
+
 struct VirtualFat32Image {
     boot: [u8; SECTOR_SIZE],
     fats: [[u8; FAT32_FAT_PREFIX_BYTES]; 2],
@@ -309,9 +339,8 @@ fn fuzz_exfat_volume(data: &[u8]) {
     const UPCASE_LENGTH: usize = 250;
     let fixture = VALID_FIXTURE.get_or_init(|| {
         let image = exfat_volume_fixture();
-        let source = Cursor::new(image.as_slice());
-        let size = source.get_ref().len() as u64;
-        let volume = ExfatVolume::open(&source, 0, size)
+        let source = SliceBlockSource::new(&image);
+        let volume = ExfatVolume::open(&source, 0, source.len())
             .expect("generated exFAT fuzz fixture must be valid");
         assert_eq!(
             volume
@@ -385,7 +414,7 @@ fn fuzz_exfat_volume(data: &[u8]) {
     }
 
     let size = image.len() as u64;
-    let source = Cursor::new(image);
+    let source = SliceBlockSource::new(&image);
     if let Ok(volume) = ExfatVolume::open(&source, 0, size) {
         let _ = volume.read_tree(&source);
     }

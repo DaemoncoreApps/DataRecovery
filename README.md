@@ -140,10 +140,11 @@ they remain read-only snapshots and cannot be exported until the source is reope
 and a fresh scan is completed.
 
 FAT32 live/deleted short-entry review and exFAT live-directory inventory are available
-in limited scope. General FAT32 allocation-history analysis, deleted-LFN recovery,
-and exFAT deleted-file recovery remain pending; exFAT inventory requires independent
-volume-fixture validation before forensic qualification. Physical-device acquisition and operator-configured RAID 0/1/full-member RAID 5
-reconstruction are available in limited scope: member identity, layout, degraded-array
+in limited scope. The exFAT inventory has been checked against one independent volume
+fixture; broader volume compatibility and damaged-media behavior are not qualified.
+General FAT32 allocation-history analysis, deleted-LFN recovery, and exFAT deleted-file
+recovery remain pending. Physical-device acquisition and operator-configured RAID
+0/1/full-member RAID 5 reconstruction are available in limited scope: member identity, layout, degraded-array
 handling, and hardware qualification remain explicit release gates. PNG carving
 validates chunk CRCs and decodes complete images; JPEG carving validates bounded
 marker/scan structure and decodes pixels; BMP carving checks header, geometry,
@@ -154,8 +155,10 @@ and completion markers. PDF/Office formats and archive-time candidate review
 remain pending. FAT32
 deleted-file export is limited to a contiguous-cluster assumption and cannot establish
 original-content integrity. Report generation is available as unsigned, unanchored
-JSON v4 with case-linked acquisition/RAID audit records; PDF/HTML/CSV exports, editable persistent settings, advanced hex analysis, and
-Microsoft Store release remain pending. The current Tauri Store route uses a signed EXE or MSI installer
+JSON v6 with case-linked evidence, scan, recovery, acquisition, RAID, and audit data;
+PDF/HTML/CSV exports, signed or externally anchored reports, editable persistent settings,
+advanced hex analysis, and Microsoft Store release remain pending. The current Tauri
+Store route uses a signed EXE or MSI installer
 linked from an unpackaged app listing; this project currently builds an unsigned
 NSIS EXE and does not produce MSIX. Store signing, updater policy and submission
 are not configured. See CAPABILITIES.md and ENGINEERING.md for release gates.
@@ -180,5 +183,6 @@ file split between a base and extension record, verifies the reconstructed outpu
 and rejects a stale extension base sequence. No fixture is loaded automatically.
 
 See VERIFICATION.md for the exact checks performed and remaining validation gaps.
-The supplied repository was empty when inspected; HTTPS cloning returned 403.
-Changes remain local; no remote commits or releases have been published.
+The production gate audit records which checks remain incomplete. A successful local
+build or validation run does not qualify the Windows installer, establish forensic
+fitness, or replace independent laboratory testing.
