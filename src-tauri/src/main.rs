@@ -730,26 +730,51 @@ async fn search_hex(
     )?;
 
     let search_source = source.clone();
-    let found = tauri::async_runtime::spawn_blocking(move || {
+    let mut found = tauri::async_runtime::spawn_blocking(move || {
         search_hex_range(search_source.as_ref(), &pattern, start_offset, scan_length)
     })
     .await
     .map_err(err)?;
 
     let state = app.state::<AppState>();
-    if source.verify_unchanged().is_err() {
-        if let Ok(mut current) = state.source.lock() {
-            if let Some(evidence) = current.as_mut().filter(|item| item.info.id == source_id) {
-                evidence.integrity_compromised = true;
-                evidence.info.sha256 = None;
-            }
-        }
-        if let Ok(db) = state.db.lock() {
-            let _ = db.execute(
+    if let Err(source_error) = source.verify_unchanged() {
+        let memory_update = state.source.lock().map_err(err).and_then(|mut current| {
+            current
+                .as_mut()
+                .filter(|item| item.info.id == source_id)
+                .map(|evidence| {
+                    evidence.integrity_compromised = true;
+                    evidence.info.sha256 = None;
+                })
+                .ok_or_else(|| {
+                    "The active evidence source changed before it could be marked compromised."
+                        .to_owned()
+                })
+        });
+        let database_update = state.db.lock().map_err(err).and_then(|db| {
+            let changed = db
+                .execute(
                 "UPDATE evidence_sources SET sha256=NULL,status='compromised' WHERE id=?1 AND case_id=?2",
                 params![evidence_record_id, case_id],
-            );
+                )
+                .map_err(err)?;
+            if changed != 1 {
+                return Err("The evidence record was not updated as compromised.".into());
+            }
+            Ok(())
+        });
+        let mut integrity_error = format!(
+            "The evidence source changed during hex search ({source_error}); search results were discarded."
+        );
+        if let Err(error) = memory_update {
+            integrity_error.push_str(&format!(
+                " Could not update in-memory evidence status: {error}."
+            ));
         }
+        if let Err(error) = database_update {
+            integrity_error.push_str(&format!(" Could not persist compromised status: {error}."));
+        }
+        found = Err(integrity_error);
     }
     let audit_event = match &found {
         Ok(_) => "hex_search_completed",
@@ -767,12 +792,18 @@ async fn search_hex(
             serde_json::json!({"case_id":case_id,"source_id":source_id,"start_offset":start_offset,"scan_length":scan_length,"error":error})
         }
     };
-    audit(
-        &*state.db.lock().map_err(err)?,
-        audit_event,
-        &audit_payload.to_string(),
-    )?;
-    found
+    let audit_result = state
+        .db
+        .lock()
+        .map_err(err)
+        .and_then(|db| audit(&db, audit_event, &audit_payload.to_string()));
+    match found {
+        Ok(offsets) => {
+            audit_result?;
+            Ok(offsets)
+        }
+        Err(error) => Err(include_audit_failure(error, audit_result)),
+    }
 }
 
 fn search_hex_range(
