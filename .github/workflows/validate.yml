@@ -21,43 +21,9 @@ concurrency:
 jobs:
   windows-validation:
     runs-on: windows-2025
-    needs: [fat32-deleted-recovery-validation, raid5-reference-validation]
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
-      - name: Download independently verified FAT32 deleted-file fixture
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
-        with:
-          name: daemoncore-fat32-deleted-reference
-          path: ${{ runner.temp }}\daemoncore-fat32-deleted-reference
-      - name: Download Linux MD RAID 5 reference fixture
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
-        with:
-          name: daemoncore-raid5-reference
-          path: ${{ runner.temp }}\daemoncore-raid5-reference
-      - name: Verify transferred FAT32 fixture hashes
-        shell: pwsh
-        run: |
-          $fixtureDir = Join-Path $env:RUNNER_TEMP "daemoncore-fat32-deleted-reference"
-          $image = Join-Path $fixtureDir "deleted-fat32.img"
-          $expected = Join-Path $fixtureDir "RECOVER.BIN.expected"
-          $imageDigest = (Get-Content (Join-Path $fixtureDir "deleted-fat32.img.sha256") -TotalCount 1).Split(' ')[0]
-          if ((Get-FileHash $image -Algorithm SHA256).Hash.ToLowerInvariant() -ne $imageDigest) { throw "Transferred FAT32 image digest mismatch" }
-          if ((Get-FileHash $expected -Algorithm SHA256).Hash.ToLowerInvariant() -ne "7daca2095d0438260fa849183dfc67faa459fdf4936e1bc91eec6b281b27e4c2") { throw "FAT32 expected content digest mismatch" }
-      - name: Verify transferred RAID 5 reference fixture hashes
-        shell: pwsh
-        run: |
-          $fixtureDir = Join-Path $env:RUNNER_TEMP "daemoncore-raid5-reference"
-          $expectedFiles = @("member0.raw", "member1.raw", "member2.raw", "logical-image.raw")
-          foreach ($line in Get-Content (Join-Path $fixtureDir "SHA256SUMS")) {
-            if ($line -notmatch '^([0-9a-f]{64})\s+(.+)$') { throw "Malformed RAID 5 reference checksum line" }
-            $digest = $Matches[1]
-            $name = $Matches[2]
-            if ($name -notin $expectedFiles) { throw "Unexpected RAID 5 reference fixture file: $name" }
-            $actual = (Get-FileHash (Join-Path $fixtureDir $name) -Algorithm SHA256).Hash.ToLowerInvariant()
-            if ($actual -ne $digest) { throw "RAID 5 reference fixture hash mismatch: $name" }
-          }
-          "DAEMONCORE_RAID5_REFERENCE_DIR=$fixtureDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
         with:
           node-version: 22
@@ -91,17 +57,8 @@ jobs:
           "DAEMONCORE_FAT32_REFERENCE_DUMP=$(Join-Path $fixtureDir 'testdisk1')" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Build and validate
         run: npm run validate
-      - name: Reconstruct independent Linux MD RAID 5 reference array
-        env:
-          DAEMONCORE_RAID5_REFERENCE_DIR: ${{ runner.temp }}\daemoncore-raid5-reference
-        run: cargo test --manifest-path src-tauri/Cargo.toml --offline reconstructs_independent_linux_md_raid5_reference_array -- --ignored --nocapture
       - name: Test independent multi-cluster FAT32 image
         run: cargo test --manifest-path ntfs-core/Cargo.toml --offline reads_independent_multicluster_fat32_reference_image -- --ignored --nocapture
-      - name: Test deleted-file package export against independent bytes
-        env:
-          DAEMONCORE_FAT32_DELETED_IMAGE: ${{ runner.temp }}\daemoncore-fat32-deleted-reference\deleted-fat32.img
-          DAEMONCORE_FAT32_DELETED_EXPECTED: ${{ runner.temp }}\daemoncore-fat32-deleted-reference\RECOVER.BIN.expected
-        run: cargo test --manifest-path src-tauri/Cargo.toml --offline exports_deleted_file_from_independent_fat32_image_against_sleuthkit_bytes -- --ignored --nocapture
       - name: Fetch pinned exFAT image and carving reference files
         shell: pwsh
         run: |
@@ -123,6 +80,66 @@ jobs:
           "DAEMONCORE_CARVING_REFERENCE_IMAGE=$image" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Test carving against independent exFAT file contents
         run: cargo test --manifest-path src-tauri/Cargo.toml --offline carves_independent_exfat_image_files_against_upstream_hashes -- --ignored --nocapture
+
+  windows-reference-validation:
+    runs-on: windows-2025
+    needs: [fat32-deleted-recovery-validation, raid5-reference-validation]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - name: Download independently verified FAT32 deleted-file fixture
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: daemoncore-fat32-deleted-reference
+          path: ${{ runner.temp }}\daemoncore-fat32-deleted-reference
+      - name: Download Linux MD RAID 5 reference fixture
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: daemoncore-raid5-reference
+          path: ${{ runner.temp }}\daemoncore-raid5-reference
+      - name: Verify transferred reference fixture hashes
+        shell: pwsh
+        run: |
+          $fat32Dir = Join-Path $env:RUNNER_TEMP "daemoncore-fat32-deleted-reference"
+          $fat32Image = Join-Path $fat32Dir "deleted-fat32.img"
+          $fat32Expected = Join-Path $fat32Dir "RECOVER.BIN.expected"
+          $fat32Digest = (Get-Content (Join-Path $fat32Dir "deleted-fat32.img.sha256") -TotalCount 1).Split(' ')[0]
+          if ((Get-FileHash $fat32Image -Algorithm SHA256).Hash.ToLowerInvariant() -ne $fat32Digest) { throw "Transferred FAT32 image digest mismatch" }
+          if ((Get-FileHash $fat32Expected -Algorithm SHA256).Hash.ToLowerInvariant() -ne "7daca2095d0438260fa849183dfc67faa459fdf4936e1bc91eec6b281b27e4c2") { throw "FAT32 expected content digest mismatch" }
+
+          $raidDir = Join-Path $env:RUNNER_TEMP "daemoncore-raid5-reference"
+          $expectedFiles = @("member0.raw", "member1.raw", "member2.raw", "logical-image.raw")
+          foreach ($line in Get-Content (Join-Path $raidDir "SHA256SUMS")) {
+            if ($line -notmatch '^([0-9a-f]{64})\s+(.+)$') { throw "Malformed RAID 5 reference checksum line" }
+            $digest = $Matches[1]
+            $name = $Matches[2]
+            if ($name -notin $expectedFiles) { throw "Unexpected RAID 5 reference fixture file: $name" }
+            $actual = (Get-FileHash (Join-Path $raidDir $name) -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actual -ne $digest) { throw "RAID 5 reference fixture hash mismatch: $name" }
+          }
+          "DAEMONCORE_RAID5_REFERENCE_DIR=$raidDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Install Rust validation components
+        run: rustup component add rustfmt clippy
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install JavaScript dependencies
+        run: npm ci
+      - name: Build the frontend for the Tauri test harness
+        run: npm run build
+      - name: Fetch locked Rust dependencies
+        shell: pwsh
+        run: |
+          cargo fetch --locked --manifest-path ntfs-core/Cargo.toml
+          cargo fetch --locked --manifest-path src-tauri/Cargo.toml
+      - name: Reconstruct independent Linux MD RAID 5 reference array
+        run: cargo test --manifest-path src-tauri/Cargo.toml --offline reconstructs_independent_linux_md_raid5_reference_array -- --ignored --nocapture
+      - name: Test deleted-file package export against independent bytes
+        env:
+          DAEMONCORE_FAT32_DELETED_IMAGE: ${{ runner.temp }}\daemoncore-fat32-deleted-reference\deleted-fat32.img
+          DAEMONCORE_FAT32_DELETED_EXPECTED: ${{ runner.temp }}\daemoncore-fat32-deleted-reference\RECOVER.BIN.expected
+        run: cargo test --manifest-path src-tauri/Cargo.toml --offline exports_deleted_file_from_independent_fat32_image_against_sleuthkit_bytes -- --ignored --nocapture
 
   raid5-reference-validation:
     runs-on: ubuntu-24.04
