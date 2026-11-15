@@ -28,12 +28,12 @@ mdel -i "$image" ::RECOVER.BIN
 fsck.fat -vn "$image" >/dev/null
 
 listing="$(fls -f fat32 -d -p "$image")"
-if ! printf '%s\n' "$listing" | grep -iE 'RECOVER\.BIN$'; then
+if ! printf '%s\n' "$listing" | grep -iE '_ECOVER\.BIN$'; then
   printf 'Sleuth Kit did not list the deleted file. Deleted-entry listing:\n%s\n' \
     "$listing" >&2
   exit 1
 fi
-inode="$(printf '%s\n' "$listing" | awk 'toupper($0) ~ /RECOVER\.BIN$/ { for (i = NF; i > 0; i--) if ($i ~ /^[0-9]+:$/) { sub(/:$/, "", $i); print $i; exit } }')"
+inode="$(printf '%s\n' "$listing" | awk 'toupper($0) ~ /_ECOVER\.BIN$/ { for (i = NF; i > 0; i--) if ($i ~ /^[0-9]+:$/) { sub(/:$/, "", $i); print $i; exit } }')"
 if [[ -z "$inode" ]]; then
   echo "Could not identify the deleted entry's Sleuth Kit metadata address" >&2
   exit 1
