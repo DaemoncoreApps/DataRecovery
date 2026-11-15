@@ -17,6 +17,7 @@ import {
   type Fat32Page,
   type ExfatPage,
   type ExfatCaseScanSession,
+  type ExfatScanSummary,
   type CarvePage,
 } from "./bridge";
 import "./style.css";
@@ -59,6 +60,8 @@ function App() {
     [archivedExfatPage, setArchivedExfatPage] = useState<ExfatPage | null>(null),
     [archivedExfatPageIndex, setArchivedExfatPageIndex] = useState(0),
     [exfatPage, setExfatPage] = useState<ExfatPage | null>(null),
+    [exfatSummary, setExfatSummary] = useState<ExfatScanSummary | null>(null),
+    [exfatSelected, setExfatSelected] = useState<Set<number>>(new Set()),
     [filesystemOffset, setFilesystemOffset] = useState("0"),
     [exfatPageIndex, setExfatPageIndex] = useState(0),
     [archivedFat32PageIndex, setArchivedFat32PageIndex] = useState(0),
@@ -187,9 +190,27 @@ function App() {
   }, [native, page, job.kind, job.state, source?.id, carvePageIndex]);
   useEffect(() => {
     if (!native || page !== "Filesystem Analysis" || job.kind !== "exfat_scan" || job.state !== "completed" || !source) return;
-    command<ExfatPage>("exfat_scan_results", { sourceId: source.id, offset: exfatPageIndex * 50, limit: 50 })
-      .then(setExfatPage)
-      .catch((e) => setError(String(e)));
+    let active = true;
+    Promise.all([
+      command<ExfatPage>("exfat_scan_results", { sourceId: source.id, offset: exfatPageIndex * 50, limit: 50 }),
+      command<ExfatScanSummary | null>("exfat_scan_summary"),
+    ])
+      .then(([results, summary]) => {
+        if (!active) return;
+        if (!summary || summary.source_id !== source.id) {
+          setExfatPage(null);
+          setExfatSummary(null);
+          setExfatSelected(new Set());
+          setError("The exFAT scan summary no longer matches the active source. Re-run the analysis.");
+          return;
+        }
+        setExfatPage(results);
+        setExfatSummary(summary);
+      })
+      .catch((e) => {
+        if (active) setError(String(e));
+      });
+    return () => { active = false; };
   }, [native, page, job.kind, job.state, source?.id, exfatPageIndex]);
   const clearActiveEvidenceView = () => {
     sourceGeneration.current += 1;
@@ -206,6 +227,8 @@ function App() {
     setFat32CaseScans([]);
     setExfatCaseScans([]);
     setExfatPage(null);
+    setExfatSummary(null);
+    setExfatSelected(new Set());
     setExfatPageIndex(0);
     setArchivedScanId(null);
     setArchivedPage(null);
@@ -528,13 +551,15 @@ function App() {
                 <h2>exFAT directory analysis</h2>
                 <span className="tag">READ ONLY · SOURCE VERIFIED</span>
               </div>
-              <p>Validates the main and backup boot regions, allocation bitmap, up-case table, live file streams, and checksum-valid deleted file entry sets. Deleted records are metadata leads only; deleted exFAT data is not recovered or exported yet.</p>
+              <p>Validates boot regions, the allocation bitmap, up-case table, live streams, and checksum-valid deleted entry sets. Deleted-file export is an attempt based on the entry set’s declared contiguous range being free in the current bitmap; that does not prove the bytes belong to the original file.</p>
               <div className="actions">
                 <label>Volume byte offset <input value={filesystemOffset} onChange={(event) => setFilesystemOffset(event.target.value)} placeholder="0 or 0x..." /></label>
                 <button className="primary" disabled={!source?.sha256 || busy || job.state === "running"} onClick={() => void run(async () => {
                   const parsedOffset = filesystemOffset.trim().toLowerCase().startsWith("0x") ? Number.parseInt(filesystemOffset.trim().slice(2), 16) : Number(filesystemOffset);
                   if (!Number.isSafeInteger(parsedOffset) || parsedOffset < 0) throw new Error("Enter a valid nonnegative decimal or 0x hexadecimal volume offset.");
                   setExfatPage(null);
+                  setExfatSummary(null);
+                  setExfatSelected(new Set());
                   setExfatPageIndex(0);
                   await command("start_exfat_scan", { offset: parsedOffset });
                   setJob(await command<Job>("job_status"));
@@ -544,11 +569,34 @@ function App() {
               {job.kind === "exfat_scan" && job.state === "completed" && exfatPage && (
                 <>
                   <div className="panelTitle"><h3>{exfatPage.total.toLocaleString()} verified directory records</h3><span className="muted">PAGE {exfatPageIndex + 1}</span></div>
+                  <div className="fat32RecoveryBar">
+                    <p role="note">Selected files are revalidated against the source image and allocation bitmap before export. Overlapping selected ranges are rejected. Each output is destination-hash checked; original content integrity cannot be established from deleted metadata alone.</p>
+                    <button className="primary" disabled={!native || busy || !exfatSummary || exfatSelected.size === 0} onClick={() => void run(async () => {
+                      if (!source || !exfatSummary) throw new Error("The verified exFAT scan is no longer available. Re-run the analysis.");
+                      const started = await command<boolean>("export_exfat_deleted", {
+                        sourceId: source.id,
+                        scanSessionId: exfatSummary.scan_session_id,
+                        entryOffsets: [...exfatSelected],
+                      });
+                      if (started) setJob(await command<Job>("job_status"));
+                    })}>Export selected · {exfatSelected.size}</button>
+                  </div>
                   {exfatPage.rows.map(({ path, entry }) => (
                     <div className="case" key={entry.source_offset}>
+                      {entry.deleted && (entry.attributes & 0x10) === 0 && (entry.attributes & 0x08) === 0 && entry.data_length > 0 && (
+                        <label className="checkLabel fat32Select">
+                          <input type="checkbox" checked={exfatSelected.has(entry.source_offset)} onChange={() => setExfatSelected((current) => {
+                            const next = new Set(current);
+                            if (next.has(entry.source_offset)) next.delete(entry.source_offset);
+                            else if (next.size < 1000) next.add(entry.source_offset);
+                            return next;
+                          })} aria-label={`Select ${path.join("/")} for contiguous-assumed exFAT recovery`} />
+                          Eligible to attempt
+                        </label>
+                      )}
                       <code>0x{entry.source_offset.toString(16).padStart(12, "0")}</code>
                       <h3 title={path.join("/")}>{path.join("/")}</h3>
-                      <span>{entry.deleted ? "Deleted metadata lead · contents not recovered" : "Live entry"} · {entry.data_length.toLocaleString()} bytes · cluster {entry.first_cluster || "—"} · {entry.attributes & 0x10 ? "directory" : "file"}{entry.no_fat_chain ? " · contiguous allocation" : ""}</span>
+                      <span>{entry.deleted ? "Deleted metadata lead · contiguous allocation assumed" : "Live entry"} · {entry.data_length.toLocaleString()} bytes · cluster {entry.first_cluster || "—"} · {entry.attributes & 0x10 ? "directory" : "file"}{entry.no_fat_chain ? " · contiguous allocation" : ""}</span>
                     </div>
                   ))}
                   {!exfatPage.total && <p className="muted">The volume is valid and contains no supported file entry sets.</p>}

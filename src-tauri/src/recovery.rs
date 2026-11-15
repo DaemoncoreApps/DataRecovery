@@ -984,10 +984,424 @@ fn export_fat32_to_directory(
     Ok(summary)
 }
 
+pub fn export_exfat_to(
+    source: &dyn BlockSource,
+    volume_offset: u64,
+    selected: &[daemoncore_ntfs_core::exfat::TreeEntry],
+    destination: &Path,
+    identity: SourceIdentity<'_>,
+    cancel: &AtomicBool,
+    mut progress: impl FnMut(u64, u64),
+) -> Result<ExportSummary, String> {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| error.to_string())?
+        .as_nanos();
+    let directory = destination.join(format!("DaemonCore-Recovery-{stamp}"));
+    let result = export_exfat_to_directory(
+        source,
+        volume_offset,
+        selected,
+        identity,
+        cancel,
+        &mut progress,
+        ExportFolder {
+            created_unix_ns: stamp,
+            directory: &directory,
+        },
+    );
+    report_incomplete_export_path(result, &directory)
+}
+
+fn export_exfat_to_directory(
+    source: &dyn BlockSource,
+    volume_offset: u64,
+    selected: &[daemoncore_ntfs_core::exfat::TreeEntry],
+    identity: SourceIdentity<'_>,
+    cancel: &AtomicBool,
+    progress: &mut impl FnMut(u64, u64),
+    folder: ExportFolder<'_>,
+) -> Result<ExportSummary, String> {
+    use daemoncore_ntfs_core::exfat;
+
+    if selected.is_empty() || selected.len() > 1000 {
+        return Err("Select between 1 and 1,000 deleted exFAT files.".into());
+    }
+    let stamp = folder.created_unix_ns;
+    let directory = folder.directory;
+    let volume = exfat::Volume::open(
+        source,
+        volume_offset,
+        source.len().saturating_sub(volume_offset),
+    )?;
+    let entries = selected.iter().map(|item| &item.entry).collect::<Vec<_>>();
+    let mappings = volume.prepare_deleted_files(source, &entries)?;
+    let mut offsets = BTreeSet::new();
+    let mut cluster_owners: BTreeMap<u64, Vec<usize>> = BTreeMap::new();
+    let mut overlaps = vec![false; selected.len()];
+    let mut file_bytes = 0_u64;
+    let mut selected_clusters = 0_u64;
+    for (index, item) in selected.iter().enumerate() {
+        if !offsets.insert(item.entry.source_offset) {
+            return Err("An exFAT directory entry was selected more than once.".into());
+        }
+        file_bytes = file_bytes
+            .checked_add(item.entry.data_length)
+            .ok_or("exFAT recovery size overflow.")?;
+        selected_clusters = selected_clusters
+            .checked_add(item.entry.data_length.div_ceil(volume.cluster_size()))
+            .ok_or("exFAT recovery cluster count overflow.")?;
+        if selected_clusters > 1_000_000 {
+            return Err("Selected exFAT files exceed the 1,000,000-cluster recovery limit.".into());
+        }
+        if let Ok(mapping) = &mappings[index] {
+            for cluster in u64::from(mapping.first_cluster())
+                ..u64::from(mapping.first_cluster())
+                    + mapping.data_length().div_ceil(volume.cluster_size())
+            {
+                cluster_owners.entry(cluster).or_default().push(index);
+            }
+        }
+    }
+    for owners in cluster_owners.values().filter(|owners| owners.len() > 1) {
+        for owner in owners {
+            overlaps[*owner] = true;
+        }
+    }
+    let total = file_bytes
+        .checked_mul(2)
+        .and_then(|bytes| {
+            source
+                .len()
+                .checked_mul(2)
+                .and_then(|image| bytes.checked_add(image))
+        })
+        .ok_or("exFAT recovery progress total overflow.")?;
+    let mut processed = 0_u64;
+    progress(processed, total);
+    let before = hash_source(source, cancel, |count| {
+        processed = processed.saturating_add(count);
+        progress(processed, total);
+    })?
+    .ok_or("Export cancelled before source verification; no recovery folder was created.")?;
+    if before != identity.sha256 {
+        return Err("Source SHA-256 changed before exFAT export. No recovery folder was created; reopen and investigate the image.".into());
+    }
+    fs::create_dir(directory).map_err(err)?;
+    let selected_records = selected
+        .iter()
+        .map(|item| {
+            let entry = &item.entry;
+            let raw = entry
+                .raw_entries
+                .iter()
+                .flatten()
+                .copied()
+                .collect::<Vec<_>>();
+            serde_json::json!({
+                "record": entry.source_offset,
+                "name": entry.name,
+                "parent_record": 5,
+                "parent_sequence": null,
+                "parent_path": null,
+                "filename_references": [],
+                "output_name": safe_name(entry.source_offset, &entry.name),
+                "path_restored": false,
+                "size": entry.data_length,
+                "storage": "contiguous_declared",
+                "allocation": "free_in_current_bitmap",
+                "record_sha256": format!("{:x}", Sha256::digest(raw)),
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut manifest = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(directory.join("manifest.json"))
+        .map_err(err)?;
+    serde_json::to_writer_pretty(&mut manifest, &serde_json::json!({
+        "tool": "DaemonCore Data Recovery",
+        "version": env!("CARGO_PKG_VERSION"),
+        "hash_algorithm": "SHA-256",
+        "export_started_unix_ns": stamp.to_string(),
+        "source": {
+            "case_id": identity.case_id,
+            "evidence_record_id": identity.evidence_record_id,
+            "scan_session_id": identity.scan_session_id,
+            "session_id": identity.id,
+            "path": identity.path,
+            "size": source.len(),
+            "sha256_before_export": identity.sha256,
+        },
+        "volume": {
+            "filesystem": "exFAT",
+            "volume_offset": volume_offset,
+            "volume_size": volume.volume_size(),
+            "cluster_size": volume.cluster_size(),
+            "cluster_count": volume.cluster_count(),
+            "root_cluster": volume.root_cluster(),
+            "deleted_file_layout": "contiguous_declared_by_entry_set_and_free_in_allocation_bitmap",
+            "selected_cluster_overlap_check": "overlapping_selected_ranges_are_not_exported",
+        },
+        "selected_records": selected_records,
+        "state": "incomplete_until_completion_marker_exists",
+        "content_validation": "Export verification compares the reconstructed stream with destination bytes. Original file content integrity is not established."
+    })).map_err(err)?;
+    manifest.sync_all().map_err(err)?;
+    let mut inventory = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(directory.join("inventory.jsonl"))
+        .map_err(err)?;
+    let mut summary = ExportSummary {
+        directory: directory.to_string_lossy().into_owned(),
+        exported: 0,
+        failed: 0,
+        cancelled: false,
+    };
+    for (index, item) in selected.iter().enumerate() {
+        if cancel.load(Ordering::Relaxed) {
+            summary.cancelled = true;
+            break;
+        }
+        let entry = &item.entry;
+        let name = &entry.name;
+        let output_name = safe_name(entry.source_offset, name);
+        let result = if overlaps[index] {
+            Err("Selected deleted exFAT entries overlap the same assumed cluster range; neither was exported.".into())
+        } else {
+            match &mappings[index] {
+                Ok(mapping) => {
+                    extract_exfat_one(source, &volume, mapping, directory, cancel, item, |count| {
+                        processed = processed.saturating_add(count);
+                        progress(processed, total);
+                    })
+                }
+                Err(error) => Err(error.clone()),
+            }
+        };
+        let record = match result {
+            Ok((sha256, all_zero)) => {
+                summary.exported += 1;
+                serde_json::json!({"record":entry.source_offset,"parent_record":5,"parent_sequence":null,"original_name":name,"filename_references":[],"output_name":output_name,"path_restored":false,"size":entry.data_length,"sha256":sha256,"all_zero":all_zero,"status":"destination_hash_verified","error":null,"content_validation":"not performed"})
+            }
+            Err(error) => {
+                summary.failed += 1;
+                serde_json::json!({"record":entry.source_offset,"parent_record":5,"parent_sequence":null,"original_name":name,"filename_references":[],"output_name":null,"path_restored":false,"size":entry.data_length,"sha256":null,"all_zero":null,"status":"failed","error":error,"content_validation":"not performed"})
+            }
+        };
+        serde_json::to_writer(&mut inventory, &record).map_err(err)?;
+        inventory.write_all(b"\n").map_err(err)?;
+        inventory.sync_all().map_err(err)?;
+    }
+    drop(inventory);
+    if cancel.load(Ordering::Relaxed) {
+        summary.cancelled = true;
+    }
+    if !summary.cancelled {
+        let after = hash_source(source, cancel, |count| {
+            processed = processed.saturating_add(count);
+            progress(processed, total);
+        })?
+        .ok_or(
+            "Source integrity recheck was cancelled; the recovery folder has no completion marker.",
+        )?;
+        if after != identity.sha256 {
+            return Err("Source SHA-256 changed during exFAT export. The recovery folder has no completion marker; quarantine this working copy and investigate the change.".into());
+        }
+    } else {
+        summary.cancelled = true;
+    }
+    let mut summary_file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(directory.join("summary.json"))
+        .map_err(err)?;
+    serde_json::to_writer_pretty(&mut summary_file, &summary).map_err(err)?;
+    summary_file.sync_all().map_err(err)?;
+    drop(summary_file);
+    write_checksums(directory)?;
+    write_completion_marker(directory, &summary)?;
+    Ok(summary)
+}
+
+fn extract_exfat_one(
+    source: &dyn BlockSource,
+    volume: &daemoncore_ntfs_core::exfat::Volume,
+    stream: &daemoncore_ntfs_core::exfat::DeletedFileStream,
+    directory: &Path,
+    cancel: &AtomicBool,
+    entry: &daemoncore_ntfs_core::exfat::TreeEntry,
+    mut progress: impl FnMut(u64),
+) -> Result<(String, bool), String> {
+    let output_name = safe_name(entry.entry.source_offset, &entry.entry.name);
+    let (parent, filename) = ensure_output_parent(directory, &output_name)?;
+    let final_path = parent.join(&filename);
+    let (partial, mut file) = create_partial_output(&parent, &filename)?;
+    let mut buffer = vec![0; 1024 * 1024];
+    let mut position = 0_u64;
+    let mut digest = Sha256::new();
+    let mut all_zero = true;
+    while position < stream.data_length() {
+        if cancel.load(Ordering::Relaxed) {
+            return Err("Export cancelled".into());
+        }
+        let count = (stream.data_length() - position).min(buffer.len() as u64) as usize;
+        volume.read_deleted_file_range(source, stream, position, &mut buffer[..count])?;
+        file.write_all(&buffer[..count]).map_err(|error| {
+            format!(
+                "Could not write staged exFAT output {}: {error}",
+                partial.0.display()
+            )
+        })?;
+        digest.update(&buffer[..count]);
+        all_zero &= buffer[..count].iter().all(|byte| *byte == 0);
+        position += count as u64;
+        progress(count as u64);
+    }
+    file.sync_all().map_err(|error| {
+        format!(
+            "Could not flush staged exFAT output {}: {error}",
+            partial.0.display()
+        )
+    })?;
+    drop(file);
+    let expected = format!("{:x}", digest.finalize());
+    let mut verify = File::open(&partial.0).map_err(err)?;
+    let mut actual = Sha256::new();
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            return Err("Export cancelled".into());
+        }
+        let count = verify.read(&mut buffer).map_err(err)?;
+        if count == 0 {
+            break;
+        }
+        actual.update(&buffer[..count]);
+        progress(count as u64);
+    }
+    if format!("{:x}", actual.finalize()) != expected {
+        return Err("Destination verification failed; partial output was discarded".into());
+    }
+    drop(verify);
+    destination::publish_new(&partial.0, &final_path).map_err(|error| {
+        format!(
+            "Could not publish verified exFAT output for record {}: {error}",
+            entry.entry.source_offset
+        )
+    })?;
+    Ok((expected, all_zero))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::storage::MemorySource;
+
+    fn exfat_deleted_fixture() -> (MemorySource, Vec<u8>) {
+        const SECTOR: usize = 512;
+        let mut image = vec![0; 2048 * SECTOR];
+        for boot_start in [0, 12 * SECTOR] {
+            let region = &mut image[boot_start..boot_start + 12 * SECTOR];
+            region[..3].copy_from_slice(&[0xeb, 0x76, 0x90]);
+            region[3..11].copy_from_slice(b"EXFAT   ");
+            region[72..80].copy_from_slice(&2048_u64.to_le_bytes());
+            region[80..84].copy_from_slice(&24_u32.to_le_bytes());
+            region[84..88].copy_from_slice(&16_u32.to_le_bytes());
+            region[88..92].copy_from_slice(&40_u32.to_le_bytes());
+            region[92..96].copy_from_slice(&2008_u32.to_le_bytes());
+            region[96..100].copy_from_slice(&2_u32.to_le_bytes());
+            region[104..106].copy_from_slice(&0x0100_u16.to_le_bytes());
+            region[108] = 9;
+            region[110] = 1;
+            region[112] = 0xff;
+            region[510..512].copy_from_slice(&[0x55, 0xaa]);
+            for index in 1..=8 {
+                let end = (index + 1) * SECTOR;
+                region[end - 4..end].copy_from_slice(&[0, 0, 0x55, 0xaa]);
+            }
+            let mut checksum = 0_u32;
+            for (index, byte) in region[..11 * SECTOR].iter().enumerate() {
+                if !matches!(index, 106 | 107 | 112) {
+                    checksum = checksum.rotate_right(1).wrapping_add(u32::from(*byte));
+                }
+            }
+            for word in region[11 * SECTOR..12 * SECTOR].chunks_mut(4) {
+                word.copy_from_slice(&checksum.to_le_bytes());
+            }
+        }
+        for cluster in 2..=4 {
+            let at = 24 * SECTOR + cluster * 4;
+            image[at..at + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+        }
+        let heap = 40 * SECTOR;
+        let mut root = [0_u8; SECTOR];
+        root[0] = 0x81;
+        root[20..24].copy_from_slice(&4_u32.to_le_bytes());
+        root[24..32].copy_from_slice(&251_u64.to_le_bytes());
+        root[32] = 0x82;
+        root[52..56].copy_from_slice(&3_u32.to_le_bytes());
+        let mut upcase = Vec::new();
+        for unit in 0..97_u16 {
+            upcase.extend_from_slice(&unit.to_le_bytes());
+        }
+        for unit in b'A' as u16..=b'Z' as u16 {
+            upcase.extend_from_slice(&unit.to_le_bytes());
+        }
+        upcase.extend_from_slice(&0xffff_u16.to_le_bytes());
+        upcase.extend_from_slice(&65_413_u16.to_le_bytes());
+        let mut upcase_checksum = 0_u32;
+        for byte in &upcase {
+            upcase_checksum = upcase_checksum
+                .rotate_right(1)
+                .wrapping_add(u32::from(*byte));
+        }
+        root[36..40].copy_from_slice(&upcase_checksum.to_le_bytes());
+        root[56..64].copy_from_slice(&(upcase.len() as u64).to_le_bytes());
+        root[64] = 0x85;
+        root[65] = 2;
+        root[68..70].copy_from_slice(&0x20_u16.to_le_bytes());
+        root[96] = 0xc0;
+        root[97] = 3;
+        root[99] = 11;
+        root[104..112].copy_from_slice(&512_u64.to_le_bytes());
+        root[116..120].copy_from_slice(&5_u32.to_le_bytes());
+        root[120..128].copy_from_slice(&512_u64.to_le_bytes());
+        root[128] = 0xc1;
+        let name: Vec<u16> = "RECOVER.BIN".encode_utf16().collect();
+        let mut name_hash = 0_u16;
+        for (index, unit) in name.iter().enumerate() {
+            root[130 + index * 2..132 + index * 2].copy_from_slice(&unit.to_le_bytes());
+            for byte in unit.to_le_bytes() {
+                name_hash = name_hash.rotate_right(1).wrapping_add(u16::from(byte));
+            }
+        }
+        root[100..102].copy_from_slice(&name_hash.to_le_bytes());
+        let set = root[64..160]
+            .chunks_exact(32)
+            .map(|record| record.try_into().unwrap())
+            .collect::<Vec<[u8; 32]>>();
+        let mut entry_checksum = 0_u16;
+        for (record_index, record) in set.iter().enumerate() {
+            for (byte_index, byte) in record.iter().enumerate() {
+                if record_index != 0 || !matches!(byte_index, 2 | 3) {
+                    entry_checksum = entry_checksum
+                        .rotate_right(1)
+                        .wrapping_add(u16::from(*byte));
+                }
+            }
+        }
+        root[66..68].copy_from_slice(&entry_checksum.to_le_bytes());
+        for record in root[64..160].chunks_exact_mut(32) {
+            record[0] &= 0x7f;
+        }
+        image[heap..heap + SECTOR].copy_from_slice(&root);
+        image[heap + SECTOR..heap + SECTOR + upcase.len()].copy_from_slice(&upcase);
+        image[heap + 2 * SECTOR] = 0b0000_0111;
+        let expected = vec![0x5a; SECTOR];
+        image[heap + 3 * SECTOR..heap + 4 * SECTOR].copy_from_slice(&expected);
+        (MemorySource(image), expected)
+    }
 
     fn fat32_deleted_fixture() -> (MemorySource, Vec<u8>) {
         const SECTOR: usize = 512;
@@ -1141,6 +1555,103 @@ mod tests {
             manifest["selected_records"][0]["storage"],
             "contiguous_assumed"
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn exfat_export_builds_a_verifiable_package_and_labels_its_assumption() {
+        let (source, expected) = exfat_deleted_fixture();
+        let volume = daemoncore_ntfs_core::exfat::Volume::open(&source, 0, source.len()).unwrap();
+        let entry = volume
+            .read_tree_with_deleted(&source)
+            .unwrap()
+            .into_iter()
+            .find(|tree_entry| tree_entry.entry.deleted)
+            .unwrap();
+        let digest = hash_source(&source, &AtomicBool::new(false), |_| {})
+            .unwrap()
+            .unwrap();
+        let root = recovery_test_directory("exfat-export");
+        let summary = export_exfat_to(
+            &source,
+            0,
+            &[entry.clone()],
+            &root,
+            SourceIdentity {
+                case_id: 1,
+                evidence_record_id: 1,
+                scan_session_id: 1,
+                id: 1,
+                path: "controlled-exfat.img",
+                sha256: &digest,
+            },
+            &AtomicBool::new(false),
+            |_, _| {},
+        )
+        .unwrap();
+        assert_eq!(summary.exported, 1);
+        assert_eq!(summary.failed, 0);
+        let package = PathBuf::from(&summary.directory);
+        let verification = crate::recovery_verify::verify_package(&package).unwrap();
+        assert_eq!(verification.state, "complete");
+        assert_eq!(verification.exported, 1);
+        assert_eq!(
+            fs::read(package.join(safe_name(entry.entry.source_offset, &entry.entry.name,)))
+                .unwrap(),
+            expected
+        );
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(package.join("manifest.json")).unwrap()).unwrap();
+        assert_eq!(manifest["volume"]["filesystem"], "exFAT");
+        assert_eq!(
+            manifest["volume"]["deleted_file_layout"],
+            "contiguous_declared_by_entry_set_and_free_in_allocation_bitmap"
+        );
+        assert_eq!(
+            manifest["selected_records"][0]["allocation"],
+            "free_in_current_bitmap"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn exfat_export_records_a_candidate_that_became_allocated_as_failed() {
+        let (mut source, _) = exfat_deleted_fixture();
+        let volume = daemoncore_ntfs_core::exfat::Volume::open(&source, 0, source.len()).unwrap();
+        let entry = volume
+            .read_tree_with_deleted(&source)
+            .unwrap()
+            .into_iter()
+            .find(|tree_entry| tree_entry.entry.deleted)
+            .unwrap();
+        source.0[40 * 512 + 2 * 512] |= 1 << 3;
+        let digest = hash_source(&source, &AtomicBool::new(false), |_| {})
+            .unwrap()
+            .unwrap();
+        let root = recovery_test_directory("exfat-allocated-export");
+        let summary = export_exfat_to(
+            &source,
+            0,
+            &[entry],
+            &root,
+            SourceIdentity {
+                case_id: 1,
+                evidence_record_id: 1,
+                scan_session_id: 1,
+                id: 1,
+                path: "changed-exfat.img",
+                sha256: &digest,
+            },
+            &AtomicBool::new(false),
+            |_, _| {},
+        )
+        .unwrap();
+        assert_eq!(summary.exported, 0);
+        assert_eq!(summary.failed, 1);
+        let verification =
+            crate::recovery_verify::verify_package(&PathBuf::from(&summary.directory)).unwrap();
+        assert_eq!(verification.state, "partial");
+        assert_eq!(verification.failed, 1);
         fs::remove_dir_all(root).unwrap();
     }
 

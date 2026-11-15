@@ -230,6 +230,240 @@ pub fn start_exfat_scan(offset: u64, app: tauri::AppHandle, state: State<AppStat
 }
 
 #[tauri::command]
+pub async fn export_exfat_deleted(
+    source_id: u64,
+    scan_session_id: i64,
+    entry_offsets: Vec<u64>,
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<bool> {
+    if entry_offsets.is_empty() || entry_offsets.len() > 1000 {
+        return Err("Select between 1 and 1,000 deleted exFAT files.".into());
+    }
+    let scan = state
+        .exfat_scan
+        .lock()
+        .map_err(err)?
+        .as_ref()
+        .ok_or("Run an exFAT directory scan first.")?
+        .clone();
+    if scan.source_id != source_id || scan.persistent_id != scan_session_id {
+        return Err("The exFAT selection does not belong to the current scan.".into());
+    }
+    let (image, evidence_record_id) = {
+        let source = state.source.lock().map_err(err)?;
+        let evidence = source.as_ref().ok_or("Open the source image first.")?;
+        if evidence.integrity_compromised
+            || evidence.info.id != source_id
+            || evidence.info.case_id != scan.case_id
+            || evidence.info.sha256.as_deref() != Some(scan.source_sha256.as_str())
+        {
+            return Err("The source no longer matches the verified exFAT scan. Reopen and rehash it before exporting.".into());
+        }
+        (evidence.image.clone(), evidence.info.evidence_record_id)
+    };
+    let offsets = entry_offsets
+        .iter()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>();
+    if offsets.len() != entry_offsets.len() {
+        return Err("An exFAT directory record was selected more than once.".into());
+    }
+    let mut selected = Vec::with_capacity(offsets.len());
+    let mut required = 0_u64;
+    for entry in &scan.entries {
+        if !offsets.contains(&entry.entry.source_offset) {
+            continue;
+        }
+        if !entry.entry.deleted
+            || entry.entry.attributes & 0x10 != 0
+            || entry.entry.data_length == 0
+        {
+            return Err(format!(
+                "{} is not a nonempty deleted exFAT file record.",
+                entry.entry.name
+            ));
+        }
+        required = required
+            .checked_add(entry.entry.data_length)
+            .ok_or("exFAT recovery size overflow.")?;
+        selected.push(entry.clone());
+    }
+    if selected.len() != offsets.len() {
+        return Err("A selected exFAT record is not part of this scan.".into());
+    }
+    if state.job.lock().map_err(err)?.state == "running" {
+        return Err("Wait for the active operation before exporting.".into());
+    }
+    let folder = tauri::async_runtime::spawn_blocking(|| {
+        rfd::FileDialog::new()
+            .set_title("Recover exFAT files to a different physical disk")
+            .pick_folder()
+    })
+    .await
+    .map_err(err)?;
+    let Some(folder) = folder else {
+        return Ok(false);
+    };
+    let destination = tauri::async_runtime::spawn_blocking({
+        let image_path = image.path.clone();
+        move || crate::destination::check_destination(&image_path, &folder, required)
+    })
+    .await
+    .map_err(err)?
+    .map_err(err)?;
+    let source_path = image.path.to_string_lossy().into_owned();
+    let current = state.source.lock().map_err(err)?;
+    if current.as_ref().is_none_or(|current| {
+        current.info.id != source_id
+            || current.integrity_compromised
+            || current.info.sha256.as_deref() != Some(scan.source_sha256.as_str())
+    }) {
+        return Err("The evidence source changed while selecting the recovery destination.".into());
+    }
+    image.verify_unchanged().map_err(err)?;
+    let mut job = state.job.lock().map_err(err)?;
+    if job.state == "running" {
+        return Err("Another operation started while selecting the destination.".into());
+    }
+    let selected_audit = selected.iter().map(|item| serde_json::json!({
+        "source_offset": item.entry.source_offset,
+        "raw_entry_set_sha256": format!("{:x}", Sha256::digest(item.entry.raw_entries.iter().flatten().copied().collect::<Vec<_>>())),
+        "name": item.entry.name,
+        "size": item.entry.data_length,
+        "first_cluster": item.entry.first_cluster,
+        "recovery_assumption": "contiguous_declared_and_currently_free_clusters",
+    })).collect::<Vec<_>>();
+    {
+        let db = state.db.lock().map_err(err)?;
+        if crate::require_audited_active_case(&db)? != scan.case_id {
+            return Err(
+                "Select the audited case recorded by this exFAT scan before exporting.".into(),
+            );
+        }
+        audit(
+            &db,
+            "recovery_export_started",
+            &serde_json::json!({
+                "filesystem": "exFAT",
+                "case_id": scan.case_id,
+                "evidence_record_id": evidence_record_id,
+                "scan_session_id": scan.persistent_id,
+                "source_id": source_id,
+                "source_path": source_path,
+                "source_sha256": scan.source_sha256,
+                "volume_offset": scan.volume_offset,
+                "destination": destination,
+                "selected": selected_audit,
+            })
+            .to_string(),
+        )?;
+    }
+    state.cancel.store(false, Ordering::SeqCst);
+    *job = Job {
+        state: "running".into(),
+        kind: "exfat_recovery_export".into(),
+        message: Some("Revalidating deleted entry sets and allocation bitmap, streaming file data, then rechecking source and output hashes".into()),
+        ..Job::default()
+    };
+    drop(job);
+    drop(current);
+    std::thread::spawn(move || {
+        let state = app.state::<AppState>();
+        let result = crate::guarded(|| {
+            crate::recovery::export_exfat_to(
+                image.as_ref(),
+                scan.volume_offset,
+                &selected,
+                &destination,
+                crate::recovery::SourceIdentity {
+                    case_id: scan.case_id,
+                    evidence_record_id,
+                    scan_session_id: scan.persistent_id,
+                    id: source_id,
+                    path: &source_path,
+                    sha256: &scan.source_sha256,
+                },
+                &state.cancel,
+                |processed, total| {
+                    if let Ok(mut job) = state.job.lock() {
+                        job.processed = processed;
+                        job.total = total;
+                    }
+                },
+            )
+        })
+        .and_then(|summary| {
+            image.verify_unchanged().map_err(err)?;
+            Ok(summary)
+        });
+        if let Err(error) = &result {
+            if error.contains("Source SHA-256 changed") || error.contains("Evidence image changed")
+            {
+                if let Ok(mut source) = state.source.lock() {
+                    if let Some(source) =
+                        source.as_mut().filter(|source| source.info.id == source_id)
+                    {
+                        source.info.sha256 = None;
+                        source.integrity_compromised = true;
+                    }
+                }
+            }
+        }
+        if let Ok(mut job) = state.job.lock() {
+            match result {
+                Ok(summary) => {
+                    job.state = if summary.cancelled {
+                        "cancelled"
+                    } else if summary.failed > 0 {
+                        "failed"
+                    } else {
+                        "completed"
+                    }
+                    .into();
+                    job.discovered = summary.exported;
+                    job.output_directory = Some(summary.directory.clone());
+                    job.message = Some(format!("{} exFAT files were exported and destination-hash verified; {} failed. Contiguous allocation was accepted only from the deleted entry set and a free current allocation bitmap. Original content integrity was not established.", summary.exported, summary.failed));
+                    if summary.failed > 0 {
+                        job.error = Some("Some exFAT candidates could not be safely exported; see inventory.jsonl for per-file reasons.".into());
+                    }
+                }
+                Err(error) => {
+                    job.state = if state.cancel.load(Ordering::SeqCst) {
+                        "cancelled"
+                    } else {
+                        "failed"
+                    }
+                    .into();
+                    job.error = Some(error);
+                }
+            }
+            if let Ok(db) = state.db.lock() {
+                if let Err(error) = audit(
+                    &db,
+                    "recovery_export_finished",
+                    &serde_json::json!({
+                        "filesystem": "exFAT",
+                        "case_id": scan.case_id,
+                        "evidence_record_id": evidence_record_id,
+                        "scan_session_id": scan.persistent_id,
+                        "source_id": source_id,
+                        "source_sha256": scan.source_sha256,
+                        "selected": selected_audit,
+                        "job": &*job,
+                    })
+                    .to_string(),
+                ) {
+                    job.state = "failed".into();
+                    job.error = Some(error.to_string());
+                }
+            }
+        };
+    });
+    Ok(true)
+}
+
+#[tauri::command]
 pub fn exfat_scan_summary(state: State<AppState>) -> Result<Option<ExfatScanSummary>> {
     let cache = state.exfat_scan.lock().map_err(err)?;
     Ok(cache.as_ref().map(|scan| ExfatScanSummary {

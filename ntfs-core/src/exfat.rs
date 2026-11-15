@@ -52,6 +52,16 @@ pub struct DeletedFileStream {
     cluster_size: u64,
 }
 
+impl DeletedFileStream {
+    pub fn first_cluster(&self) -> u32 {
+        self.first_cluster
+    }
+
+    pub fn data_length(&self) -> u64 {
+        self.data_length
+    }
+}
+
 #[derive(Clone, Debug)]
 struct Bitmap {
     clusters: Vec<u32>,
@@ -284,6 +294,14 @@ impl Volume {
         self.bytes_per_sector
     }
 
+    pub fn cluster_size(&self) -> u64 {
+        self.cluster_size
+    }
+
+    pub fn volume_size(&self) -> u64 {
+        self.size
+    }
+
     /// Validate a deleted file's contiguous allocation before any recovery
     /// reads. Chained deleted files are refused because their former FAT chain
     /// cannot be trusted after deletion.
@@ -294,7 +312,7 @@ impl Volume {
     ) -> Result<DeletedFileStream> {
         self.prepare_deleted_files(source, &[entry])?
             .pop()
-            .ok_or_else(|| "No deleted exFAT file was prepared.".into())
+            .ok_or_else(|| "No deleted exFAT file was prepared.".to_string())?
     }
 
     /// Validate a selected set against one fresh volume traversal. This avoids
@@ -303,7 +321,7 @@ impl Volume {
         &self,
         source: &dyn BlockSource,
         entries: &[&DirectoryEntry],
-    ) -> Result<Vec<DeletedFileStream>> {
+    ) -> Result<Vec<Result<DeletedFileStream>>> {
         let current_entries = self
             .read_tree_with_deleted(source)?
             .into_iter()
@@ -322,7 +340,7 @@ impl Volume {
                 if current != *entry {
                     return Err("Selected exFAT entry changed since it was inventoried.".into());
                 }
-                self.prepare_deleted_file_entry(source, entry)
+                Ok(self.prepare_deleted_file_entry(source, entry))
             })
             .collect()
     }
@@ -1636,7 +1654,7 @@ mod tests {
         let entries = volume.read_tree_with_deleted(&source).unwrap();
         let entry = &entries[1].entry;
         let streams = volume.prepare_deleted_files(&source, &[entry]).unwrap();
-        let stream = &streams[0];
+        let stream = streams[0].as_ref().unwrap();
         let mut output = vec![0; 700];
         volume
             .read_deleted_file_range(&source, &stream, 0, &mut output)

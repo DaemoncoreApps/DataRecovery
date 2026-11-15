@@ -1173,7 +1173,7 @@ pub(crate) fn verify_package(directory: &Path) -> Result<RecoveryExportVerificat
     {
         return Err("Unsupported or inconsistent recovery manifest metadata.".into());
     }
-    let fat32_manifest = match manifest
+    let (fat32_manifest, exfat_manifest) = match manifest
         .volume
         .get("filesystem")
         .and_then(|value| value.as_str())
@@ -1204,10 +1204,42 @@ pub(crate) fn verify_package(directory: &Path) -> Result<RecoveryExportVerificat
             {
                 return Err("FAT32 recovery manifest has invalid geometry or omits its recovery assumptions.".into());
             }
-            true
+            (true, false)
+        }
+        Some("exFAT") => {
+            let volume_offset = manifest.volume["volume_offset"].as_u64();
+            let volume_size = manifest.volume["volume_size"].as_u64();
+            let cluster_size = manifest.volume["cluster_size"].as_u64();
+            let cluster_count = manifest.volume["cluster_count"].as_u64();
+            let root_cluster = manifest.volume["root_cluster"].as_u64();
+            if volume_offset.zip(volume_size).is_none_or(|(offset, size)| {
+                size < 24 * 512
+                    || offset
+                        .checked_add(size)
+                        .is_none_or(|end| end > manifest.source.size)
+            }) || cluster_size.is_none_or(|size| {
+                !(512..=32 * 1024 * 1024).contains(&size) || !size.is_power_of_two()
+            }) || cluster_count.is_none_or(|count| count == 0 || count > 0xffff_fff5)
+                || cluster_count.zip(cluster_size).zip(volume_size).is_none_or(
+                    |((count, cluster), size)| {
+                        count.checked_mul(cluster).is_none_or(|bytes| bytes > size)
+                            || size % cluster != 0
+                    },
+                )
+                || root_cluster
+                    .zip(cluster_count)
+                    .is_none_or(|(root, count)| !(2..=count.saturating_add(1)).contains(&root))
+                || manifest.volume["deleted_file_layout"]
+                    != "contiguous_declared_by_entry_set_and_free_in_allocation_bitmap"
+                || manifest.volume["selected_cluster_overlap_check"]
+                    != "overlapping_selected_ranges_are_not_exported"
+            {
+                return Err("exFAT recovery manifest has invalid geometry or omits its recovery assumptions.".into());
+            }
+            (false, true)
         }
         Some(_) => return Err("Recovery manifest names an unsupported filesystem.".into()),
-        None => false,
+        None => (false, false),
     };
 
     let canonical = directory.canonicalize().map_err(err)?;
@@ -1290,6 +1322,23 @@ pub(crate) fn verify_package(directory: &Path) -> Result<RecoveryExportVerificat
     {
         return Err(
             "FAT32 recovery manifest contains unsupported path or allocation claims.".into(),
+        );
+    }
+    if exfat_manifest
+        && manifest.selected_records.iter().any(|record| {
+            record.parent_record != 5
+                || record.parent_sequence.is_some()
+                || record.parent_path.is_some()
+                || !record.filename_references.is_empty()
+                || record.path_restored != Some(false)
+                || record.storage != "contiguous_declared"
+                || record.allocation != "free_in_current_bitmap"
+                || record.output_name.as_deref()
+                    != Some(safe_name(record.record, &record.name).as_str())
+        })
+    {
+        return Err(
+            "exFAT recovery manifest contains unsupported path or allocation claims.".into(),
         );
     }
     let mut seen = BTreeSet::new();

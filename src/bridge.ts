@@ -15,6 +15,7 @@ export interface Job {
     | "fat32_scan"
     | "exfat_scan"
     | "fat32_recovery_export"
+    | "exfat_recovery_export"
     | "carving_scan"
     | "carving_export"
     | "recovery_export"

@@ -1664,6 +1664,7 @@ fn main() {
             recovery_commands::start_ntfs_scan,
             fat32_commands::start_fat32_scan,
             exfat_commands::start_exfat_scan,
+            exfat_commands::export_exfat_deleted,
             exfat_commands::exfat_scan_summary,
             exfat_commands::exfat_scan_results,
             exfat_commands::list_case_exfat_scan_sessions,

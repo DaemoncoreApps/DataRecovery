@@ -18,6 +18,8 @@ export function JobPanel({ job, cancel }: Props) {
             ? "Carved file export & verification"
         : job.kind === "fat32_recovery_export"
           ? "FAT32 recovery export"
+        : job.kind === "exfat_recovery_export"
+          ? "exFAT recovery export"
       : job.kind === "recovery_export"
         ? "Recovery export & verification"
         : job.kind === "evidence_reopen"
@@ -47,6 +49,7 @@ export function JobPanel({ job, cancel }: Props) {
           ? "Evidence database read · report written to destination"
           : job.kind === "recovery_export" ||
               job.kind === "fat32_recovery_export" ||
+              job.kind === "exfat_recovery_export" ||
               job.kind === "carving_export"
             ? "Source image read-only · recovered files written to destination"
             : "Source image read-only";
@@ -100,6 +103,7 @@ export function JobPanel({ job, cancel }: Props) {
           <span>
             {job.kind === "recovery_export" ||
             job.kind === "fat32_recovery_export" ||
+            job.kind === "exfat_recovery_export" ||
             job.kind === "carving_export"
               ? "READ + VERIFY"
               : job.kind === "disk_acquisition"
