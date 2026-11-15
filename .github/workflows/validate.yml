@@ -83,7 +83,7 @@ jobs:
 
   windows-reference-validation:
     runs-on: windows-2025
-    needs: [fat32-deleted-recovery-validation, raid5-reference-validation]
+    needs: [fat32-deleted-recovery-validation, exfat-deleted-recovery-validation, raid5-reference-validation]
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
@@ -109,6 +109,16 @@ jobs:
             .ci-fixtures/daemoncore-raid5-reference/SHA256SUMS
           enableCrossOsArchive: true
           fail-on-cache-miss: true
+      - name: Restore independently formatted deleted exFAT fixture
+        uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57
+        with:
+          key: daemoncore-exfat-deleted-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            .ci-fixtures/exfat-deleted-reference/deleted-exfat.img
+            .ci-fixtures/exfat-deleted-reference/deleted-exfat.img.sha256
+            .ci-fixtures/exfat-deleted-reference/RECOVER.BIN.expected
+          enableCrossOsArchive: true
+          fail-on-cache-miss: true
       - name: Verify transferred reference fixture hashes
         shell: pwsh
         run: |
@@ -130,6 +140,15 @@ jobs:
             if ($actual -ne $digest) { throw "RAID 5 reference fixture hash mismatch: $name" }
           }
           "DAEMONCORE_RAID5_REFERENCE_DIR=$raidDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+          $exfatDir = Join-Path $env:GITHUB_WORKSPACE ".ci-fixtures/exfat-deleted-reference"
+          $exfatImage = Join-Path $exfatDir "deleted-exfat.img"
+          $exfatExpected = Join-Path $exfatDir "RECOVER.BIN.expected"
+          $exfatDigest = (Get-Content (Join-Path $exfatDir "deleted-exfat.img.sha256") -TotalCount 1).Trim()
+          if ((Get-FileHash $exfatImage -Algorithm SHA256).Hash.ToLowerInvariant() -ne $exfatDigest) { throw "Transferred exFAT image digest mismatch" }
+          if ((Get-FileHash $exfatExpected -Algorithm SHA256).Hash.ToLowerInvariant() -ne "6fc179cfd193754e6109ad043f56d146c7e7d7c3623ffceae318266286f58388") { throw "exFAT expected content digest mismatch" }
+          "DAEMONCORE_EXFAT_DELETED_IMAGE=$exfatImage" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "DAEMONCORE_EXFAT_DELETED_EXPECTED=$exfatExpected" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Install Rust validation components
         run: rustup component add rustfmt clippy
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
@@ -152,6 +171,11 @@ jobs:
           DAEMONCORE_FAT32_DELETED_IMAGE: ${{ github.workspace }}\.ci-fixtures\fat32-deleted-reference\deleted-fat32.img
           DAEMONCORE_FAT32_DELETED_EXPECTED: ${{ github.workspace }}\.ci-fixtures\fat32-deleted-reference\RECOVER.BIN.expected
         run: cargo test --manifest-path src-tauri/Cargo.toml --offline exports_deleted_file_from_independent_fat32_image_against_sleuthkit_bytes -- --ignored --nocapture
+      - name: Test deleted exFAT export against independently retained bytes
+        env:
+          DAEMONCORE_EXFAT_DELETED_IMAGE: ${{ github.workspace }}\.ci-fixtures\exfat-deleted-reference\deleted-exfat.img
+          DAEMONCORE_EXFAT_DELETED_EXPECTED: ${{ github.workspace }}\.ci-fixtures\exfat-deleted-reference\RECOVER.BIN.expected
+        run: cargo test --manifest-path src-tauri/Cargo.toml --offline exports_deleted_file_from_independent_exfat_image_against_original_bytes -- --ignored --nocapture
 
   raid5-reference-validation:
     runs-on: ubuntu-24.04
@@ -218,6 +242,29 @@ jobs:
             .ci-fixtures/fat32-deleted-reference/deleted-fat32.img
             .ci-fixtures/fat32-deleted-reference/deleted-fat32.img.sha256
             .ci-fixtures/fat32-deleted-reference/RECOVER.BIN.expected
+          enableCrossOsArchive: true
+
+  exfat-deleted-recovery-validation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - name: Install exFAT formatter and checker
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes exfatprogs
+          mkfs.exfat --help
+          fsck.exfat --version
+      - name: Format, mount, write, and delete the independent fixture
+        run: bash ./src-tauri/tests/fixtures/make-exfat-deleted-fixture.sh "$GITHUB_WORKSPACE/.ci-fixtures/exfat-deleted-reference"
+      - name: Save independent exFAT fixture for the Windows job
+        uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57
+        with:
+          key: daemoncore-exfat-deleted-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            .ci-fixtures/exfat-deleted-reference/deleted-exfat.img
+            .ci-fixtures/exfat-deleted-reference/deleted-exfat.img.sha256
+            .ci-fixtures/exfat-deleted-reference/RECOVER.BIN.expected
           enableCrossOsArchive: true
 
   exfat-reference-validation:

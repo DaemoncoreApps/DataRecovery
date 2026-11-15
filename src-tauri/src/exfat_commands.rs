@@ -16,6 +16,47 @@ pub(super) struct ExfatScanCache {
     entries: Vec<TreeEntry>,
 }
 
+fn validate_export_selection(
+    entries: &[TreeEntry],
+    entry_offsets: &[u64],
+) -> Result<(Vec<TreeEntry>, u64)> {
+    if entry_offsets.is_empty() || entry_offsets.len() > 1000 {
+        return Err("Select between 1 and 1,000 deleted exFAT files.".into());
+    }
+    let offsets = entry_offsets
+        .iter()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>();
+    if offsets.len() != entry_offsets.len() {
+        return Err("An exFAT directory record was selected more than once.".into());
+    }
+    let mut selected = Vec::with_capacity(offsets.len());
+    let mut required = 0_u64;
+    for entry in entries {
+        if !offsets.contains(&entry.entry.source_offset) {
+            continue;
+        }
+        if !entry.entry.deleted
+            || entry.entry.attributes & 0x10 != 0
+            || entry.entry.attributes & 0x08 != 0
+            || entry.entry.data_length == 0
+        {
+            return Err(format!(
+                "{} is not a nonempty deleted exFAT file record.",
+                entry.entry.name
+            ));
+        }
+        required = required
+            .checked_add(entry.entry.data_length)
+            .ok_or("exFAT recovery size overflow.")?;
+        selected.push(entry.clone());
+    }
+    if selected.len() != offsets.len() {
+        return Err("A selected exFAT record is not part of this scan.".into());
+    }
+    Ok((selected, required))
+}
+
 #[derive(Serialize)]
 pub struct ExfatScanSummary {
     pub scan_session_id: i64,
@@ -237,9 +278,6 @@ pub async fn export_exfat_deleted(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<bool> {
-    if entry_offsets.is_empty() || entry_offsets.len() > 1000 {
-        return Err("Select between 1 and 1,000 deleted exFAT files.".into());
-    }
     let scan = state
         .exfat_scan
         .lock()
@@ -262,36 +300,7 @@ pub async fn export_exfat_deleted(
         }
         (evidence.image.clone(), evidence.info.evidence_record_id)
     };
-    let offsets = entry_offsets
-        .iter()
-        .copied()
-        .collect::<std::collections::BTreeSet<_>>();
-    if offsets.len() != entry_offsets.len() {
-        return Err("An exFAT directory record was selected more than once.".into());
-    }
-    let mut selected = Vec::with_capacity(offsets.len());
-    let mut required = 0_u64;
-    for entry in &scan.entries {
-        if !offsets.contains(&entry.entry.source_offset) {
-            continue;
-        }
-        if !entry.entry.deleted
-            || entry.entry.attributes & 0x10 != 0
-            || entry.entry.data_length == 0
-        {
-            return Err(format!(
-                "{} is not a nonempty deleted exFAT file record.",
-                entry.entry.name
-            ));
-        }
-        required = required
-            .checked_add(entry.entry.data_length)
-            .ok_or("exFAT recovery size overflow.")?;
-        selected.push(entry.clone());
-    }
-    if selected.len() != offsets.len() {
-        return Err("A selected exFAT record is not part of this scan.".into());
-    }
+    let (selected, required) = validate_export_selection(&scan.entries, &entry_offsets)?;
     if state.job.lock().map_err(err)?.state == "running" {
         return Err("Wait for the active operation before exporting.".into());
     }
@@ -712,6 +721,77 @@ mod tests {
     use super::*;
     use daemoncore_ntfs_core::exfat::DirectoryEntry;
     use std::path::PathBuf;
+
+    fn selection_entry(
+        source_offset: u64,
+        deleted: bool,
+        attributes: u16,
+        data_length: u64,
+    ) -> TreeEntry {
+        TreeEntry {
+            path: vec!["ITEM.BIN".into()],
+            entry: DirectoryEntry {
+                source_offset,
+                raw_entries: vec![[0; 32]; 3],
+                name: "ITEM.BIN".into(),
+                deleted,
+                attributes,
+                first_cluster: 2,
+                valid_data_length: data_length,
+                data_length,
+                no_fat_chain: true,
+                name_hash: 0,
+            },
+        }
+    }
+
+    #[test]
+    fn export_selection_accepts_only_unique_nonempty_deleted_files_from_scan() {
+        let entries = vec![
+            selection_entry(10, true, 0x20, 512),
+            selection_entry(20, false, 0x20, 512),
+            selection_entry(30, true, 0x10, 512),
+            selection_entry(40, true, 0x08, 512),
+            selection_entry(50, true, 0x20, 0),
+        ];
+
+        let (selected, required) = validate_export_selection(&entries, &[10]).unwrap();
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].entry.source_offset, 10);
+        assert_eq!(required, 512);
+        assert!(validate_export_selection(&entries, &[])
+            .unwrap_err()
+            .contains("Select between"));
+        assert!(validate_export_selection(&entries, &[10, 10])
+            .unwrap_err()
+            .contains("more than once"));
+        assert!(validate_export_selection(&entries, &[999])
+            .unwrap_err()
+            .contains("not part of this scan"));
+        assert!(validate_export_selection(&entries, &[20])
+            .unwrap_err()
+            .contains("not a nonempty deleted"));
+        assert!(validate_export_selection(&entries, &[30])
+            .unwrap_err()
+            .contains("not a nonempty deleted"));
+        assert!(validate_export_selection(&entries, &[40])
+            .unwrap_err()
+            .contains("not a nonempty deleted"));
+        assert!(validate_export_selection(&entries, &[50])
+            .unwrap_err()
+            .contains("not a nonempty deleted"));
+    }
+
+    #[test]
+    fn export_selection_rejects_total_size_overflow() {
+        let entries = vec![
+            selection_entry(10, true, 0x20, u64::MAX),
+            selection_entry(20, true, 0x20, 1),
+        ];
+        assert!(validate_export_selection(&entries, &[10, 20])
+            .unwrap_err()
+            .contains("size overflow"));
+    }
 
     fn fixture_db() -> rusqlite::Connection {
         let db = crate::database(PathBuf::from(":memory:")).unwrap();

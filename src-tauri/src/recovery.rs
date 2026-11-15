@@ -1734,6 +1734,68 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires an independently formatted, mounted, and deleted exFAT image from CI"]
+    fn exports_deleted_file_from_independent_exfat_image_against_original_bytes() {
+        let image_path = std::env::var_os("DAEMONCORE_EXFAT_DELETED_IMAGE")
+            .expect("set DAEMONCORE_EXFAT_DELETED_IMAGE to the independent exFAT image");
+        let expected_path = std::env::var_os("DAEMONCORE_EXFAT_DELETED_EXPECTED")
+            .expect("set DAEMONCORE_EXFAT_DELETED_EXPECTED to the retained original bytes");
+        let image_path = PathBuf::from(image_path);
+        let expected = fs::read(expected_path).expect("read retained exFAT original bytes");
+        assert_eq!(expected.len(), 65_536);
+        assert_eq!(
+            format!("{:x}", Sha256::digest(&expected)),
+            "6fc179cfd193754e6109ad043f56d146c7e7d7c3623ffceae318266286f58388"
+        );
+
+        let source = crate::storage::Image::open(&image_path).expect("open independent image");
+        let volume = daemoncore_ntfs_core::exfat::Volume::open(&source, 0, source.len()).unwrap();
+        let entry = volume
+            .read_tree_with_deleted(&source)
+            .unwrap()
+            .into_iter()
+            .find(|tree_entry| tree_entry.entry.deleted && tree_entry.entry.name == "RECOVER.BIN")
+            .expect("deleted exFAT entry found in independently formatted fixture");
+        assert!(entry.entry.no_fat_chain);
+        assert_eq!(entry.entry.data_length as usize, expected.len());
+
+        let digest = hash_source(&source, &AtomicBool::new(false), |_| {})
+            .unwrap()
+            .expect("hash complete independent exFAT image");
+        let source_path = image_path.to_string_lossy().into_owned();
+        let root = recovery_test_directory("exfat-independent-export");
+        let summary = export_exfat_to(
+            &source,
+            0,
+            &[entry.clone()],
+            &root,
+            SourceIdentity {
+                case_id: 1,
+                evidence_record_id: 1,
+                scan_session_id: 1,
+                id: 1,
+                path: &source_path,
+                sha256: &digest,
+            },
+            &AtomicBool::new(false),
+            |_, _| {},
+        )
+        .expect("export independent deleted exFAT file");
+        assert_eq!(summary.exported, 1);
+        assert_eq!(summary.failed, 0);
+        let package = PathBuf::from(&summary.directory);
+        assert_eq!(
+            fs::read(package.join(safe_name(entry.entry.source_offset, &entry.entry.name,)))
+                .unwrap(),
+            expected
+        );
+        let verification = crate::recovery_verify::verify_package(&package).unwrap();
+        assert_eq!(verification.state, "complete");
+        assert_eq!(verification.exported, 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     #[ignore = "requires an independently formatted and deleted FAT32 image cross-checked with Sleuth Kit"]
     fn exports_deleted_file_from_independent_fat32_image_against_sleuthkit_bytes() {
         let image_path = std::env::var_os("DAEMONCORE_FAT32_DELETED_IMAGE")
