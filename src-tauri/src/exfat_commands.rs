@@ -257,13 +257,23 @@ pub fn start_exfat_scan(offset: u64, app: tauri::AppHandle, state: State<AppStat
             }
         }
         if job.state != "completed" {
-            if let Ok(db) = state.db.lock() {
-                let _ = audit(
+            let audit_result = state.db.lock().map_err(err).and_then(|db| {
+                audit(
                     &db,
                     "exfat_scan_finished",
                     &serde_json::json!({"case_id":case_id,"source_id":source_id,"job":&*job})
                         .to_string(),
-                );
+                )
+            });
+            if let Err(audit_error) = audit_result {
+                let operation_message = job
+                    .error
+                    .take()
+                    .unwrap_or_else(|| format!("exFAT scan ended as {}.", job.state));
+                job.error = Some(crate::include_audit_failure(
+                    operation_message,
+                    Err(audit_error),
+                ));
             }
         }
     });

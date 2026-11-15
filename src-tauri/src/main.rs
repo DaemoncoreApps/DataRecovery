@@ -106,6 +106,14 @@ fn guarded<T>(operation: impl FnOnce() -> Result<T>) -> Result<T> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(operation))
         .unwrap_or_else(|_| Err("The native operation failed unexpectedly. Partial outputs must not be treated as verified.".into()))
 }
+fn include_audit_failure(operation_message: String, audit_result: Result<()>) -> String {
+    match audit_result {
+        Ok(()) => operation_message,
+        Err(audit_error) => format!(
+            "{operation_message} The outcome could not be recorded in the audit log: {audit_error}"
+        ),
+    }
+}
 fn detect(bytes: &[u8]) -> String {
     match bytes.get(3..11) {
         Some(b"NTFS    ") => "NTFS volume (metadata scan available)",
@@ -343,30 +351,33 @@ fn start_file_carving(app: tauri::AppHandle, state: State<AppState>) -> Result<(
             }
             Ok(None) => {
                 let processed = state.job.lock().map(|job| job.processed).unwrap_or(0);
-                if let Ok(db) = state.db.lock() {
-                    let _ = audit(
+                let audit_result = state.db.lock().map_err(err).and_then(|db| {
+                    audit(
                         &db,
                         "carve_scan_cancelled",
                         &serde_json::json!({"case_id":case_id,"evidence_record_id":evidence_record_id,"source_id":source_id,"processed":processed}).to_string(),
-                    );
-                }
+                    )
+                });
                 if let Ok(mut job) = state.job.lock() {
                     job.state = "cancelled".into();
                     job.message =
                         Some("Carving was cancelled. No partial candidate set was saved.".into());
+                    job.error = audit_result.err().map(|audit_error| {
+                        include_audit_failure("Carving was cancelled.".into(), Err(audit_error))
+                    });
                 }
             }
             Err(error) => {
-                if let Ok(db) = state.db.lock() {
-                    let _ = audit(
+                let audit_result = state.db.lock().map_err(err).and_then(|db| {
+                    audit(
                         &db,
                         "carve_scan_failed",
                         &serde_json::json!({"case_id":case_id,"evidence_record_id":evidence_record_id,"source_id":source_id,"error":error}).to_string(),
-                    );
-                }
+                    )
+                });
                 if let Ok(mut job) = state.job.lock() {
                     job.state = "failed".into();
-                    job.error = Some(error);
+                    job.error = Some(include_audit_failure(error, audit_result));
                 }
             }
         }
@@ -636,9 +647,9 @@ async fn export_carved_selected(
                 }
             }
             Err(error) => {
-                if let Ok(db) = state.db.lock() {
-                    let _ = audit(&db, "carve_export_failed", &serde_json::json!({"case_id":session.case_id,"evidence_record_id":session.evidence_record_id,"scan_session_id":session.persistent_id,"source_id":source_id,"error":error}).to_string());
-                }
+                let audit_result = state.db.lock().map_err(err).and_then(|db| {
+                    audit(&db, "carve_export_failed", &serde_json::json!({"case_id":session.case_id,"evidence_record_id":session.evidence_record_id,"scan_session_id":session.persistent_id,"source_id":source_id,"error":error}).to_string())
+                });
                 if let Ok(mut job) = state.job.lock() {
                     job.state = if state.cancel.load(Ordering::SeqCst) {
                         "cancelled"
@@ -646,7 +657,7 @@ async fn export_carved_selected(
                         "failed"
                     }
                     .into();
-                    job.error = Some(error);
+                    job.error = Some(include_audit_failure(error, audit_result));
                 }
             }
         }
@@ -1691,6 +1702,21 @@ fn main() {
 mod tests {
     use super::*;
     use storage::MemorySource;
+
+    #[test]
+    fn audit_write_failure_is_included_with_the_operation_error() {
+        assert_eq!(
+            include_audit_failure("Carving failed.".into(), Ok(())),
+            "Carving failed."
+        );
+        assert_eq!(
+            include_audit_failure(
+                "Carving failed.".into(),
+                Err("database is locked".into())
+            ),
+            "Carving failed. The outcome could not be recorded in the audit log: database is locked"
+        );
+    }
 
     #[test]
     fn hex_search_finds_overlapping_and_cross_block_matches() {
