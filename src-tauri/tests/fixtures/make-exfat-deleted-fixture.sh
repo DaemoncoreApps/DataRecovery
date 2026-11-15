@@ -66,19 +66,26 @@ with image_path.open("rb") as image:
     cluster_size = sector_size << boot[109]
     fat_offset = struct.unpack_from("<I", boot, 80)[0] * sector_size
     heap_offset = struct.unpack_from("<I", boot, 88)[0] * sector_size
+    cluster_count = struct.unpack_from("<I", boot, 92)[0]
     root_cluster = struct.unpack_from("<I", boot, 96)[0]
 
-    def fat_next(cluster):
+def fat_next(cluster):
+    with image_path.open("rb") as image:
         image.seek(fat_offset + cluster * 4)
         return struct.unpack("<I", image.read(4))[0] & 0x0FFFFFFF
 
-    root_clusters = []
-    current = root_cluster
-    while current < 0x0FFFFFF8:
-        if current in root_clusters or len(root_clusters) > 1_000_000:
-            raise SystemExit("root FAT chain is cyclic or excessive")
-        root_clusters.append(current)
-        current = fat_next(current)
+root_clusters = []
+seen_root_clusters = set()
+current = root_cluster
+while current < 0x0FFFFFF8:
+    if not 2 <= current <= cluster_count + 1:
+        raise SystemExit("root FAT chain points outside the cluster heap")
+    if current in seen_root_clusters or len(root_clusters) >= 1_000_000:
+        raise SystemExit("root FAT chain is cyclic or excessive")
+    seen_root_clusters.add(current)
+    root_clusters.append(current)
+    current = fat_next(current)
+with image_path.open("rb") as image:
     root_bytes = bytearray()
     for cluster in root_clusters:
         image.seek(heap_offset + (cluster - 2) * cluster_size)
@@ -119,10 +126,14 @@ first_cluster, data_length = target
 if data_length != len(expected):
     raise SystemExit(f"unexpected target stream length: {data_length}")
 clusters = []
+seen_clusters = set()
 current = first_cluster
 while len(clusters) * cluster_size < data_length:
-    if current < 2 or current in clusters or len(clusters) > 1_000_000:
+    if not 2 <= current <= cluster_count + 1:
+        raise SystemExit("target FAT chain points outside the cluster heap")
+    if current in seen_clusters or len(clusters) >= 1_000_000:
         raise SystemExit("target FAT chain is invalid or cyclic")
+    seen_clusters.add(current)
     clusters.append(current)
     current = fat_next(current)
 if all(right == left + 1 for left, right in zip(clusters, clusters[1:])):
