@@ -292,14 +292,46 @@ impl Volume {
         source: &dyn BlockSource,
         entry: &DirectoryEntry,
     ) -> Result<DeletedFileStream> {
-        let current_entry = self
+        self.prepare_deleted_files(source, &[entry])?
+            .pop()
+            .ok_or_else(|| "No deleted exFAT file was prepared.".into())
+    }
+
+    /// Validate a selected set against one fresh volume traversal. This avoids
+    /// rescanning a large directory tree once for every selected file.
+    pub fn prepare_deleted_files(
+        &self,
+        source: &dyn BlockSource,
+        entries: &[&DirectoryEntry],
+    ) -> Result<Vec<DeletedFileStream>> {
+        let current_entries = self
             .read_tree_with_deleted(source)?
             .into_iter()
-            .find(|tree_entry| tree_entry.entry.source_offset == entry.source_offset)
-            .ok_or("Selected exFAT entry is no longer present in the source volume.")?;
-        if current_entry.entry != *entry {
-            return Err("Selected exFAT entry changed since it was inventoried.".into());
-        }
+            .map(|tree_entry| (tree_entry.entry.source_offset, tree_entry.entry))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let mut seen = HashSet::new();
+        entries
+            .iter()
+            .map(|entry| {
+                if !seen.insert(entry.source_offset) {
+                    return Err("A deleted exFAT record was selected more than once.".into());
+                }
+                let current = current_entries
+                    .get(&entry.source_offset)
+                    .ok_or("Selected exFAT entry is no longer present in the source volume.")?;
+                if current != *entry {
+                    return Err("Selected exFAT entry changed since it was inventoried.".into());
+                }
+                self.prepare_deleted_file_entry(source, entry)
+            })
+            .collect()
+    }
+
+    fn prepare_deleted_file_entry(
+        &self,
+        source: &dyn BlockSource,
+        entry: &DirectoryEntry,
+    ) -> Result<DeletedFileStream> {
         if !entry.deleted || entry.attributes & 0x10 != 0 || entry.data_length == 0 {
             return Err("Selected exFAT record is not a nonempty deleted file.".into());
         }
@@ -1603,7 +1635,8 @@ mod tests {
         let volume = Volume::open(&source, 0, source.len()).unwrap();
         let entries = volume.read_tree_with_deleted(&source).unwrap();
         let entry = &entries[1].entry;
-        let stream = volume.prepare_deleted_file(&source, entry).unwrap();
+        let streams = volume.prepare_deleted_files(&source, &[entry]).unwrap();
+        let stream = &streams[0];
         let mut output = vec![0; 700];
         volume
             .read_deleted_file_range(&source, &stream, 0, &mut output)
@@ -1624,6 +1657,10 @@ mod tests {
             .prepare_deleted_file(&source, &chained_entry)
             .unwrap_err()
             .contains("changed since it was inventoried"));
+        assert!(volume
+            .prepare_deleted_files(&source, &[entry, entry])
+            .unwrap_err()
+            .contains("selected more than once"));
     }
 
     #[test]
