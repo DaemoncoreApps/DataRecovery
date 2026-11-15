@@ -1,5 +1,5 @@
-Warning: truncated output (original token count: 28405)
-Total output lines: 1445
+Warning: truncated output (original token count: 28560)
+Total output lines: 1447
 
 # Recovery validation — 2026-10-31
 
@@ -488,7 +488,117 @@ validating internal integrity and comparing the computed head with the supplied
 value. Tests cover a valid match, mismatch, malformed input, and an internally
 tampered chain. This validates consistency with the supplied value but cannot
 prove who created or preserved it. The comparison controls have not yet had a
-native UI smoke check on the current build.…10405 tokens truncated… The retained fuzz archive is
+native UI smoke check on the current build.
+
+Database startup now runs SQLite `quick_check` before enabling WAL or applying
+schema changes. A regression test feeds a corrupt database file, verifies startup
+rejects it, and confirms the original bytes remain unchanged. This checks SQLite
+page/index consistency; it does not authenticate the application database or
+replace the audit-chain and independent-anchor checks.
+
+NTFS scan bounds now use only complete records within the MFT stream's initialized
+size. The parser rejects zero, unaligned, over-volume, or out-of-stream MFT sizes
+before scanning, avoiding treating uninitialized allocation tail as file records.
+Regression tests cover the initialized record count and malformed boundaries.
+The prior optimized executable included this parser change and passed the native
+startup/navigation smoke check above.
+The configured NSIS installer was also attempted with `npm exec -- tauri build
+--no-sign`. The optimized executable built, but Tauri could not download its NSIS
+3.13 tool because DNS/network access was unavailable; no installer was generated.
+Installer packaging, signing, and install/uninstall testing remain release gates.
+
+### Current offline Windows package and native audit smoke check
+
+The offline NSIS build completed on 2026-10-31 with WebView2 embedded. The staged
+standalone executable is 12,878,848 bytes with SHA-256
+`05f454fd727871f040a3d8c548b293c87e2dbf71f669692abe4a8412bf25abf1`. The offline
+setup is 222,183,617 bytes with SHA-256
+`bdb39591c6badf0b24c9303f09d92a4d49bc32160f86b5309cb5400258b7ca83`. Both report
+`NotSigned` under Windows Authenticode inspection.
+
+With explicit approval, the optimized executable was launched once for a native
+smoke check. The workspace opened, Evidence Vault loaded, and **Verify audit log**
+reported 27 records internally consistent. No independently retained head hash
+was entered; the UI correctly warned that a complete database rewrite cannot be
+detected without one. This checked startup and the read-only audit screen only; it
+did not test the installer, evidence acquisition, or recovery export in this run.
+
+For Microsoft Store planning, current Tauri v2 guidance says the Store flow uses a
+signed EXE or MSI installer linked from an unpackaged app listing, and requires an
+offline WebView2 installer. It does not generate an MSIX package. This project has
+the offline WebView2 and distinct publisher settings, but lacks trusted signing,
+updater configuration, and Store submission. See the [Tauri Microsoft Store
+guide](https://v2.tauri.app/distribute/microsoft-store/) and [Windows code signing
+guide](https://v2.tauri.app/distribute/sign/windows/). The current unsigned NSIS
+artifact is not a production release.
+
+## Not yet verified for release
+
+The extraction/output implementation itself is exercised against actual temporary
+Windows files, including independent destination rehashing and no-overwrite moves.
+Restricted accounts, installers/MSIX, signed binaries, device helpers, real damaged
+media, representative large disks, full accessibility and broad performance are
+still release gates. FAT32/exFAT recovery and other unfinished capabilities are
+listed in CAPABILITIES.md. This application is not production-ready yet.
+
+
+### Latest nested-path build smoke check
+
+After the nested recovery-path changes, `npm run validate` passed with 68 Rust tests passed, 0 failed, and 2 ignored; the TypeScript/Vite build, Rust format check, and Clippy with warnings denied also passed. The optimized Windows executable at `src-tauri/target/release/daemoncore.exe` has SHA-256 `0CE7235A831D3A8FDFF8530DC689F194798F53EEE3CCAE9A5E41561645FE541F` and is not Authenticode signed.
+
+That executable launched successfully in the native UI. The Evidence Vault's read-only verifier checked the workstation's 27-event audit chain and reported it internally consistent. It also stated that no independently retained chain-head hash was compared, so a full database rewrite or replacement is not detectable from this check. This smo…8560 tokens truncated…bde838ab5776399df9cf7a44bc7aeb77da9a48ceec0d672`,
+expiring 2026-11-15. These results apply to `e295fbb`; the role-specific
+partition-array placement checks described below are a subsequent local change
+and still require hosted validation.
+
+The primary partition-entry array must follow the primary header and end before
+the first usable LBA; the backup array must follow the last usable LBA and end
+before the backup header, as required by the
+[UEFI GPT disk layout](https://uefi.org/specs/UEFI/2.9_A/05_GUID_Partition_Table_Format.html).
+The parser now enforces those role-specific boundaries. Two regressions move a
+CRC-valid primary or backup array to the wrong side of the usable range and
+verify fallback to the correctly placed copy. `npm run validate` passed locally
+with 32 core tests, 75 desktop tests (3 ignored), formatting, and Clippy with
+warnings denied. Hosted CI run
+[41277014866](https://github.com/DaemoncoreApps/DataRecovery/actions/runs/41277014866)
+for commit `05f2ba5212f0a0e1d9b2b056ac5b2c4d2fab33fe` also passed Windows
+validation with 32 core tests, 75 desktop tests (3 ignored), formatting, and
+Clippy with warnings denied, plus all three bounded fuzz campaigns. Its retained
+fuzz archive is
+[13071069195](https://github.com/DaemoncoreApps/DataRecovery/actions/runs/41277014866/artifacts/13071069195),
+512,458 bytes, SHA-256
+`2dbcad538ecbaccb98d29a0d9913ea4b42342edf9f3debc3ff4d5cd15983d7b8`,
+expiring 2026-11-15.
+
+The partition report now includes each used GPT entry's unique partition GUID.
+Zero and repeated identifiers remain visible in the table and produce explicit
+warnings, rather than being silently treated as valid unique IDs. Regression
+fixtures cover zero and duplicate identifiers with valid recomputed array and
+header CRCs. This follows the [UEFI GPT entry definition](https://uefi.org/specs/UEFI/2.10/05_GUID_Partition_Table_Format.html),
+which defines a unique GUID for every partition entry and zero type GUIDs for
+unused entries. The production build, 34 core tests, 75 desktop tests (3
+ignored), formatting, and Clippy with warnings denied passed locally. Hosted
+validation for this follow-up is pending.
+
+GPT entry sizes are now restricted to the UEFI-defined 128 × 2ⁿ sequence within
+the parser's existing 4 MiB safety limit. A regression gives the primary header
+a CRC-valid 136-byte entry size and confirms that it is rejected while the
+valid backup table remains usable. This rule follows the
+[UEFI GPT header definition](https://uefi.org/specs/UEFI/2.10/05_GUID_Partition_Table_Format.html).
+`npm run validate` passed locally with 35 core tests, 75 desktop tests (3
+ignored), formatting, and Clippy with warnings denied. Hosted validation for
+this additional change is pending.
+
+Partition overlap warnings now identify only the affected partition indexes;
+they no longer claim an MBR overlap is a GPT finding. A synthetic MBR regression
+confirms the warning text. `npm run validate` passed locally with 36 core tests,
+75 desktop tests (3 ignored), formatting, and Clippy with warnings denied.
+Hosted CI run
+[41278490909](https://github.com/DaemoncoreApps/DataRecovery/actions/runs/41278490909)
+for commit `50e12fd5c0582556a1497d97651674cdc9b82f66` passed Windows
+validation (36 core tests, 75 desktop tests with 3 ignored, production build,
+formatting, and Clippy with warnings denied) and all three bounded fuzz
+campaigns. The retained fuzz archive is
 [13071754522](https://github.com/DaemoncoreApps/DataRecovery/actions/runs/41278490909/artifacts/13071754522),
 485,276 bytes, SHA-256
 `4aa9940a959542bd38177b8392f51c1783f15f8fba7461af36e1bdb573dcbb7b`,
@@ -786,11 +896,11 @@ power loss.
 
 RAID reconstruction now follows the same failure rule: if a failed reconstruction
 has written image bytes, the staged image is retained, a clear incomplete marker
-is attempted, and the job error includes the staging path. The ordinary package
-verifier rejects the staged directory. User cancellation explicitly removes
-staging, including when cancellation occurs after output writing begins. Seven
-RAID tests pass, with the independent Linux MD reference test skipped locally
-because its fixture is provided by hosted CI.
+is attempted and read back, and marker validation failures are disclosed with the
+staging path. The ordinary package verifier rejects the staged directory. User
+cancellation explicitly removes staging, including when cancellation occurs after
+output writing begins. Eight RAID tests pass, with the independent Linux MD
+reference test skipped locally because its fixture is provided by hosted CI.
 
 NTFS and FAT32 package export errors now include the path when a recovery folder
 was created, and label that output unverified until the package verifier accepts
@@ -827,3 +937,5 @@ regression verifies path reconstruction through the deferred traversal. The
 full `npm run validate` passes on Windows: frontend build, 55 core tests (3
 ignored), 129 desktop tests (6 ignored), formatting, and Clippy with warnings
 denied. The independent exFAT volume test remains available in hosted CI.
+
+RAID reconstruction now verifies the retained incomplete marker after an operation error. If it is missing, unreadable, or does not match the expected warning, the returned error explicitly tells the operator and includes the staging path. An injected marker-path obstruction regression passes. The full `npm run validate` passes on Windows: frontend typecheck/build, 55 core tests (3 ignored), 130 desktop tests (6 ignored), formatting, and Clippy with warnings denied. This confirms error reporting only; abrupt power-loss durability and process-kill recovery remain unqualified.

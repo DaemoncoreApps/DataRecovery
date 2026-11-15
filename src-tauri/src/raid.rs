@@ -18,6 +18,7 @@ const READ_CHUNK: usize = 1024 * 1024;
 const MIN_MEMBERS: usize = 2;
 const MAX_MEMBERS: usize = 32;
 const MAX_STRIPE_BYTES: u64 = 16 * 1024 * 1024;
+const INCOMPLETE_MARKER: &[u8] = b"UNPUBLISHED RAID RECONSTRUCTION: this staged image did not pass all reconstruction and package checks. Do not treat it as a verified image or package.\n";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RaidLevel {
@@ -129,9 +130,7 @@ impl Drop for Staging {
                     .create_new(true)
                     .open(path.join("INCOMPLETE.txt"))
                 {
-                    let _ = marker.write_all(
-                        b"UNPUBLISHED RAID RECONSTRUCTION: this staged image did not pass all reconstruction and package checks. Do not treat it as a verified image or package.\n",
-                    );
+                    let _ = marker.write_all(INCOMPLETE_MARKER);
                     let _ = marker.sync_all();
                 }
             } else {
@@ -139,6 +138,31 @@ impl Drop for Staging {
             }
         }
     }
+}
+
+fn verify_incomplete_marker(path: &Path) -> std::io::Result<()> {
+    let contents = fs::read(path.join("INCOMPLETE.txt"))?;
+    if contents == INCOMPLETE_MARKER {
+        Ok(())
+    } else {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "marker contents do not match",
+        ))
+    }
+}
+
+fn failed_staging_message(error: &str, path: &Path) -> String {
+    let marker_status = match verify_incomplete_marker(path) {
+        Ok(()) => "The incomplete marker was written and read back.".to_owned(),
+        Err(marker_error) => format!(
+            "The incomplete marker could not be validated ({marker_error}); inspect the folder manually."
+        ),
+    };
+    format!(
+        "{error} Unpublished RAID reconstruction data may remain at {}. Treat it as unverified; the normal package verifier must pass before use. {marker_status}",
+        path.display()
+    )
 }
 
 fn write_json(path: &Path, value: &impl Serialize) -> Result<()> {
@@ -275,10 +299,7 @@ pub fn reconstruct_package(
         &final_path,
     );
     match result {
-        Err(error) if staging_path.exists() => Err(format!(
-            "{error} Unpublished RAID reconstruction data may remain at {}. Treat it as unverified; the normal package verifier must pass before use.",
-            staging_path.display()
-        )),
+        Err(error) if staging_path.exists() => Err(failed_staging_message(&error, &staging_path)),
         result => result,
     }
 }
@@ -937,6 +958,26 @@ mod tests {
 
     fn write_member(path: &Path, bytes: &[u8]) {
         fs::write(path, bytes).unwrap();
+    }
+
+    #[test]
+    fn failed_reconstruction_reports_when_incomplete_marker_cannot_be_validated() {
+        let root = root();
+        let staging_path = root.join("failed.partial");
+        fs::create_dir(&staging_path).unwrap();
+        fs::write(staging_path.join("image.raw"), b"partial image").unwrap();
+        fs::create_dir(staging_path.join("INCOMPLETE.txt")).unwrap();
+
+        let staging = Staging(Some(staging_path.clone()));
+        drop(staging);
+        assert!(staging_path.join("image.raw").exists());
+        let message = failed_staging_message("Injected reconstruction error.", &staging_path);
+
+        assert!(message.contains("Treat it as unverified"));
+        assert!(message.contains("incomplete marker could not be validated"));
+        assert!(message.contains(&staging_path.to_string_lossy().to_string()));
+        assert!(verify_incomplete_marker(&staging_path).is_err());
+        fs::remove_dir_all(root).unwrap();
     }
 
     fn raid5_members() -> [Vec<u8>; 3] {
