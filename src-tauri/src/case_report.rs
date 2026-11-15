@@ -535,6 +535,138 @@ fn encode_report(report: &CaseReport) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
+fn push_html_text(output: &mut String, value: &str) -> Result<()> {
+    for character in value.chars() {
+        output.push_str(match character {
+            '&' => "&amp;",
+            '<' => "&lt;",
+            '>' => "&gt;",
+            '"' => "&quot;",
+            '\'' => "&#39;",
+            _ => {
+                output.push(character);
+                if output.len() > MAX_REPORT_BYTES {
+                    return Err("The printable case report exceeds the 64 MiB export limit.".into());
+                }
+                continue;
+            }
+        });
+        if output.len() > MAX_REPORT_BYTES {
+            return Err("The printable case report exceeds the 64 MiB export limit.".into());
+        }
+    }
+    Ok(())
+}
+
+fn encode_html_report(report: &CaseReport) -> Result<Vec<u8>> {
+    let json = String::from_utf8(encode_report(report)?)
+        .map_err(|error| format!("The encoded case report is not valid UTF-8: {error}"))?;
+    let mut html = String::with_capacity(json.len().min(MAX_REPORT_BYTES));
+    html.push_str(
+        r#"<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'">
+  <title>Forensic case report</title>
+  <style>
+    body { font: 15px/1.55 system-ui, Segoe UI, sans-serif; color: #18212b; max-width: 1050px; margin: 40px auto; padding: 0 24px }
+    h1, h2 { color: #101820 }
+    h1 { margin-bottom: 4px }
+    .muted { color: #5d6873 }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin: 24px 0 }
+    .card, section { border: 1px solid #d7dee5; border-radius: 8px; padding: 16px; margin: 16px 0 }
+    .card b { display: block; font-size: 22px }
+    table { width: 100%; border-collapse: collapse }
+    th, td { text-align: left; padding: 8px; border-bottom: 1px solid #e2e7ec; overflow-wrap: anywhere }
+    pre { white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.5 ui-monospace, Consolas, monospace }
+    @media print {
+      body { margin: 0; max-width: none }
+      .card, section { break-inside: avoid }
+      details { break-before: page }
+      details > summary { display: none }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <p class="muted">DAEMONCORE · DATA RECOVERY</p>
+    <h1>"#,
+    );
+    push_html_text(&mut html, &report.case.title)?;
+    html.push_str("</h1>\n    <p class=\"muted\">Case ");
+    push_html_text(&mut html, &report.case.id.to_string())?;
+    html.push_str(" · Examiner: ");
+    push_html_text(&mut html, &report.case.examiner)?;
+    html.push_str("</p></header><div class=\"grid\"><div class=\"card\"><b>");
+    push_html_text(&mut html, &report.evidence.len().to_string())?;
+    html.push_str("</b>Evidence records</div><div class=\"card\"><b>");
+    push_html_text(
+        &mut html,
+        &(report.scans.len()
+            + report.fat32_scans.len()
+            + report.exfat_scans.len()
+            + report.carve_scans.len())
+        .to_string(),
+    )?;
+    html.push_str("</b>Scan snapshots</div><div class=\"card\"><b>");
+    push_html_text(
+        &mut html,
+        &(report.imaging_and_raid_operations.len() + report.recovery_operations.len()).to_string(),
+    )?;
+    html.push_str("</b>Recorded operations</div></div><section><h2>Evidence register</h2><table><thead><tr><th>ID</th><th>Name</th><th>Original path</th><th>Type</th><th>Status</th><th>Size</th><th>SHA-256</th></tr></thead><tbody>");
+    for evidence in &report.evidence {
+        html.push_str("<tr><td>");
+        push_html_text(&mut html, &evidence.id.to_string())?;
+        html.push_str("</td><td>");
+        push_html_text(&mut html, &evidence.name)?;
+        html.push_str("</td><td>");
+        push_html_text(&mut html, &evidence.path)?;
+        html.push_str("</td><td>");
+        push_html_text(&mut html, &evidence.filesystem)?;
+        html.push_str("</td><td>");
+        push_html_text(&mut html, &evidence.status)?;
+        html.push_str("</td><td>");
+        push_html_text(&mut html, &evidence.size_bytes.to_string())?;
+        html.push_str("</td><td>");
+        push_html_text(
+            &mut html,
+            evidence.sha256.as_deref().unwrap_or("Not hashed"),
+        )?;
+        html.push_str("</td></tr>");
+    }
+    html.push_str("</tbody></table></section><section><h2>Audit status</h2><p>Chain valid: ");
+    push_html_text(&mut html, &report.audit.chain_valid.to_string())?;
+    html.push_str(" · Records checked: ");
+    push_html_text(&mut html, &report.audit.records_checked.to_string())?;
+    html.push_str("</p><p>Audit head SHA-256: <code>");
+    push_html_text(&mut html, &report.audit.head_sha256)?;
+    html.push_str("</code></p><p class=\"muted\">");
+    push_html_text(&mut html, report.audit.note)?;
+    html.push_str("</p></section><section><h2>Scope and limitations</h2><p>");
+    push_html_text(&mut html, report.scope_note)?;
+    html.push_str("</p></section><details open><summary>Complete machine-readable report data (JSON)</summary><pre>");
+    push_html_text(&mut html, &json)?;
+    html.push_str("</pre></details></body></html>");
+    if html.len() > MAX_REPORT_BYTES {
+        return Err("The printable case report exceeds the 64 MiB export limit.".into());
+    }
+    Ok(html.into_bytes())
+}
+
+fn encode_report_for_path(report: &CaseReport, path: &Path) -> Result<Vec<u8>> {
+    match path.extension().and_then(|extension| extension.to_str()) {
+        Some(extension)
+            if extension.eq_ignore_ascii_case("html") || extension.eq_ignore_ascii_case("htm") =>
+        {
+            encode_html_report(report)
+        }
+        Some(extension) if extension.eq_ignore_ascii_case("json") => encode_report(report),
+        _ => Err("Choose a .json or .html report filename.".into()),
+    }
+}
+
 fn stage_report(destination: &Path, bytes: &[u8]) -> Result<StagedFile> {
     let parent = destination
         .parent()
@@ -696,7 +828,8 @@ pub async fn export_case_report(
             rfd::FileDialog::new()
                 .set_title("Export forensic case report")
                 .add_filter("JSON case report", &["json"])
-                .set_file_name("DaemonCore-Case-Report.json")
+                .add_filter("Printable HTML case report", &["html"])
+                .set_file_name("DaemonCore-Case-Report")
                 .save_file()
         })
         .await
@@ -719,7 +852,7 @@ pub async fn export_case_report(
             if state.cancel.load(Ordering::SeqCst) {
                 return Err("Case report export cancelled during report generation.".into());
             }
-            let bytes = encode_report(&report)?;
+            let bytes = encode_report_for_path(&report, &destination)?;
             if state.cancel.load(Ordering::SeqCst) {
                 return Err("Case report export cancelled before staging.".into());
             }
@@ -953,6 +1086,39 @@ mod tests {
         db.execute("UPDATE audit SET payload='tampered' WHERE id=1", [])
             .unwrap();
         assert!(case_report_from(&db, 1).is_err());
+    }
+
+    #[test]
+    fn printable_html_report_escapes_case_data_and_keeps_full_json_appendix() {
+        let db = crate::database(PathBuf::from(":memory:")).unwrap();
+        let title = "<img src=x onerror=alert(1)> & \"case\"";
+        db.execute(
+            "INSERT INTO cases(id,title,examiner) VALUES (1,?1,'Examiner')",
+            [title],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO app_settings(key,value) VALUES ('active_case_id','1')",
+            [],
+        )
+        .unwrap();
+        audit(
+            &db,
+            "case_created",
+            &serde_json::json!({"id":1,"title":title,"examiner":"Examiner","selected":true})
+                .to_string(),
+        )
+        .unwrap();
+        let report = case_report_from(&db, 1).unwrap();
+        let html = String::from_utf8(encode_html_report(&report).unwrap()).unwrap();
+
+        assert!(html.contains("&lt;img src=x onerror=alert(1)&gt; &amp; &quot;case&quot;"));
+        assert!(!html.contains("<img src=x onerror=alert(1)>"));
+        assert!(html.contains("default-src 'none'; style-src 'unsafe-inline'"));
+        assert!(html.contains("Complete machine-readable report data (JSON)"));
+        assert!(html.contains("&quot;title&quot;: &quot;&lt;img src=x onerror=alert(1)&gt;"));
+        assert!(encode_report_for_path(&report, Path::new("case.HTML")).is_ok());
+        assert!(encode_report_for_path(&report, Path::new("case.pdf")).is_err());
     }
 
     #[test]

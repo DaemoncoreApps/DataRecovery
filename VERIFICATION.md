@@ -1382,3 +1382,19 @@ bounded parser fuzz campaigns passed in the same workflow. This closes the
 cross-platform reference fixture handoff gate; physical-device acquisition,
 degraded RAID, installer lifecycle/signing, large-scale performance, and broader
 damaged-media qualification remain open.
+
+## 2026-11-14 printable case report and acquisition failure retention
+
+The Reports export now offers JSON and a print-friendly HTML rendition. The HTML
+contains a human-readable evidence and audit summary plus the complete canonical
+JSON report, escapes case-controlled text, applies a restrictive content
+security policy, and uses the existing staged no-replace publication and audit
+hash path. Eleven case-report Rust tests pass, including a malicious-title
+escaping check; the frontend production build passes. Native Windows save-dialog
+and generated-file viewing checks remain outstanding.
+
+Acquisition staging is retained after an ordinary error once image output has
+started and receives an `INCOMPLETE.txt` warning; the normal package verifier
+rejects this unfinalized folder. User cancellation continues to remove staging.
+All twelve acquisition tests pass. This does not provide resume support or
+guarantee recovery of bytes after abrupt power loss.

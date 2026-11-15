@@ -1045,15 +1045,15 @@ function App() {
         <section className="panel">
           <div className="panelTitle">
             <h2>Forensic case report</h2>
-            <span className="tag">JSON · AUDIT LINKED</span>
+            <span className="tag">JSON / HTML · AUDIT LINKED</span>
           </div>
           <div className="reportIntro">
             <p>
               Export the active case register, verified evidence metadata,
               completed NTFS scans, FAT32 directory scans, PNG/BMP/JPEG carving
               snapshots, hash-chained imaging/RAID records, and recovery export
-              and package verification records in one
-              portable JSON file.
+              and package verification records as canonical JSON or a printable
+              HTML report with the complete JSON data included.
             </p>
             <p className="muted">
               The report checks the local audit chain and records its head hash.
