@@ -1537,6 +1537,24 @@ mod tests {
     }
 
     #[test]
+    fn candidate_limit_is_reported_without_stopping_source_coverage() {
+        let bmp = valid_bmp();
+        let source_bytes = bmp.repeat(MAX_CANDIDATES + 1);
+        let source = TestSource(source_bytes);
+        let result = scan_supported_files(&source, &AtomicBool::new(false), |_, _| {})
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(result.candidates.len(), MAX_CANDIDATES);
+        assert!(result.candidates_limited);
+        assert_eq!(result.scanned_bytes, source.len());
+        assert_eq!(
+            result.candidates.last().unwrap().offset,
+            (MAX_CANDIDATES - 1) as u64 * bmp.len() as u64
+        );
+    }
+
+    #[test]
     fn rejects_png_with_corrupt_chunk_crc() {
         let mut png = valid_png();
         let crc = png.len() - 5;

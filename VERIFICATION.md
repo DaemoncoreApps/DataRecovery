@@ -1449,3 +1449,7 @@ RAID reconstruction now flushes and verifies the retained incomplete marker afte
 Carving now reserves its potentially large PNG chunk, assembled candidate, BMP/JPEG/PNG decode, and JPEG candidate buffers fallibly. Allocation failures return a scan error with the buffer purpose instead of panicking while building these application-owned buffers. A regression confirms capacity-overflow requests fail safely and ordinary small allocations still work. Decoder-internal allocation behavior and representative memory/throughput benchmarks remain separate qualification work.
 
 The full `npm run validate` passes on Windows after this change: frontend typecheck/build, 55 core tests (3 ignored), 131 desktop tests (6 ignored), formatting, and Clippy with warnings denied.
+
+A 10,001-BMP scale regression verifies that carving retains only the configured 10,000-candidate maximum, sets the limited-results flag, and completes the full source digest/coverage pass rather than silently presenting the capped list as exhaustive. The focused test passes in 1.98 seconds on the local Windows runner. This is a bounded fixture, not a representative large-image throughput or UI responsiveness benchmark.
+
+Full `npm run validate` passes after the candidate-limit regression: frontend typecheck/build, 55 core tests (3 ignored), 132 desktop tests (6 ignored), formatting, and Clippy with warnings denied.
