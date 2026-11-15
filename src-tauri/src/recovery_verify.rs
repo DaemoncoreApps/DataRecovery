@@ -1094,6 +1094,9 @@ fn verify_raid_package(
 pub(crate) fn verify_package(directory: &Path) -> Result<RecoveryExportVerification> {
     let mut locks = crate::safe_file::ReadLocks::default();
     let (entries, directories) = enumerate_entries(directory, &mut locks)?;
+    if entries.contains("image.raw") && !entries.contains("completion.json") {
+        return Err("This folder contains image data without a completion record. It may be unpublished staging left by an interrupted acquisition or RAID reconstruction; it cannot be verified and must not be treated as completed evidence. Preserve the folder for examination.".into());
+    }
     let manifest_bytes = read_bounded(directory, "manifest.json", MAX_METADATA_BYTES, &mut locks)?;
     let package_kind: serde_json::Value = serde_json::from_slice(&manifest_bytes)
         .map_err(|error| format!("Invalid recovery manifest: {error}"))?;
@@ -1681,6 +1684,29 @@ mod tests {
         assert!(verify_package(&directory)
             .unwrap_err()
             .contains("missing or unlisted files"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn identifies_image_staging_left_by_an_interruption() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join("test-temp")
+            .join(format!("interrupted-image-{unique}"));
+        let staging = root.join(".DaemonCore-Acquisition-interrupted.partial");
+        fs::create_dir_all(&staging).unwrap();
+        fs::write(staging.join("image.raw"), b"partial image bytes").unwrap();
+
+        let error = verify_package(&staging).unwrap_err();
+        assert!(error.contains("without a completion record"));
+        assert!(error.contains("interrupted acquisition or RAID reconstruction"));
+        assert!(error.contains("must not be treated as completed evidence"));
+
         fs::remove_dir_all(root).unwrap();
     }
 
