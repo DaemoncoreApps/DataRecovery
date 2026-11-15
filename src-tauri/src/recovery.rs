@@ -1878,6 +1878,85 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires the independently formatted, fragmented, and deleted exFAT fixture from CI"]
+    fn exports_deleted_file_from_independent_fragmented_exfat_chain_against_original_bytes() {
+        let image_path = PathBuf::from(
+            std::env::var_os("DAEMONCORE_EXFAT_CHAIN_IMAGE")
+                .expect("set DAEMONCORE_EXFAT_CHAIN_IMAGE to the independent image"),
+        );
+        let expected = fs::read(
+            std::env::var_os("DAEMONCORE_EXFAT_CHAIN_EXPECTED")
+                .expect("set DAEMONCORE_EXFAT_CHAIN_EXPECTED to original bytes"),
+        )
+        .expect("read retained original bytes");
+        assert_eq!(expected.len(), 65_536);
+        assert_eq!(
+            format!("{:x}", Sha256::digest(&expected)),
+            "6fc179cfd193754e6109ad043f56d146c7e7d7c3623ffceae318266286f58388"
+        );
+
+        let source = crate::storage::Image::open(&image_path).expect("open independent image");
+        let volume = daemoncore_ntfs_core::exfat::Volume::open(&source, 0, source.len()).unwrap();
+        let entry = volume
+            .read_tree_with_deleted(&source)
+            .unwrap()
+            .into_iter()
+            .find(|tree_entry| {
+                tree_entry.entry.deleted && tree_entry.entry.name == "RECOVER_CHAIN.BIN"
+            })
+            .expect("deleted fragmented entry found");
+        assert!(!entry.entry.no_fat_chain, "fixture must retain a FAT chain");
+        assert_eq!(entry.entry.data_length as usize, expected.len());
+        let mapping = volume
+            .prepare_deleted_file(&source, &entry.entry)
+            .expect("preflight retained FAT chain and free bitmap clusters");
+        assert!(
+            (1..mapping.cluster_count()).any(|index| {
+                mapping
+                    .cluster_at(index - 1)
+                    .zip(mapping.cluster_at(index))
+                    .is_some_and(|(previous, current)| current != previous + 1)
+            }),
+            "fixture must use non-adjacent clusters"
+        );
+
+        let digest = hash_source(&source, &AtomicBool::new(false), |_| {})
+            .unwrap()
+            .expect("hash complete independent image");
+        let source_path = image_path.to_string_lossy().into_owned();
+        let root = recovery_test_directory("exfat-independent-fragmented-chain-export");
+        let summary = export_exfat_to(
+            &source,
+            0,
+            &[entry.clone()],
+            &root,
+            SourceIdentity {
+                case_id: 1,
+                evidence_record_id: 1,
+                scan_session_id: 1,
+                id: 1,
+                path: &source_path,
+                sha256: &digest,
+            },
+            &AtomicBool::new(false),
+            |_, _| {},
+        )
+        .expect("export independent fragmented exFAT file");
+        assert_eq!(summary.exported, 1);
+        assert_eq!(summary.failed, 0);
+        let package = PathBuf::from(&summary.directory);
+        assert_eq!(
+            fs::read(package.join(safe_name(entry.entry.source_offset, &entry.entry.name)))
+                .unwrap(),
+            expected
+        );
+        let verification = crate::recovery_verify::verify_package(&package).unwrap();
+        assert_eq!(verification.state, "complete");
+        assert_eq!(verification.exported, 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     #[ignore = "requires an independently formatted and deleted FAT32 image cross-checked with Sleuth Kit"]
     fn exports_deleted_file_from_independent_fat32_image_against_sleuthkit_bytes() {
         let image_path = std::env::var_os("DAEMONCORE_FAT32_DELETED_IMAGE")

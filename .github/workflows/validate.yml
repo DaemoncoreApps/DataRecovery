@@ -117,6 +117,9 @@ jobs:
             .ci-fixtures/exfat-deleted-reference/deleted-exfat.img
             .ci-fixtures/exfat-deleted-reference/deleted-exfat.img.sha256
             .ci-fixtures/exfat-deleted-reference/RECOVER.BIN.expected
+            .ci-fixtures/exfat-deleted-reference/deleted-exfat-chain.img
+            .ci-fixtures/exfat-deleted-reference/deleted-exfat-chain.img.sha256
+            .ci-fixtures/exfat-deleted-reference/RECOVER_CHAIN.BIN.expected
           enableCrossOsArchive: true
           fail-on-cache-miss: true
       - name: Verify transferred reference fixture hashes
@@ -149,6 +152,13 @@ jobs:
           if ((Get-FileHash $exfatExpected -Algorithm SHA256).Hash.ToLowerInvariant() -ne "6fc179cfd193754e6109ad043f56d146c7e7d7c3623ffceae318266286f58388") { throw "exFAT expected content digest mismatch" }
           "DAEMONCORE_EXFAT_DELETED_IMAGE=$exfatImage" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "DAEMONCORE_EXFAT_DELETED_EXPECTED=$exfatExpected" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $chainImage = Join-Path $exfatDir "deleted-exfat-chain.img"
+          $chainExpected = Join-Path $exfatDir "RECOVER_CHAIN.BIN.expected"
+          $chainDigest = (Get-Content (Join-Path $exfatDir "deleted-exfat-chain.img.sha256") -TotalCount 1).Trim()
+          if ((Get-FileHash $chainImage -Algorithm SHA256).Hash.ToLowerInvariant() -ne $chainDigest) { throw "Transferred exFAT chain image digest mismatch" }
+          if ((Get-FileHash $chainExpected -Algorithm SHA256).Hash.ToLowerInvariant() -ne "6fc179cfd193754e6109ad043f56d146c7e7d7c3623ffceae318266286f58388") { throw "exFAT chain expected content digest mismatch" }
+          "DAEMONCORE_EXFAT_CHAIN_IMAGE=$chainImage" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "DAEMONCORE_EXFAT_CHAIN_EXPECTED=$chainExpected" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Install Rust validation components
         run: rustup component add rustfmt clippy
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
@@ -176,6 +186,11 @@ jobs:
           DAEMONCORE_EXFAT_DELETED_IMAGE: ${{ github.workspace }}\.ci-fixtures\exfat-deleted-reference\deleted-exfat.img
           DAEMONCORE_EXFAT_DELETED_EXPECTED: ${{ github.workspace }}\.ci-fixtures\exfat-deleted-reference\RECOVER.BIN.expected
         run: cargo test --manifest-path src-tauri/Cargo.toml --offline exports_deleted_file_from_independent_exfat_image_against_original_bytes -- --ignored --nocapture
+      - name: Test fragmented deleted exFAT chain against independently retained bytes
+        env:
+          DAEMONCORE_EXFAT_CHAIN_IMAGE: ${{ github.workspace }}\.ci-fixtures\exfat-deleted-reference\deleted-exfat-chain.img
+          DAEMONCORE_EXFAT_CHAIN_EXPECTED: ${{ github.workspace }}\.ci-fixtures\exfat-deleted-reference\RECOVER_CHAIN.BIN.expected
+        run: cargo test --manifest-path src-tauri/Cargo.toml --offline exports_deleted_file_from_independent_fragmented_exfat_chain_against_original_bytes -- --ignored --nocapture
 
   raid5-reference-validation:
     runs-on: ubuntu-24.04
@@ -265,6 +280,9 @@ jobs:
             .ci-fixtures/exfat-deleted-reference/deleted-exfat.img
             .ci-fixtures/exfat-deleted-reference/deleted-exfat.img.sha256
             .ci-fixtures/exfat-deleted-reference/RECOVER.BIN.expected
+            .ci-fixtures/exfat-deleted-reference/deleted-exfat-chain.img
+            .ci-fixtures/exfat-deleted-reference/deleted-exfat-chain.img.sha256
+            .ci-fixtures/exfat-deleted-reference/RECOVER_CHAIN.BIN.expected
           enableCrossOsArchive: true
 
   exfat-reference-validation:
