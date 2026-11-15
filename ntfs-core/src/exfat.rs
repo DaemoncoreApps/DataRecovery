@@ -14,6 +14,9 @@ const MAX_CHAIN_CLUSTERS: usize = 1_000_000;
 const MAX_DIRECTORY_BYTES: usize = 64 * 1024 * 1024;
 const MAX_DIRECTORY_ENTRIES: usize = 1_000_000;
 const MAX_DIRECTORY_DEPTH: usize = 256;
+const MAX_PARSED_DIRECTORY_MEMORY: usize = 128 * 1024 * 1024;
+const MAX_DIRECTORY_TREE_MEMORY: usize = 256 * 1024 * 1024;
+const MAX_DIRECTORY_TREE_CLUSTERS: usize = 2_000_000;
 const MAX_UPCASE_BYTES: u64 = 128 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -51,6 +54,20 @@ struct Stream {
     first_cluster: u32,
     data_length: u64,
     no_fat_chain: bool,
+}
+
+struct DirectoryTreeResults {
+    visited_directories: HashSet<u32>,
+    entries: Vec<TreeEntry>,
+    estimated_bytes: usize,
+}
+
+struct PendingDirectory {
+    first_cluster: u32,
+    data_length: u64,
+    no_fat_chain: bool,
+    path: Vec<String>,
+    depth: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -256,17 +273,19 @@ impl Volume {
     }
 
     pub fn read_tree(&self, source: &dyn BlockSource) -> Result<Vec<TreeEntry>> {
-        let mut visited = HashSet::new();
-        let mut output = Vec::new();
+        let mut results = DirectoryTreeResults {
+            visited_directories: HashSet::new(),
+            entries: Vec::new(),
+            estimated_bytes: 0,
+        };
         self.read_directory_tree(
             source,
             self.walk_fat_chain(source, self.root_cluster)?,
             Vec::new(),
             0,
-            &mut visited,
-            &mut output,
+            &mut results,
         )?;
-        Ok(output)
+        Ok(results.entries)
     }
 
     fn active_fat_offset(&self) -> Result<u64> {
@@ -516,30 +535,93 @@ impl Volume {
         clusters: Vec<u32>,
         parent_path: Vec<String>,
         depth: usize,
-        visited_directories: &mut HashSet<u32>,
-        output: &mut Vec<TreeEntry>,
+        results: &mut DirectoryTreeResults,
     ) -> Result<()> {
         if depth > MAX_DIRECTORY_DEPTH {
             return Err("exFAT directory tree exceeds the depth safety limit.".into());
+        }
+        if results
+            .visited_directories
+            .len()
+            .checked_add(clusters.len())
+            .is_none_or(|count| count > MAX_DIRECTORY_TREE_CLUSTERS)
+        {
+            return Err(
+                "exFAT directory tree exceeds the 2,000,000-cluster memory safety limit.".into(),
+            );
         }
         for cluster in &clusters {
             if !self.cluster_allocated(source, *cluster)? {
                 return Err("exFAT directory chain references a cluster marked free.".into());
             }
-            if !visited_directories.insert(*cluster) {
+            if !results.visited_directories.insert(*cluster) {
                 return Err("exFAT directory tree contains a cycle or cross-link.".into());
             }
         }
         let directory = self.read_clusters(source, &clusters, MAX_DIRECTORY_BYTES)?;
         let entries = self.parse_file_entries(source, &directory, &clusters, depth == 0)?;
+        let mut child_directories: Vec<PendingDirectory> = Vec::new();
         for entry in entries {
-            if output.len() >= MAX_DIRECTORY_ENTRIES {
+            if results.entries.len() >= MAX_DIRECTORY_ENTRIES {
                 return Err("exFAT directory tree exceeds the entry safety limit.".into());
             }
             let mut path = parent_path.clone();
             path.push(entry.name.clone());
             let is_directory = entry.attributes & 0x10 != 0;
-            output.push(TreeEntry {
+            let mut entry_memory = tree_entry_dynamic_memory(&path, &entry)?;
+            if is_directory {
+                entry_memory = entry_memory
+                    .checked_add(path_memory(&path)?)
+                    .and_then(|memory| memory.checked_add(std::mem::size_of::<PendingDirectory>()))
+                    .ok_or("exFAT directory tree memory estimate overflow.")?;
+            }
+            let total_memory = results
+                .estimated_bytes
+                .checked_add(entry_memory)
+                .ok_or("exFAT directory tree memory estimate overflow.")?;
+            if total_memory > MAX_DIRECTORY_TREE_MEMORY {
+                return Err(
+                    "exFAT directory tree exceeds the 256 MiB result memory safety limit.".into(),
+                );
+            }
+            results.estimated_bytes = total_memory;
+            if results.entries.len() == results.entries.capacity() {
+                results
+                    .entries
+                    .try_reserve_exact(1024)
+                    .map_err(|_| "Could not allocate bounded exFAT directory results.")?;
+            }
+            let mut allocated_memory = results
+                .estimated_bytes
+                .checked_add(
+                    results
+                        .entries
+                        .capacity()
+                        .checked_mul(std::mem::size_of::<TreeEntry>())
+                        .ok_or("exFAT directory tree memory estimate overflow.")?,
+                )
+                .ok_or("exFAT directory tree memory estimate overflow.")?;
+            if is_directory && entry.data_length != 0 {
+                if child_directories.len() == child_directories.capacity() {
+                    child_directories.try_reserve_exact(64).map_err(|_| {
+                        "Could not allocate bounded exFAT directory traversal state."
+                    })?;
+                }
+                allocated_memory = allocated_memory
+                    .checked_add(
+                        child_directories
+                            .capacity()
+                            .checked_mul(std::mem::size_of::<PendingDirectory>())
+                            .ok_or("exFAT directory tree memory estimate overflow.")?,
+                    )
+                    .ok_or("exFAT directory tree memory estimate overflow.")?;
+            }
+            if allocated_memory > MAX_DIRECTORY_TREE_MEMORY {
+                return Err(
+                    "exFAT directory tree exceeds the 256 MiB result memory safety limit.".into(),
+                );
+            }
+            results.entries.push(TreeEntry {
                 path: path.clone(),
                 entry: entry.clone(),
             });
@@ -552,22 +634,30 @@ impl Volume {
                 {
                     return Err("exFAT directory entry has invalid allocation metadata.".into());
                 }
-                let children = self.stream_clusters(source, &entry)?;
-                if children.len() as u64 * self.cluster_size != entry.data_length {
-                    return Err(
-                        "exFAT directory allocation length does not match its cluster chain."
-                            .into(),
-                    );
-                }
-                self.read_directory_tree(
-                    source,
-                    children,
-                    path.clone(),
-                    depth + 1,
-                    visited_directories,
-                    output,
-                )?;
+                child_directories.push(PendingDirectory {
+                    first_cluster: entry.first_cluster,
+                    data_length: entry.data_length,
+                    no_fat_chain: entry.no_fat_chain,
+                    path: path.clone(),
+                    depth: depth + 1,
+                });
             }
+        }
+        drop(directory);
+        drop(clusters);
+        for child in child_directories {
+            let children = self.stream_clusters(
+                source,
+                child.first_cluster,
+                child.data_length,
+                child.no_fat_chain,
+            )?;
+            if children.len() as u64 * self.cluster_size != child.data_length {
+                return Err(
+                    "exFAT directory allocation length does not match its cluster chain.".into(),
+                );
+            }
+            self.read_directory_tree(source, children, child.path, child.depth, results)?;
         }
         Ok(())
     }
@@ -581,6 +671,7 @@ impl Volume {
     ) -> Result<Vec<DirectoryEntry>> {
         let records = directory_records(bytes)?;
         let mut entries = Vec::new();
+        let mut parsed_memory = 0usize;
         let mut index = 0usize;
         while index < records.len() {
             let primary = &records[index];
@@ -685,7 +776,7 @@ impl Volume {
             for record in set {
                 raw_entries.push(*record);
             }
-            entries.push(DirectoryEntry {
+            let entry = DirectoryEntry {
                 source_offset: self.directory_record_offset(directory_clusters, index * 32)?,
                 raw_entries,
                 name,
@@ -695,7 +786,29 @@ impl Volume {
                 data_length: stream.data_length,
                 no_fat_chain: stream.no_fat_chain,
                 name_hash: stream.name_hash,
-            });
+            };
+            if entries.len() == entries.capacity() {
+                entries
+                    .try_reserve_exact(256)
+                    .map_err(|_| "Could not allocate bounded exFAT directory entries.")?;
+            }
+            parsed_memory = parsed_memory
+                .checked_add(directory_entry_dynamic_memory(&entry)?)
+                .ok_or("exFAT parsed directory memory estimate overflow.")?;
+            let allocated_memory = parsed_memory
+                .checked_add(
+                    entries
+                        .capacity()
+                        .checked_mul(std::mem::size_of::<DirectoryEntry>())
+                        .ok_or("exFAT parsed directory memory estimate overflow.")?,
+                )
+                .ok_or("exFAT parsed directory memory estimate overflow.")?;
+            if allocated_memory > MAX_PARSED_DIRECTORY_MEMORY {
+                return Err(
+                    "exFAT parsed directory exceeds the 128 MiB memory safety limit.".into(),
+                );
+            }
+            entries.push(entry);
             index = end;
         }
         Ok(entries)
@@ -760,28 +873,29 @@ impl Volume {
     fn stream_clusters(
         &self,
         source: &dyn BlockSource,
-        entry: &DirectoryEntry,
+        first_cluster: u32,
+        data_length: u64,
+        no_fat_chain: bool,
     ) -> Result<Vec<u32>> {
-        let count = entry
-            .data_length
+        let count = data_length
             .checked_add(self.cluster_size - 1)
             .ok_or("exFAT stream cluster count overflow.")?
             / self.cluster_size;
         if count == 0 {
             return Ok(Vec::new());
         }
-        let clusters = if entry.no_fat_chain {
-            let end = u64::from(entry.first_cluster)
+        let clusters = if no_fat_chain {
+            let end = u64::from(first_cluster)
                 .checked_add(count - 1)
                 .ok_or("exFAT contiguous stream range overflow.")?;
             if end > u64::from(self.cluster_count) + 1 {
                 return Err("exFAT contiguous stream extends beyond the cluster heap.".into());
             }
-            (u64::from(entry.first_cluster)..=end)
+            (u64::from(first_cluster)..=end)
                 .map(|cluster| cluster as u32)
                 .collect()
         } else {
-            self.walk_fat_chain(source, entry.first_cluster)?
+            self.walk_fat_chain(source, first_cluster)?
         };
         if (clusters.len() as u64) < count {
             return Err("exFAT stream chain is shorter than its declared data length.".into());
@@ -806,6 +920,40 @@ impl Volume {
         }
         hash
     }
+}
+
+fn directory_entry_dynamic_memory(entry: &DirectoryEntry) -> Result<usize> {
+    entry
+        .name
+        .capacity()
+        .checked_add(
+            entry
+                .raw_entries
+                .capacity()
+                .checked_mul(std::mem::size_of::<[u8; 32]>())
+                .ok_or("exFAT directory entry memory estimate overflow.")?,
+        )
+        .ok_or_else(|| "exFAT directory entry memory estimate overflow.".into())
+}
+
+fn path_memory(path: &[String]) -> Result<usize> {
+    let slots = path
+        .len()
+        .checked_mul(std::mem::size_of::<String>())
+        .ok_or("exFAT directory path memory estimate overflow.")?;
+    path.iter().try_fold(slots, |total, component| {
+        total
+            .checked_add(component.capacity())
+            .ok_or_else(|| "exFAT directory path memory estimate overflow.".into())
+    })
+}
+
+fn tree_entry_dynamic_memory(path: &[String], entry: &DirectoryEntry) -> Result<usize> {
+    let entry_memory = directory_entry_dynamic_memory(entry)?;
+    path_memory(path)?
+        .checked_add(std::mem::size_of::<DirectoryEntry>())
+        .and_then(|total| total.checked_add(entry_memory))
+        .ok_or_else(|| "exFAT directory tree memory estimate overflow.".into())
 }
 
 #[allow(clippy::chunks_exact_to_as_chunks)]
@@ -1097,6 +1245,43 @@ mod tests {
         SliceSource(image)
     }
 
+    fn test_file_set(
+        name: &str,
+        attributes: u16,
+        first_cluster: u32,
+        data_length: u64,
+        no_fat_chain: bool,
+    ) -> [[u8; 32]; 3] {
+        let units: Vec<u16> = name.encode_utf16().collect();
+        let mut records = [[0u8; 32]; 3];
+        records[0][0] = 0x85;
+        records[0][1] = 2;
+        records[0][4..6].copy_from_slice(&attributes.to_le_bytes());
+        records[1][0] = 0xc0;
+        records[1][1] = 1 | if no_fat_chain { 2 } else { 0 };
+        records[1][3] = units.len() as u8;
+        records[1][8..16].copy_from_slice(&data_length.to_le_bytes());
+        records[1][20..24].copy_from_slice(&first_cluster.to_le_bytes());
+        records[1][24..32].copy_from_slice(&data_length.to_le_bytes());
+        records[2][0] = 0xc1;
+        let mut name_hash = 0u16;
+        for (index, unit) in units.iter().enumerate() {
+            records[2][2 + index * 2..4 + index * 2].copy_from_slice(&unit.to_le_bytes());
+            let upper = if (b'a' as u16..=b'z' as u16).contains(unit) {
+                unit - 0x20
+            } else {
+                *unit
+            };
+            for byte in upper.to_le_bytes() {
+                name_hash = name_hash.rotate_right(1).wrapping_add(u16::from(byte));
+            }
+        }
+        records[1][4..6].copy_from_slice(&name_hash.to_le_bytes());
+        let checksum = entry_set_checksum(&records);
+        records[0][2..4].copy_from_slice(&checksum.to_le_bytes());
+        records
+    }
+
     #[test]
     fn expands_compressed_identity_ranges_to_full_upcase_table() {
         let mut bytes = Vec::new();
@@ -1171,6 +1356,38 @@ mod tests {
         assert_eq!(tree[0].path, ["ROOT.TXT"]);
         assert_eq!(tree[0].entry.source_offset, 40 * 512 + 64);
         assert_eq!(tree[0].entry.raw_entries.len(), 3);
+    }
+
+    #[test]
+    fn traverses_nested_directories_after_releasing_parent_buffers() {
+        let mut source = fixture();
+        let heap_start = 40 * 512;
+        let fat_start = 24 * 512;
+        let directory = test_file_set("SUBDIR", 0x10, 5, 512, false);
+        let child = test_file_set("CHILD.TXT", 0x20, 0, 0, false);
+        for (index, record) in directory.iter().enumerate() {
+            source.0[heap_start + 64 + index * 32..heap_start + 96 + index * 32]
+                .copy_from_slice(record);
+        }
+        for (index, record) in child.iter().enumerate() {
+            source.0[heap_start + 3 * 512 + index * 32..heap_start + 3 * 512 + 32 + index * 32]
+                .copy_from_slice(record);
+        }
+        source.0[fat_start + 5 * 4..fat_start + 5 * 4 + 4]
+            .copy_from_slice(&0xffff_ffffu32.to_le_bytes());
+        source.0[heap_start + 2 * 512] = 0b0000_1111;
+
+        let volume = Volume::open(&source, 0, source.len()).unwrap();
+        let tree = volume.read_tree(&source).unwrap();
+
+        let paths: Vec<Vec<String>> = tree.into_iter().map(|entry| entry.path).collect();
+        assert_eq!(
+            paths,
+            [
+                vec!["SUBDIR".to_owned()],
+                vec!["SUBDIR".to_owned(), "CHILD.TXT".to_owned()]
+            ]
+        );
     }
 
     #[test]
