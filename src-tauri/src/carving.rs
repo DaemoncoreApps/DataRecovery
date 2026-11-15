@@ -253,6 +253,19 @@ impl Drop for PartialFile {
     }
 }
 
+fn report_incomplete_package_path<T>(
+    result: Result<T, String>,
+    directory: &Path,
+) -> Result<T, String> {
+    match result {
+        Err(error) if directory.exists() => Err(format!(
+            "{error} An incomplete carving package may remain at {}. Treat it as unverified until the package verifier accepts it.",
+            directory.display()
+        )),
+        result => result,
+    }
+}
+
 pub fn export_selected(
     source: &dyn BlockSource,
     selected: &[CarvedCandidate],
@@ -260,6 +273,32 @@ pub fn export_selected(
     identity: ExportIdentity<'_>,
     cancel: &AtomicBool,
     mut progress: impl FnMut(u64, u64),
+) -> Result<CarveExportSummary, String> {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| error.to_string())?
+        .as_nanos();
+    let directory = destination.join(format!("DaemonCore-Carved-Recovery-{stamp}"));
+    let result = export_selected_into(
+        source,
+        selected,
+        identity,
+        cancel,
+        &mut progress,
+        stamp,
+        &directory,
+    );
+    report_incomplete_package_path(result, &directory)
+}
+
+fn export_selected_into(
+    source: &dyn BlockSource,
+    selected: &[CarvedCandidate],
+    identity: ExportIdentity<'_>,
+    cancel: &AtomicBool,
+    progress: &mut impl FnMut(u64, u64),
+    stamp: u128,
+    directory: &Path,
 ) -> Result<CarveExportSummary, String> {
     if selected.is_empty() || selected.len() > 1_000 {
         return Err("Select between 1 and 1,000 validated carved candidates.".into());
@@ -307,12 +346,7 @@ pub fn export_selected(
             "The source SHA-256 changed before export. No carving package was created.".into(),
         );
     }
-    let stamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|error| error.to_string())?
-        .as_nanos();
-    let directory = destination.join(format!("DaemonCore-Carved-Recovery-{stamp}"));
-    fs::create_dir(&directory).map_err(|error| error.to_string())?;
+    fs::create_dir(directory).map_err(|error| error.to_string())?;
     let selected_metadata = selected
         .iter()
         .map(|candidate| {
@@ -1258,6 +1292,26 @@ mod tests {
         bytes: Vec<u8>,
         failing_offset: u64,
         failing_length: usize,
+    }
+
+    #[test]
+    fn failed_carving_export_reports_the_unverified_package_path() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("daemoncore-carving-path-{stamp}"));
+        let package = root.join("DaemonCore-Carved-Recovery-incomplete");
+        fs::create_dir_all(&package).unwrap();
+
+        let error = report_incomplete_package_path::<()>(Err("source changed".into()), &package)
+            .unwrap_err();
+
+        assert!(error.contains("source changed"));
+        assert!(error.contains(&package.to_string_lossy().to_string()));
+        assert!(error.contains("Treat it as unverified"));
+        assert!(crate::recovery_verify::verify_package(&package).is_err());
+        fs::remove_dir_all(root).unwrap();
     }
 
     impl BlockSource for DecoderReadFailure {

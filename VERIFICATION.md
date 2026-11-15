@@ -1413,3 +1413,8 @@ was created, and label that output unverified until the package verifier accepts
 it. This makes interrupted or failed workspace exports locatable while keeping
 their existing incomplete manifest and completion-marker rules. Seven recovery
 tests pass, including path reporting and rejection of an empty incomplete folder.
+
+Carving export failures follow the same operator-facing rule: if a package
+folder was created, the error includes its location and requires verification
+before retained output is used. The regression confirms the incomplete folder
+fails package verification.
