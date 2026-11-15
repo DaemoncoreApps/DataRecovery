@@ -22,15 +22,20 @@ external fixtures or Windows volume behavior unavailable in this local run.
 `npm exec -- tauri build --verbose` built the production frontend and optimized
 Windows executable against the current worktree. The executable is
 `src-tauri/target/release/daemoncore.exe` (15,442,432 bytes, SHA-256
-`1b378d0726a27f548de55b2c0bcba1fd5f75fc452eda5ea49f7e5362b5fcebde`).
+`a0cdaa2375822febe481371d7ca53695d4952d749bd3ca7315a88d381130c121`).
 Authenticode reports `NotSigned`. The executable was not launched; this proves
-compilation only, not packaged runtime or installer behavior.
+compilation only, not runtime behavior.
 
-The same command stopped during NSIS packaging when Tauri tried to resolve the
-Microsoft WebView2 offline-installer URL with an HTTP `HEAD` request and Windows
-DNS returned `No such host is known` (error 11001). The current installer was
-not produced. The existing NSIS file in `target/release/bundle/nsis` is dated
-2026-10-31 and is stale; do not distribute it as a build of the current source.
+The initial restricted build hit transient DNS failure, then Windows error 623
+when the sandbox launched `makensis.exe`. Retrying the same build outside the
+restricted process sandbox succeeded. Tauri embedded its offline WebView2
+runtime and produced the unsigned NSIS setup at
+`src-tauri/target/release/bundle/nsis/DaemonCore Data Recovery_0.1.0_x64-setup.exe`
+(222,898,703 bytes, SHA-256
+`97bb16e7372214dda8f0322b99bac5ea9c1f2f8b9ab31c767772084a5ee5425b`).
+Authenticode reports `NotSigned`. NSIS emitted warning 6040 for
+`choowHowToInstall`. The setup is staged only; it has not been installed or
+launched. A previous file at this path was dated 2026-10-31 and was stale.
 
 ## Independent GIF carving fixture — 2026-11-15
 
@@ -45,7 +50,7 @@ detection, exact export, and package verification. The full local validation
 gate passes with 61 core tests (3 ignored) and 153 desktop tests (9 ignored).
 These controlled fixtures do not qualify a broad external GIF corpus.
 
-## Latest release-stage check — 2026-11-15
+## Historical hosted release-stage check — 2026-11-15
 
 An unsigned NSIS installer workflow was dispatched historically for commit
 `fcf9f37` (run
