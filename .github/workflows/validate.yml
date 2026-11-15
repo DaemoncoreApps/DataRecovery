@@ -83,7 +83,7 @@ jobs:
 
   windows-reference-validation:
     runs-on: windows-2025
-    needs: [fat32-deleted-recovery-validation, exfat-deleted-recovery-validation, raid5-reference-validation]
+    needs: [fat32-deleted-recovery-validation, exfat-deleted-recovery-validation, ntfs-deleted-recovery-validation, raid5-reference-validation]
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
@@ -120,6 +120,16 @@ jobs:
             .ci-fixtures/exfat-deleted-reference/deleted-exfat-chain.img
             .ci-fixtures/exfat-deleted-reference/deleted-exfat-chain.img.sha256
             .ci-fixtures/exfat-deleted-reference/RECOVER_CHAIN.BIN.expected
+          enableCrossOsArchive: true
+          fail-on-cache-miss: true
+      - name: Restore independently formatted deleted NTFS fixture
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          key: daemoncore-ntfs-deleted-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            .ci-fixtures/ntfs-deleted-reference/deleted-ntfs.img
+            .ci-fixtures/ntfs-deleted-reference/deleted-ntfs.img.sha256
+            .ci-fixtures/ntfs-deleted-reference/RECOVER.BIN.expected
           enableCrossOsArchive: true
           fail-on-cache-miss: true
       - name: Verify transferred reference fixture hashes
@@ -159,6 +169,15 @@ jobs:
           if ((Get-FileHash $chainExpected -Algorithm SHA256).Hash.ToLowerInvariant() -ne "6fc179cfd193754e6109ad043f56d146c7e7d7c3623ffceae318266286f58388") { throw "exFAT chain expected content digest mismatch" }
           "DAEMONCORE_EXFAT_CHAIN_IMAGE=$chainImage" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "DAEMONCORE_EXFAT_CHAIN_EXPECTED=$chainExpected" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+          $ntfsDir = Join-Path $env:GITHUB_WORKSPACE ".ci-fixtures/ntfs-deleted-reference"
+          $ntfsImage = Join-Path $ntfsDir "deleted-ntfs.img"
+          $ntfsExpected = Join-Path $ntfsDir "RECOVER.BIN.expected"
+          $ntfsDigest = (Get-Content (Join-Path $ntfsDir "deleted-ntfs.img.sha256") -TotalCount 1).Split(' ')[0]
+          if ((Get-FileHash $ntfsImage -Algorithm SHA256).Hash.ToLowerInvariant() -ne $ntfsDigest) { throw "Transferred NTFS image digest mismatch" }
+          if ((Get-FileHash $ntfsExpected -Algorithm SHA256).Hash.ToLowerInvariant() -ne "6fc179cfd193754e6109ad043f56d146c7e7d7c3623ffceae318266286f58388") { throw "NTFS expected content digest mismatch" }
+          "DAEMONCORE_NTFS_DELETED_IMAGE=$ntfsImage" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "DAEMONCORE_NTFS_DELETED_EXPECTED=$ntfsExpected" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Install Rust validation components
         run: rustup component add rustfmt clippy
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
@@ -191,6 +210,11 @@ jobs:
           DAEMONCORE_EXFAT_CHAIN_IMAGE: ${{ github.workspace }}\.ci-fixtures\exfat-deleted-reference\deleted-exfat-chain.img
           DAEMONCORE_EXFAT_CHAIN_EXPECTED: ${{ github.workspace }}\.ci-fixtures\exfat-deleted-reference\RECOVER_CHAIN.BIN.expected
         run: cargo test --manifest-path src-tauri/Cargo.toml --offline exports_deleted_file_from_independent_fragmented_exfat_chain_against_original_bytes -- --ignored --nocapture
+      - name: Test deleted NTFS export against Sleuth Kit recovered bytes
+        env:
+          DAEMONCORE_NTFS_DELETED_IMAGE: ${{ github.workspace }}\.ci-fixtures\ntfs-deleted-reference\deleted-ntfs.img
+          DAEMONCORE_NTFS_DELETED_EXPECTED: ${{ github.workspace }}\.ci-fixtures\ntfs-deleted-reference\RECOVER.BIN.expected
+        run: cargo test --manifest-path src-tauri/Cargo.toml --offline exports_deleted_file_from_independent_ntfs_image_against_sleuthkit_bytes -- --ignored --nocapture
 
   raid5-reference-validation:
     runs-on: ubuntu-24.04
@@ -283,6 +307,31 @@ jobs:
             .ci-fixtures/exfat-deleted-reference/deleted-exfat-chain.img
             .ci-fixtures/exfat-deleted-reference/deleted-exfat-chain.img.sha256
             .ci-fixtures/exfat-deleted-reference/RECOVER_CHAIN.BIN.expected
+          enableCrossOsArchive: true
+
+  ntfs-deleted-recovery-validation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - name: Install NTFS formatter and forensic tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes ntfs-3g sleuthkit
+          dpkg-query -W -f='${Package} ${Version}\n' ntfs-3g sleuthkit
+          mkntfs --version
+          fls -V
+          icat -V
+      - name: Format, delete, and independently verify the fixture
+        run: sudo bash ./src-tauri/tests/fixtures/make-ntfs-deleted-fixture.sh "$GITHUB_WORKSPACE/.ci-fixtures/ntfs-deleted-reference"
+      - name: Save independently verified deleted-file fixture for Windows
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          key: daemoncore-ntfs-deleted-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            .ci-fixtures/ntfs-deleted-reference/deleted-ntfs.img
+            .ci-fixtures/ntfs-deleted-reference/deleted-ntfs.img.sha256
+            .ci-fixtures/ntfs-deleted-reference/RECOVER.BIN.expected
           enableCrossOsArchive: true
 
   exfat-reference-validation:

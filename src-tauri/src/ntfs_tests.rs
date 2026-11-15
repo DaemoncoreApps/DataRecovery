@@ -1241,6 +1241,80 @@ fn independently_formatted_ntfs_fixture_matches_upstream_known_contents() {
 }
 
 #[test]
+#[ignore = "requires an independently formatted and deleted NTFS image cross-checked with Sleuth Kit"]
+fn exports_deleted_file_from_independent_ntfs_image_against_sleuthkit_bytes() {
+    let image_path = std::env::var_os("DAEMONCORE_NTFS_DELETED_IMAGE")
+        .expect("set DAEMONCORE_NTFS_DELETED_IMAGE to the independent NTFS image");
+    let expected_path = std::env::var_os("DAEMONCORE_NTFS_DELETED_EXPECTED")
+        .expect("set DAEMONCORE_NTFS_DELETED_EXPECTED to original file bytes");
+    let image_path = std::path::PathBuf::from(image_path);
+    let expected = std::fs::read(expected_path).expect("read independently recovered bytes");
+    assert_eq!(expected.len(), 65_536);
+    assert_eq!(
+        format!("{:x}", Sha256::digest(&expected)),
+        "6fc179cfd193754e6109ad043f56d146c7e7d7c3623ffceae318266286f58388"
+    );
+
+    let source = crate::storage::Image::open(&image_path).expect("open independent NTFS image");
+    let scan = ntfs::scan(&source, 0, &AtomicBool::new(false), |_, _, _| {})
+        .expect("scan independently formatted NTFS volume");
+    let candidate = scan
+        .candidates
+        .iter()
+        .find(|candidate| candidate.deleted && candidate.name.eq_ignore_ascii_case("RECOVER.BIN"))
+        .expect("find the independently deleted MFT record");
+    assert!(
+        candidate.exportable,
+        "candidate blocked: {:?}",
+        candidate.notes
+    );
+    assert_eq!(candidate.size as usize, expected.len());
+
+    let digest = crate::hash_source(&source, &AtomicBool::new(false), |_| {})
+        .expect("hash independent NTFS image")
+        .expect("hash completes");
+    let source_path = image_path.to_string_lossy().into_owned();
+    let root = temp_dir("ntfs-independent-deleted-export");
+    let summary = recovery::export_to(
+        &source,
+        &scan,
+        std::slice::from_ref(candidate),
+        &root,
+        recovery::SourceIdentity {
+            case_id: 1,
+            evidence_record_id: 1,
+            scan_session_id: 1,
+            id: 1,
+            path: &source_path,
+            sha256: &digest,
+        },
+        &AtomicBool::new(false),
+        |_, _| {},
+    )
+    .expect("export the independently verified deleted NTFS file");
+
+    assert_eq!(summary.exported, 1);
+    assert_eq!(summary.failed, 0);
+    let package = std::path::PathBuf::from(&summary.directory);
+    let verification = crate::recovery_verify::verify_package(&package)
+        .expect("native package verifier accepts the recovery output");
+    assert_eq!(verification.state, "complete");
+    assert_eq!(verification.exported, 1);
+    let manifest: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(package.join("manifest.json")).expect("read package manifest"),
+    )
+    .expect("parse package manifest");
+    let output_name = manifest["selected_records"][0]["output_name"]
+        .as_str()
+        .expect("manifest records recovered output path");
+    assert_eq!(
+        std::fs::read(package.join(output_name)).expect("read exported NTFS bytes"),
+        expected
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 #[ignore = "writes a controlled fixture only when an explicit output path is supplied"]
 fn emit_controlled_fixture_for_desktop_smoke() {
     use std::io::Write;
