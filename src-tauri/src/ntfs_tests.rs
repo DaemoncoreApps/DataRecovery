@@ -1242,7 +1242,7 @@ fn independently_formatted_ntfs_fixture_matches_upstream_known_contents() {
 
 #[test]
 #[ignore = "requires an independently formatted and deleted NTFS image cross-checked with Sleuth Kit"]
-fn exports_deleted_file_from_independent_ntfs_image_against_sleuthkit_bytes() {
+fn exports_contiguous_and_fragmented_deleted_ntfs_files_against_sleuthkit_bytes() {
     let image_path = std::env::var_os("DAEMONCORE_NTFS_DELETED_IMAGE")
         .expect("set DAEMONCORE_NTFS_DELETED_IMAGE to the independent NTFS image");
     let expected_path = std::env::var_os("DAEMONCORE_NTFS_DELETED_EXPECTED")
@@ -1258,17 +1258,52 @@ fn exports_deleted_file_from_independent_ntfs_image_against_sleuthkit_bytes() {
     let source = crate::storage::Image::open(&image_path).expect("open independent NTFS image");
     let scan = ntfs::scan(&source, 0, &AtomicBool::new(false), |_, _, _| {})
         .expect("scan independently formatted NTFS volume");
-    let candidate = scan
+    let selected_names = ["RECOVER.BIN", "RECOVER_FRAGMENTED.BIN"];
+    let selected = scan
         .candidates
         .iter()
-        .find(|candidate| candidate.deleted && candidate.name.eq_ignore_ascii_case("RECOVER.BIN"))
-        .expect("find the independently deleted MFT record");
+        .filter(|candidate| {
+            candidate.deleted
+                && selected_names
+                    .iter()
+                    .any(|name| candidate.name.eq_ignore_ascii_case(name))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(selected.len(), selected_names.len());
+    for candidate in &selected {
+        assert!(
+            candidate.exportable,
+            "{} blocked: {:?}",
+            candidate.name, candidate.notes
+        );
+        assert_eq!(candidate.size as usize, expected.len());
+    }
+
+    let fragmented = selected
+        .iter()
+        .find(|candidate| {
+            candidate
+                .name
+                .eq_ignore_ascii_case("RECOVER_FRAGMENTED.BIN")
+        })
+        .expect("find fragmented deleted candidate");
+    let record = ntfs::read_record(&source, &scan.boot, &scan.mft, fragmented.id)
+        .expect("read fragmented deleted MFT record");
+    let stream = record.stream.expect("fragmented file has a data stream");
+    let ntfs::Content::Runs(runs) = stream.content else {
+        panic!("fragmented file should use a nonresident stream");
+    };
     assert!(
-        candidate.exportable,
-        "candidate blocked: {:?}",
-        candidate.notes
+        runs.windows(2)
+            .any(|pair| match (pair[0].lcn, pair[1].lcn) {
+                (Some(previous), Some(next)) => {
+                    previous.checked_add(pair[0].clusters) != Some(next)
+                }
+                _ => false,
+            }),
+        "fixture file must contain non-adjacent NTFS data runs: {runs:?}"
     );
-    assert_eq!(candidate.size as usize, expected.len());
 
     let digest = crate::hash_source(&source, &AtomicBool::new(false), |_| {})
         .expect("hash independent NTFS image")
@@ -1278,7 +1313,7 @@ fn exports_deleted_file_from_independent_ntfs_image_against_sleuthkit_bytes() {
     let summary = recovery::export_to(
         &source,
         &scan,
-        std::slice::from_ref(candidate),
+        &selected,
         &root,
         recovery::SourceIdentity {
             case_id: 1,
@@ -1291,26 +1326,35 @@ fn exports_deleted_file_from_independent_ntfs_image_against_sleuthkit_bytes() {
         &AtomicBool::new(false),
         |_, _| {},
     )
-    .expect("export the independently verified deleted NTFS file");
+    .expect("export independently verified deleted NTFS files");
 
-    assert_eq!(summary.exported, 1);
+    assert_eq!(summary.exported, 2);
     assert_eq!(summary.failed, 0);
     let package = std::path::PathBuf::from(&summary.directory);
     let verification = crate::recovery_verify::verify_package(&package)
         .expect("native package verifier accepts the recovery output");
     assert_eq!(verification.state, "complete");
-    assert_eq!(verification.exported, 1);
+    assert_eq!(verification.exported, 2);
     let manifest: serde_json::Value = serde_json::from_slice(
         &std::fs::read(package.join("manifest.json")).expect("read package manifest"),
     )
     .expect("parse package manifest");
-    let output_name = manifest["selected_records"][0]["output_name"]
-        .as_str()
-        .expect("manifest records recovered output path");
-    assert_eq!(
-        std::fs::read(package.join(output_name)).expect("read exported NTFS bytes"),
-        expected
-    );
+    for name in selected_names {
+        let selected_record = manifest["selected_records"]
+            .as_array()
+            .expect("manifest lists selected records")
+            .iter()
+            .find(|record| record["original_name"].as_str() == Some(name))
+            .expect("manifest contains selected deleted file");
+        let output_name = selected_record["output_name"]
+            .as_str()
+            .expect("manifest records recovered output path");
+        assert_eq!(
+            std::fs::read(package.join(output_name)).expect("read exported NTFS bytes"),
+            expected,
+            "exported bytes for {name}"
+        );
+    }
     std::fs::remove_dir_all(root).unwrap();
 }
 

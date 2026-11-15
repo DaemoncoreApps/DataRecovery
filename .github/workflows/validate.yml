@@ -210,11 +210,11 @@ jobs:
           DAEMONCORE_EXFAT_CHAIN_IMAGE: ${{ github.workspace }}\.ci-fixtures\exfat-deleted-reference\deleted-exfat-chain.img
           DAEMONCORE_EXFAT_CHAIN_EXPECTED: ${{ github.workspace }}\.ci-fixtures\exfat-deleted-reference\RECOVER_CHAIN.BIN.expected
         run: cargo test --manifest-path src-tauri/Cargo.toml --offline exports_deleted_file_from_independent_fragmented_exfat_chain_against_original_bytes -- --ignored --nocapture
-      - name: Test deleted NTFS export against Sleuth Kit recovered bytes
+      - name: Test contiguous and fragmented deleted NTFS exports against Sleuth Kit
         env:
           DAEMONCORE_NTFS_DELETED_IMAGE: ${{ github.workspace }}\.ci-fixtures\ntfs-deleted-reference\deleted-ntfs.img
           DAEMONCORE_NTFS_DELETED_EXPECTED: ${{ github.workspace }}\.ci-fixtures\ntfs-deleted-reference\RECOVER.BIN.expected
-        run: cargo test --manifest-path src-tauri/Cargo.toml --offline exports_deleted_file_from_independent_ntfs_image_against_sleuthkit_bytes -- --ignored --nocapture
+        run: cargo test --manifest-path src-tauri/Cargo.toml --offline exports_contiguous_and_fragmented_deleted_ntfs_files_against_sleuthkit_bytes -- --ignored --nocapture
 
   raid5-reference-validation:
     runs-on: ubuntu-24.04

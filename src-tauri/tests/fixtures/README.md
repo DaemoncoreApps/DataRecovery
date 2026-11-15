@@ -12,14 +12,16 @@ Tests read it as evidence and never mount or alter it. It validates resident,
 nonresident, and sparse reads from an independently formatted NTFS volume.
 It does not establish deleted-file recovery accuracy on arbitrary real disks.
 
-The Linux NTFS validation job also creates a separate image with `mkntfs`,
-copies and deletes a deterministic 65,536-byte `RECOVER.BIN` through
-`ntfs-3g`, and requires Sleuth Kit to list the deleted MFT entry and recover
-the exact original bytes. The Windows job checks the transferred image hash,
-then runs the native NTFS scanner, exporter, and package verifier against that
-fixture. This validates one independently formatted deleted-file case; it does
-not qualify fragmented/degraded metadata, reused records, alternate NTFS
-versions, or arbitrary real-world deletion patterns.
+The Linux NTFS validation job creates a separate image with `mkntfs`, copies
+and deletes a deterministic 65,536-byte `RECOVER.BIN` through `ntfs-3g`, then
+creates `RECOVER_FRAGMENTED.BIN` around an interleaved allocation and deletes
+both files. Sleuth Kit must list both deleted MFT entries and recover exact
+original bytes. The Windows job checks the transferred image hash, then runs
+the native NTFS scanner, exporter, and package verifier against both entries;
+the test also requires non-adjacent data runs for the fragmented file. This
+validates two independently formatted deleted-file patterns; it does not
+qualify reused records, alternate NTFS versions, damaged volumes, or arbitrary
+real-world deletion patterns.
 # External reference fixtures
 
 The exFAT validation workflow downloads a separately generated filesystem image

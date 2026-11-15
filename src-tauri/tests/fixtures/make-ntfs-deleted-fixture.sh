@@ -7,6 +7,7 @@ mkdir -p "$output_dir"
 image="$output_dir/deleted-ntfs.img"
 expected="$output_dir/RECOVER.BIN.expected"
 independent_recovery="$output_dir/RECOVER.BIN.sleuthkit"
+fragmented_recovery="$output_dir/RECOVER_FRAGMENTED.BIN.sleuthkit"
 mount_dir="$(mktemp -d)"
 cleanup() {
   if mountpoint -q "$mount_dir"; then
@@ -26,31 +27,48 @@ truncate -s 256M "$image"
 mkntfs --force --quick --label DCRTEST "$image"
 sudo mount -t ntfs-3g -o loop,rw "$image" "$mount_dir"
 sudo cp "$expected" "$mount_dir/RECOVER.BIN"
+head -c 32768 "$expected" | sudo tee "$mount_dir/RECOVER_FRAGMENTED.BIN" >/dev/null
+sudo dd if=/dev/zero of="$mount_dir/INTERLEAVE.BIN" bs=32768 count=1 status=none
+tail -c +32769 "$expected" | sudo tee -a "$mount_dir/RECOVER_FRAGMENTED.BIN" >/dev/null
 sync
 test -f "$mount_dir/RECOVER.BIN"
 cmp "$expected" "$mount_dir/RECOVER.BIN"
+cmp "$expected" "$mount_dir/RECOVER_FRAGMENTED.BIN"
 sudo rm "$mount_dir/RECOVER.BIN"
+sudo rm "$mount_dir/INTERLEAVE.BIN"
+sudo rm "$mount_dir/RECOVER_FRAGMENTED.BIN"
 sync
 sudo umount "$mount_dir"
 
 listing="$(fls -f ntfs -d -p "$image")"
-line="$(printf '%s\n' "$listing" | grep -iE 'RECOVER[.]BIN$' | head -n 1 || true)"
-if [[ -z "$line" ]]; then
-  printf 'Sleuth Kit did not list the deleted file. Deleted-entry listing:\n%s\n' \
-    "$listing" >&2
-  exit 1
-fi
-inode="$(printf '%s\n' "$line" | awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^[0-9]+(-[0-9]+-[0-9]+)?:$/) { sub(/:.*/, "", $i); split($i, parts, "-"); print parts[1]; exit } }')"
-if [[ -z "$inode" ]]; then
-  printf 'Could not identify the deleted entry MFT record from: %s\n' "$line" >&2
-  exit 1
-fi
+deleted_inode() {
+  local name="$1"
+  local line inode
+  line="$(printf '%s\n' "$listing" | grep -iF ": $name" | head -n 1 || true)"
+  if [[ -z "$line" ]]; then
+    printf 'Sleuth Kit did not list deleted %s. Deleted-entry listing:\n%s\n' \
+      "$name" "$listing" >&2
+    return 1
+  fi
+  inode="$(printf '%s\n' "$line" | awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^[0-9]+(-[0-9]+-[0-9]+)?:$/) { sub(/:.*/, "", $i); split($i, parts, "-"); print parts[1]; exit } }')"
+  if [[ -z "$inode" ]]; then
+    printf 'Could not identify the deleted entry MFT record from: %s\n' "$line" >&2
+    return 1
+  fi
+  printf '%s\n' "$inode"
+}
+
+inode="$(deleted_inode RECOVER.BIN)"
+fragmented_inode="$(deleted_inode RECOVER_FRAGMENTED.BIN)"
 icat -r -f ntfs "$image" "$inode" > "$independent_recovery"
+icat -r -f ntfs "$image" "$fragmented_inode" > "$fragmented_recovery"
 cmp "$expected" "$independent_recovery"
+cmp "$expected" "$fragmented_recovery"
 
 printf 'expected_sha256='
 sha256sum "$expected"
 printf 'image_sha256='
 sha256sum "$image"
 printf 'sleuthkit_deleted_mft_record=%s\n' "$inode"
+printf 'sleuthkit_fragmented_deleted_mft_record=%s\n' "$fragmented_inode"
 sha256sum "$image" | awk '{print $1}' > "$image.sha256"
