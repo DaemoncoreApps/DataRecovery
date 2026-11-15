@@ -85,6 +85,7 @@ function App() {
     [job, setJob] = useState<Job>(emptyJob),
     [error, setError] = useState(""),
     [statusError, setStatusError] = useState(""),
+    [backgroundErrors, setBackgroundErrors] = useState<Record<string, string>>({}),
     [cases, setCases] = useState<Case[]>([]),
     [caseEvidence, setCaseEvidence] = useState<CaseEvidenceRecord[]>([]),
     [caseScans, setCaseScans] = useState<CaseScanSession[]>([]),
@@ -121,6 +122,16 @@ function App() {
     [busy, setBusy] = useState(false);
   const sourceGeneration = useRef(0);
   const actionInProgress = useRef(false);
+  const reportBackgroundError = (key: string, error: unknown | null) =>
+    setBackgroundErrors((current) => {
+      if (error === null) {
+        if (!(key in current)) return current;
+        const next = { ...current };
+        delete next[key];
+        return next;
+      }
+      return { ...current, [key]: String(error) };
+    });
   const run = async (action: () => Promise<void>) => {
     if (actionInProgress.current) return;
     actionInProgress.current = true;
@@ -137,18 +148,31 @@ function App() {
   };
   useEffect(() => {
     if (native) {
+      let active = true;
       command<Case[]>("list_cases")
-        .then(setCases)
-        .catch((e) => setError(String(e)));
-      command<ActiveCaseState>("get_active_case_state")
-        .then(({ case_id, audit_matched }) => {
-          setActiveCaseId(case_id);
-          setActiveCaseAuditMatched(audit_matched);
+        .then((result) => {
+          if (!active) return;
+          setCases(result);
+          reportBackgroundError("cases", null);
         })
         .catch((e) => {
-          setActiveCaseAuditMatched(false);
-          setError(String(e));
+          if (active) reportBackgroundError("cases", `Case list: ${String(e)}`);
         });
+      command<ActiveCaseState>("get_active_case_state")
+        .then(({ case_id, audit_matched }) => {
+          if (!active) return;
+          setActiveCaseId(case_id);
+          setActiveCaseAuditMatched(audit_matched);
+          reportBackgroundError("active-case", null);
+        })
+        .catch((e) => {
+          if (!active) return;
+          setActiveCaseAuditMatched(false);
+          reportBackgroundError("active-case", `Active case state: ${String(e)}`);
+        });
+      return () => {
+        active = false;
+      };
     }
   }, []);
   useEffect(() => {
@@ -189,10 +213,11 @@ function App() {
           setCaseScans(scans);
           setFat32CaseScans(fat32Scans);
           setExfatCaseScans(exfatScans);
+          reportBackgroundError("case-evidence", null);
         }
       })
       .catch((e) => {
-        if (active) setError(String(e));
+        if (active) reportBackgroundError("case-evidence", `Case evidence and scan history: ${String(e)}`);
       });
     return () => {
       active = false;
@@ -242,13 +267,23 @@ function App() {
       !source
     )
       return;
+    let active = true;
     command<CarvePage>("carve_results", {
       sourceId: source.id,
       offset: carvePageIndex * 100,
       limit: 100,
     })
-      .then(setCarvePage)
-      .catch((e) => setError(String(e)));
+      .then((result) => {
+        if (!active) return;
+        setCarvePage(result);
+        reportBackgroundError("carve-results", null);
+      })
+      .catch((e) => {
+        if (active) reportBackgroundError("carve-results", `Carving results: ${String(e)}`);
+      });
+    return () => {
+      active = false;
+    };
   }, [native, page, job.kind, job.state, source?.id, carvePageIndex]);
   useEffect(() => {
     if (!native || page !== "Filesystem Analysis" || job.kind !== "exfat_scan" || job.state !== "completed" || !source) return;
@@ -263,14 +298,15 @@ function App() {
           setExfatPage(null);
           setExfatSummary(null);
           setExfatSelected(new Set());
-          setError("The exFAT scan summary no longer matches the active source. Re-run the analysis.");
+          reportBackgroundError("exfat-results", "The scan summary no longer matches the active source. Re-run the analysis.");
           return;
         }
         setExfatPage(results);
         setExfatSummary(summary);
+        reportBackgroundError("exfat-results", null);
       })
       .catch((e) => {
-        if (active) setError(String(e));
+        if (active) reportBackgroundError("exfat-results", `exFAT scan results: ${String(e)}`);
       });
     return () => { active = false; };
   }, [native, page, job.kind, job.state, source?.id, exfatPageIndex]);
@@ -544,6 +580,11 @@ function App() {
           Background status is temporarily unavailable. {statusError}
         </div>
       )}
+      {Object.entries(backgroundErrors).map(([key, message]) => (
+        <div className="warning" role="status" key={key}>
+          Background data could not be loaded. {message}
+        </div>
+      ))}
       {error && (
         <div className="warning" role="alert">
           {error}
