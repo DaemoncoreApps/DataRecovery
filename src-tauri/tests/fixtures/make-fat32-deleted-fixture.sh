@@ -18,13 +18,22 @@ touch -d "2020-01-01T00:00:00Z" "$expected"
 truncate -s 128M "$image"
 mkfs.vfat -F 32 -s 1 -n DCRTEST -i 0xDCDC0201 "$image"
 mcopy -i "$image" "$expected" ::RECOVER.BIN
-mdir -i "$image" :: | grep -F 'RECOVER.BIN' >/dev/null
+directory_listing="$(mdir -i "$image" ::)"
+if ! printf '%s\n' "$directory_listing" | grep -qiF 'RECOVER.BIN'; then
+  printf 'RECOVER.BIN is missing immediately after mcopy. FAT32 root listing:\n%s\n' \
+    "$directory_listing" >&2
+  exit 1
+fi
 mdel -i "$image" ::RECOVER.BIN
 fsck.fat -vn "$image" >/dev/null
 
 listing="$(fls -f fat32 -d -p "$image")"
-printf '%s\n' "$listing" | grep -E 'RECOVER\.BIN$'
-inode="$(printf '%s\n' "$listing" | awk '/RECOVER\.BIN$/ { for (i = NF; i > 0; i--) if ($i ~ /^[0-9]+:$/) { sub(/:$/, "", $i); print $i; exit } }')"
+if ! printf '%s\n' "$listing" | grep -iE 'RECOVER\.BIN$'; then
+  printf 'Sleuth Kit did not list the deleted file. Deleted-entry listing:\n%s\n' \
+    "$listing" >&2
+  exit 1
+fi
+inode="$(printf '%s\n' "$listing" | awk 'toupper($0) ~ /RECOVER\.BIN$/ { for (i = NF; i > 0; i--) if ($i ~ /^[0-9]+:$/) { sub(/:$/, "", $i); print $i; exit } }')"
 if [[ -z "$inode" ]]; then
   echo "Could not identify the deleted entry's Sleuth Kit metadata address" >&2
   exit 1
