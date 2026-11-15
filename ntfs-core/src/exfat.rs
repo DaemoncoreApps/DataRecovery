@@ -735,7 +735,12 @@ impl Volume {
             if set.iter().any(|record| (record[0] & 0x80 == 0) != deleted) {
                 return Err("exFAT file entry set has inconsistent in-use flags.".into());
             }
-            if entry_set_checksum(set) != u16::from_le_bytes([primary[2], primary[3]]) {
+            let checksum = if deleted {
+                deleted_entry_set_checksum(set)
+            } else {
+                entry_set_checksum(set)
+            };
+            if checksum != u16::from_le_bytes([primary[2], primary[3]]) {
                 return Err("exFAT file entry-set checksum is invalid.".into());
             }
             if secondary_count < 2 || set[1][0] & 0x7f != 0x40 {
@@ -1039,6 +1044,22 @@ fn entry_set_checksum(set: &[[u8; 32]]) -> u16 {
                 continue;
             }
             checksum = checksum.rotate_right(1).wrapping_add(u16::from(*byte));
+        }
+    }
+    checksum
+}
+
+fn deleted_entry_set_checksum(set: &[[u8; 32]]) -> u16 {
+    let mut checksum = 0u16;
+    for (record_index, record) in set.iter().enumerate() {
+        for (byte_index, byte) in record.iter().enumerate() {
+            if record_index == 0 && matches!(byte_index, 2 | 3) {
+                continue;
+            }
+            // Deletion clears InUse on disk without rewriting the checksum
+            // saved for the original, active entry set.
+            let value = if byte_index == 0 { *byte | 0x80 } else { *byte };
+            checksum = checksum.rotate_right(1).wrapping_add(u16::from(value));
         }
     }
     checksum
@@ -1422,8 +1443,6 @@ mod tests {
         for record in &mut deleted {
             record[0] &= 0x7f;
         }
-        let checksum = entry_set_checksum(&deleted);
-        deleted[0][2..4].copy_from_slice(&checksum.to_le_bytes());
         for (index, record) in deleted.iter().enumerate() {
             source.0[heap_start + 160 + index * 32..heap_start + 192 + index * 32]
                 .copy_from_slice(record);
@@ -1441,6 +1460,12 @@ mod tests {
         assert!(with_deleted[1].entry.deleted);
         assert_eq!(with_deleted[1].entry.data_length, 512);
         assert!(with_deleted[1].entry.no_fat_chain);
+
+        source.0[heap_start + 160 + 2 * 32 + 2] ^= 1;
+        assert!(volume
+            .read_tree_with_deleted(&source)
+            .unwrap_err()
+            .contains("entry-set checksum is invalid"));
     }
 
     #[test]

@@ -138,3 +138,7 @@ not mapped or exported. The UI, archived review, report scope text, and
 capability matrix label these records as metadata leads. This is an inventory
 improvement only; deleted exFAT recovery and independently formatted deleted
 fixtures remain release gates.
+
+### exFAT deleted-entry checksum correction
+
+Hosted run 43674854522 exposed that exFAT deletion clears each entry-set InUse bit without rewriting the original active entry-set checksum. The parser now reconstructs the original InUse bits only while checking the stored checksum and preserves the inactive raw records in results. A synthetic regression covers both valid deletion and tampering; local full validation passes. The independent reference-volume check must pass on a new hosted run before this recovery slice is accepted.
