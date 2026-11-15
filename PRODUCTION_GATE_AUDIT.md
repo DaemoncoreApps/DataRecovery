@@ -101,3 +101,17 @@ the dependent Windows FAT32 export and RAID reconstruction checks were skipped.
 The MFT record fuzz campaign passed on run 43663566673; the whole-image and
 partition-image campaigns were still running when this update was written. These
 Linux checks do not establish the missing Windows end-to-end behavior.
+
+On [run 43664981029](https://github.com/DaemoncoreApps/DataRecovery/actions/runs/43664981029)
+for commit `ed69228`, the decoupled Windows validation job completed successfully,
+including `npm run validate`, the independent multi-cluster FAT32 image test, and
+the independent exFAT carving-content test. The MFT, whole-image NTFS scan, and
+partition-image fuzz campaigns all completed successfully. Linux independently
+formatted and checked the FAT32 deleted-file fixture, and the core mapper matched
+its known bytes; Linux MD created the RAID 5 reference array and matched its
+known logical-image hash. Uploading those two fixtures failed at the Actions
+artifact storage quota, so the separate Windows RAID reconstruction and FAT32
+package-export checks were skipped. The workflow's overall conclusion is
+therefore failure even though its baseline Windows and parser-fuzz jobs passed.
+This improves visibility of test outcomes but does not close the two Windows
+reference gates.

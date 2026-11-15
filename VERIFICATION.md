@@ -1343,3 +1343,22 @@ was exhausted; dependent Windows integration checks were skipped. Linux MD
 array creation and known-image hash checks passed. At the time of this record,
 the parser fuzz campaigns were still running, so the hosted run does not prove
 all validation gates.
+
+## Hosted baseline validation after fixture-job split — 2026-11-15
+
+Run [43664981029](https://github.com/DaemoncoreApps/DataRecovery/actions/runs/43664981029)
+used commit `ed69228`. The regular Windows job no longer waits on generated
+fixture uploads; it completed `npm run validate`, the independent multi-cluster
+FAT32 image test, and the independent exFAT carving-content test. ExFAT volume
+inventory and the three MFT, whole-image NTFS, and partition-image fuzz campaigns
+also passed.
+
+The Linux FAT32 deletion fixture was independently checked with Sleuth Kit and
+matched the core mapper's expected bytes. Linux MD created the RAID 5 reference
+array and verified its known logical-image hash. Both fixture uploads failed
+because the Actions artifact storage quota was exhausted; the dedicated Windows
+reference job was skipped. The overall workflow therefore concluded failure,
+and Windows package export against the deleted FAT32 fixture and Windows RAID 5
+reconstruction against Linux MD member data remain unverified. Splitting the jobs
+keeps ordinary Windows validation visible but does not replace those reference
+checks.
