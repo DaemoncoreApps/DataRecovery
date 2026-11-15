@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Boxes, CircleAlert, RefreshCw, ShieldCheck } from "lucide-react";
-import { command, native, type Job, type PhysicalDevice, type RecoveryExportVerification, type Source } from "./bridge";
+import { command, native, type Job, type PhysicalDevice, type PhysicalDeviceInventory, type RecoveryExportVerification, type Source } from "./bridge";
 import { bytes } from "./format";
 
 const busNames: Record<number, string> = {
@@ -38,6 +38,7 @@ interface Props {
 
 export function DiskImagingPanel({ job, busy, canAcquire, run, onSource, onJob }: Props) {
   const [devices, setDevices] = useState<PhysicalDevice[]>([]);
+  const [probeFailures, setProbeFailures] = useState<PhysicalDeviceInventory["failures"]>([]);
   const [attested, setAttested] = useState(false);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
@@ -49,8 +50,12 @@ export function DiskImagingPanel({ job, busy, canAcquire, run, onSource, onJob }
     if (!native) return;
     setLoading(true);
     setMessage("");
+    setDevices([]);
+    setProbeFailures([]);
     try {
-      setDevices(await command<PhysicalDevice[]>("list_physical_devices"));
+      const inventory = await command<PhysicalDeviceInventory>("list_physical_devices");
+      setDevices(inventory.devices);
+      setProbeFailures(inventory.failures);
     } catch (error) {
       setMessage(String(error));
     } finally {
@@ -124,8 +129,19 @@ export function DiskImagingPanel({ job, busy, canAcquire, run, onSource, onJob }
               </div>
             ) : (
               <div className="empty">
-                <h3>{loading ? "Checking connected disks" : "No readable physical disks found"}</h3>
-                <p>Windows may require an elevated session to read raw physical devices. Refresh after connecting the device through its write blocker.</p>
+                <h3>{loading ? "Checking connected disks" : probeFailures.length ? "Physical disks need attention" : "No readable physical disks found"}</h3>
+                {!probeFailures.length && <p>Connect the source through its write blocker, then refresh the device list.</p>}
+              </div>
+            )}
+            {probeFailures.length > 0 && (
+              <div className="warning" role="status">
+                <strong>Some physical devices could not be inspected</strong>
+                <ul>
+                  {probeFailures.map((failure) => (
+                    <li key={failure.number}>PhysicalDrive {failure.number}: {failure.message}</li>
+                  ))}
+                </ul>
+                <p>Resolve the listed access or device issue, then refresh before starting acquisition.</p>
               </div>
             )}
             <label className="checkLabel acquisitionAttestation">

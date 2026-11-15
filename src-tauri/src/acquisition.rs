@@ -45,29 +45,60 @@ pub struct DeviceIdentity {
     pub identity_error: Option<String>,
 }
 
+#[derive(Serialize)]
+pub struct DeviceProbeFailure {
+    pub number: u32,
+    pub message: String,
+}
+
+#[derive(Serialize)]
+pub struct PhysicalDeviceInventory {
+    pub devices: Vec<PhysicalDevice>,
+    pub failures: Vec<DeviceProbeFailure>,
+}
+
+enum DeviceProbeError {
+    Unavailable,
+    Failed(String),
+}
+
+impl DeviceProbeError {
+    fn message(self) -> String {
+        match self {
+            Self::Unavailable => "The selected physical device is no longer available.".into(),
+            Self::Failed(message) => message,
+        }
+    }
+}
+
 struct DeviceSource {
     file: Mutex<File>,
     info: PhysicalDevice,
 }
 
 impl DeviceSource {
-    fn open(number: u32) -> Result<Self> {
+    fn open(number: u32) -> std::result::Result<Self, DeviceProbeError> {
         if number >= MAX_PHYSICAL_DEVICES {
-            return Err("Physical device number is outside the supported range.".into());
+            return Err(DeviceProbeError::Failed(
+                "Physical device number is outside the supported range.".into(),
+            ));
         }
         let path = PathBuf::from(format!(r"\\.\PhysicalDrive{number}"));
         let file = OpenOptions::new()
             .read(true)
             .share_mode(3)
             .open(path)
-            .map_err(|error| format!("Could not open PhysicalDrive{number} read-only: {error}"))?;
+            .map_err(|error| classify_device_open_error(number, error))?;
         let mut geometry = [0u8; 64];
         let geometry_bytes =
-            device_io_control(&file, IOCTL_DISK_GET_DRIVE_GEOMETRY_EX, &mut geometry)?;
+            device_io_control(&file, IOCTL_DISK_GET_DRIVE_GEOMETRY_EX, &mut geometry)
+                .map_err(DeviceProbeError::Failed)?;
         let mut length_info = [0u8; 8];
-        let length_bytes = device_io_control(&file, IOCTL_DISK_GET_LENGTH_INFO, &mut length_info)?;
+        let length_bytes = device_io_control(&file, IOCTL_DISK_GET_LENGTH_INFO, &mut length_info)
+            .map_err(DeviceProbeError::Failed)?;
         let (bytes_per_sector, size_bytes) =
-            parse_device_geometry(&geometry, geometry_bytes, &length_info, length_bytes)?;
+            parse_device_geometry(&geometry, geometry_bytes, &length_info, length_bytes)
+                .map_err(DeviceProbeError::Failed)?;
         let identity = query_device_identity(&file);
         Ok(Self {
             file: Mutex::new(file),
@@ -78,6 +109,16 @@ impl DeviceSource {
                 identity,
             },
         })
+    }
+}
+
+fn classify_device_open_error(number: u32, error: std::io::Error) -> DeviceProbeError {
+    match error.raw_os_error() {
+        // An absent PhysicalDrive path is normal while probing the bounded device-number range.
+        Some(2 | 3) => DeviceProbeError::Unavailable,
+        _ => DeviceProbeError::Failed(format!(
+            "Could not open PhysicalDrive{number} read-only: {error}"
+        )),
     }
 }
 
@@ -320,10 +361,23 @@ fn device_io_control(file: &File, code: u32, output: &mut [u8]) -> Result<usize>
 }
 
 #[tauri::command]
-pub fn list_physical_devices() -> Vec<PhysicalDevice> {
-    (0..MAX_PHYSICAL_DEVICES)
-        .filter_map(|number| DeviceSource::open(number).ok().map(|device| device.info))
-        .collect()
+pub fn list_physical_devices() -> PhysicalDeviceInventory {
+    let mut inventory = PhysicalDeviceInventory {
+        devices: Vec::new(),
+        failures: Vec::new(),
+    };
+    for number in 0..MAX_PHYSICAL_DEVICES {
+        match DeviceSource::open(number) {
+            Ok(device) => inventory.devices.push(device.info),
+            Err(DeviceProbeError::Unavailable) => {}
+            Err(DeviceProbeError::Failed(message)) => {
+                inventory
+                    .failures
+                    .push(DeviceProbeFailure { number, message });
+            }
+        }
+    }
+    inventory
 }
 
 #[derive(Serialize)]
@@ -884,7 +938,7 @@ pub async fn acquire_physical_device(
     let Some(selected_folder) = selected_folder else {
         return Ok(false);
     };
-    let device = DeviceSource::open(expected_device.number)?;
+    let device = DeviceSource::open(expected_device.number).map_err(DeviceProbeError::message)?;
     validate_selected_device(&expected_device, &device.info)?;
     let destination = crate::destination::check_device_destination(
         expected_device.number,
@@ -1117,6 +1171,25 @@ mod tests {
     use std::sync::atomic::AtomicU64;
 
     static NEXT_DIR: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn device_enumeration_ignores_absent_paths_but_reports_access_failures() {
+        assert!(matches!(
+            classify_device_open_error(7, std::io::Error::from_raw_os_error(2)),
+            DeviceProbeError::Unavailable
+        ));
+        assert!(matches!(
+            classify_device_open_error(7, std::io::Error::from_raw_os_error(3)),
+            DeviceProbeError::Unavailable
+        ));
+        match classify_device_open_error(7, std::io::Error::from_raw_os_error(5)) {
+            DeviceProbeError::Failed(message) => {
+                assert!(message.contains("PhysicalDrive7"));
+                assert!(message.contains("read-only"));
+            }
+            DeviceProbeError::Unavailable => panic!("access denied must be visible"),
+        }
+    }
 
     struct TestSource {
         bytes: Vec<u8>,

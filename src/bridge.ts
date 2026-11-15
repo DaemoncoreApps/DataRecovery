@@ -43,6 +43,10 @@ export interface PhysicalDevice {
   bus_type: number | null;
   identity_error: string | null;
 }
+export interface PhysicalDeviceInventory {
+  devices: PhysicalDevice[];
+  failures: { number: number; message: string }[];
+}
 export interface NtfsBoot {
   offset: number;
   sector_size: number;
