@@ -1142,6 +1142,49 @@ mod tests {
     }
 
     #[test]
+    fn enumerates_a_hundred_thousand_entry_fat32_tree_with_stable_offsets() {
+        const ENTRY_COUNT: usize = 100_000;
+        let mut image = fixture();
+        let data_offset = 1056 * 512;
+        let clusters = ENTRY_COUNT.div_ceil(16);
+
+        for fat_sector in [32_usize, 544] {
+            let fat_offset = fat_sector * 512;
+            for index in 0..clusters {
+                let cluster = 2 + index;
+                let next = if index + 1 == clusters {
+                    0x0fff_ffff_u32
+                } else {
+                    (cluster + 1) as u32
+                };
+                let offset = fat_offset + cluster * 4;
+                image[offset..offset + 4].copy_from_slice(&next.to_le_bytes());
+            }
+        }
+
+        for index in 0..ENTRY_COUNT {
+            let cluster_offset = data_offset + (index / 16) * 512;
+            let record_offset = cluster_offset + (index % 16) * 32;
+            let record = &mut image[record_offset..record_offset + 32];
+            record[..8].copy_from_slice(format!("F{index:07}").as_bytes());
+            record[8..11].copy_from_slice(b"TXT");
+            record[11] = 0x20;
+        }
+
+        let source = SliceSource(&image);
+        let volume = Volume::open(&source, 0, source.len()).unwrap();
+        let entries = volume.read_tree(&source).unwrap();
+
+        assert_eq!(entries.len(), ENTRY_COUNT);
+        assert_eq!(entries[0].path, ["F0000000.TXT"]);
+        assert_eq!(entries[ENTRY_COUNT - 1].path, ["F0099999.TXT"]);
+        assert_eq!(
+            entries[ENTRY_COUNT - 1].entry.source_offset,
+            (data_offset + (clusters - 1) * 512 + 15 * 32) as u64
+        );
+    }
+
+    #[test]
     #[ignore = "requires the hash-pinned University of Virginia FAT32 reference image and expected dump"]
     fn reads_independent_multicluster_fat32_reference_image() {
         let image_path = std::env::var_os("DAEMONCORE_FAT32_REFERENCE_IMAGE")

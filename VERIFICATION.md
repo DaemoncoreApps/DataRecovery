@@ -1656,7 +1656,13 @@ retained paths, names, result storage, traversal paths, and visited-directory
 state, and stops when the estimate exceeds 256 MiB. Directory and tree vectors
 reserve fallibly so allocation failure returns an operator-visible error. The
 memory-limit arithmetic regression and full local `npm run validate` passed:
-frontend build, 62 core tests and 156 desktop tests, formatting, and Clippy with
+frontend build, 63 core tests and 156 desktop tests, formatting, and Clippy with
 warnings denied (3 core and 9 desktop tests are ignored). The limits are
 safeguards, not evidence of large-volume throughput or UI responsiveness;
 representative scale benchmarks remain open.
+
+A synthetic 100,000-entry FAT32 root chain spans 6,250 linked clusters and
+checks full entry count, first/last names, and the final absolute source offset.
+It completed in 0.97 seconds on the current development host. This exercises
+large directory traversal and memory accounting but is not a representative
+volume benchmark or UI responsiveness measurement.
