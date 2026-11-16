@@ -14,6 +14,9 @@ interface Props {
   busy: boolean;
   job: Job;
   open: () => void;
+  onSelectCase: () => void;
+  canOpenEvidence: boolean;
+  openPrompt: string;
   hash: () => void;
   onInspect: () => void;
   onScan: () => void;
@@ -24,6 +27,9 @@ export function SourcePanel({
   busy,
   job,
   open,
+  onSelectCase,
+  canOpenEvidence,
+  openPrompt,
   hash,
   onInspect,
   onScan,
@@ -100,12 +106,18 @@ export function SourcePanel({
               <br />
               examine raw data, and establish an image digest.
             </p>
+            {!canOpenEvidence && (
+              <p className="muted casePrerequisite" role="status">
+                {openPrompt}
+              </p>
+            )}
             <button
               className="sourceBrowse"
-              onClick={open}
+              onClick={canOpenEvidence ? open : onSelectCase}
               disabled={busy || job.state === "running"}
             >
-              <FolderOpen size={15} /> Select evidence image{" "}
+              <FolderOpen size={15} />
+              {canOpenEvidence ? "Select evidence image" : openPrompt}
               <ChevronRight size={13} />
             </button>
             <div className="formatChips" aria-label="Supported image formats">

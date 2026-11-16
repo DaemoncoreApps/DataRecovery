@@ -341,12 +341,19 @@ function App() {
     setArchivedPageIndex(0);
     setCaseReport(null);
   };
-  const open = () =>
-    run(async () => {
-      if (activeCaseId === null)
-        throw new Error("Create or select a case before opening evidence.");
-      if (!activeCaseAuditMatched)
-        throw new Error("Re-select the intended active case to record a correction before opening evidence.");
+  const canOpenEvidence = activeCaseId !== null && activeCaseAuditMatched;
+  const openPrompt =
+    cases.length === 0
+      ? "Create a case first"
+      : activeCaseId === null
+        ? "Select an active case"
+        : "Reconfirm the active case";
+  const open = () => {
+    if (!canOpenEvidence) {
+      setPage("Case Management");
+      return;
+    }
+    void run(async () => {
       const s = await command<Source | null>("open_image");
       if (s) {
         sourceGeneration.current += 1;
@@ -360,6 +367,7 @@ function App() {
         setPage("Image Workspace");
       }
     });
+  };
   const hash = () =>
     run(async () => {
       await command("start_hash");
@@ -548,7 +556,8 @@ function App() {
           onClick={open}
           disabled={busy || job.state === "running"}
         >
-          <Plus size={16} /> Open disk image
+          {canOpenEvidence ? <Plus size={16} /> : <FolderOpen size={16} />}
+          {canOpenEvidence ? "Open disk image" : openPrompt}
         </button>
       </div>
     </div>
@@ -559,6 +568,9 @@ function App() {
       busy={busy}
       job={job}
       open={open}
+      onSelectCase={() => setPage("Case Management")}
+      canOpenEvidence={canOpenEvidence}
+      openPrompt={openPrompt}
       hash={hash}
       onInspect={() => setPage("Hex Inspector")}
       onScan={() => setPage("Recovery Workspace")}
@@ -607,6 +619,8 @@ function App() {
           sourcePanel={sourcePanel}
           jobPanel={jobPanel}
           open={open}
+          canOpenEvidence={canOpenEvidence}
+          openPrompt={openPrompt}
           setPage={setPage}
           busy={busy}
         />
@@ -812,6 +826,15 @@ function App() {
         </section>
       ) : page === "Case Management" ? (
         <>
+          {!canOpenEvidence && (
+            <div className="warning" role="status">
+              {cases.length === 0
+                ? "Create a case before opening evidence."
+                : activeCaseId === null
+                  ? "Select a case in the register before opening evidence."
+                  : "Reconfirm the intended active case before opening evidence."}
+            </div>
+          )}
           <section className="panel">
             <div className="panelTitle">
               <h2>Create local case</h2>

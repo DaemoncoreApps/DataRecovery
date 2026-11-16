@@ -63,6 +63,14 @@ attempted but could not replace the tested binary because the still-open app
 held the file (`Access is denied`). The fix therefore has source/test evidence,
 not native packaged-runtime confirmation yet.
 
+Image-open entry points now route to Case Management when no active,
+audit-matched case is available. The prompt distinguishes creating a first case,
+selecting a stored case, and reconfirming an audit-mismatched case. The case
+register shows the matching instruction before the examiner proceeds. This
+change passed the full local `npm run validate` suite, but the open native
+smoke-test process still holds the executable built from the previous source;
+this latest UI change has not yet been built or verified in the desktop runtime.
+
 ## Current optimized Windows build — 2026-11-15
 
 The newest source-only validation on 2026-11-15 passed `npm run validate`:

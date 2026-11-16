@@ -20,6 +20,8 @@ export function Overview({
   sourcePanel,
   jobPanel,
   open,
+  canOpenEvidence,
+  openPrompt,
   setPage,
   busy,
 }: {
@@ -29,6 +31,8 @@ export function Overview({
   sourcePanel: ReactNode;
   jobPanel: ReactNode;
   open: () => void;
+  canOpenEvidence: boolean;
+  openPrompt: string;
   setPage: (page: string) => void;
   busy: boolean;
 }) {
@@ -122,8 +126,14 @@ export function Overview({
               >
                 <span className="stepNumber">01</span>
                 <div>
-                  <h3>Open an evidence image</h3>
-                  <p>Load a working copy for examination.</p>
+                  <h3>
+                    {canOpenEvidence ? "Open an evidence image" : openPrompt}
+                  </h3>
+                  <p>
+                    {canOpenEvidence
+                      ? "Load a working copy for examination."
+                      : "Choose or create the case that will own this evidence first."}
+                  </p>
                 </div>
                 <ArrowRight size={14} />
               </button>
