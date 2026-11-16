@@ -17,11 +17,13 @@ and deletes a deterministic 65,536-byte `RECOVER.BIN` through `ntfs-3g`, then
 creates `RECOVER_FRAGMENTED.BIN` around an interleaved allocation and deletes
 both files. Sleuth Kit must list both deleted MFT entries and recover exact
 original bytes. The Windows job checks the transferred image hash, then runs
-the native NTFS scanner, exporter, and package verifier against both entries;
-the test also requires non-adjacent data runs for the fragmented file. This
-validates two independently formatted deleted-file patterns; it does not
-qualify reused records, alternate NTFS versions, damaged volumes, or arbitrary
-real-world deletion patterns.
+the native NTFS scanner, exporter, and package verifier against both entries.
+The fixture generator checks Sleuth Kit's `$DATA` run list for at least two
+physically non-adjacent runs, and the native test independently requires
+non-adjacent data runs before comparing exported bytes. This validates two
+independently formatted deleted-file patterns; it does not qualify reused
+records, alternate NTFS versions, damaged volumes, or arbitrary real-world
+deletion patterns.
 # External reference fixtures
 
 The exFAT validation workflow downloads a separately generated filesystem image

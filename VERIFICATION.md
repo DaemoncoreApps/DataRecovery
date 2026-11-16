@@ -77,11 +77,13 @@ passed the baseline Windows validation, FAT32/exFAT/RAID reference checks, and
 the three parser fuzz campaigns. Its Windows deleted-NTFS export test failed
 because the supposed fragmented file had one 16-cluster data run at LCN 12392.
 That is evidence of a contiguous fixture, not fragmented recovery. The local
-fixture-generator change now reserves the second extent with `ntfsfallocate`
-after an allocated blocker and prints the run layout with `istat`; it has not
-yet been run on Linux or passed the Windows exporter assertion. WSL is denied
-by this host and the Docker Linux engine is unavailable, so the fixture remains
-unverified and fragmented NTFS recovery is not qualified.
+fixture generator reserves the second extent with `ntfsfallocate` after an
+allocated blocker, uses `istat -r`, and fails unless Sleuth Kit reports at
+least two physically non-adjacent `$DATA` runs. The native exporter test also
+rejects a contiguous run list. This strengthening has not yet been run on Linux
+or passed the Windows exporter assertion. WSL is denied by this host and the
+Docker Linux engine is unavailable, so the fixture remains unverified and
+fragmented NTFS recovery is not qualified.
 
 ## FAT32 deleted-name leads — 2026-11-15
 

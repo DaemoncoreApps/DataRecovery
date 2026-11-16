@@ -67,7 +67,35 @@ deleted_inode() {
 
 inode="$(deleted_inode RECOVER.BIN)"
 fragmented_inode="$(deleted_inode RECOVER_FRAGMENTED.BIN)"
-istat -f ntfs "$image" "$fragmented_inode"
+fragmented_istat="$(istat -r -f ntfs "$image" "$fragmented_inode")"
+printf '%s\n' "$fragmented_istat"
+printf '%s\n' "$fragmented_istat" | python3 -c '
+import re
+import sys
+
+text = sys.stdin.read()
+match = re.search(
+    r"^\s*Type: \$DATA \(128-\d+\).*?\n(.*?)(?=^\s*Type: |\Z)",
+    text,
+    re.MULTILINE | re.DOTALL,
+)
+if match is None:
+    raise SystemExit("Sleuth Kit did not report a nonresident $DATA attribute")
+runs = [
+    (int(start), int(length))
+    for start, length in re.findall(
+        r"^\s*Starting address: (\d+), length: (\d+)", match.group(1), re.MULTILINE
+    )
+]
+if len(runs) < 2:
+    raise SystemExit(f"fragmented fixture must have at least two $DATA runs; found {runs}")
+if not any(
+    start + length != next_start
+    for (start, length), (next_start, _) in zip(runs, runs[1:])
+):
+    raise SystemExit(f"$DATA runs are physically adjacent, not fragmented: {runs}")
+print(f"verified_nonadjacent_data_runs={runs}")
+'
 icat -r -f ntfs "$image" "$inode" > "$independent_recovery"
 icat -r -f ntfs "$image" "$fragmented_inode" > "$fragmented_recovery"
 cmp "$expected" "$independent_recovery"
