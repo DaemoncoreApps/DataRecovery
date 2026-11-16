@@ -1690,6 +1690,12 @@ warnings denied (3 core and 9 desktop tests are ignored). The limits are
 safeguards, not evidence of large-volume throughput or UI responsiveness;
 representative scale benchmarks remain open.
 
+A synthetic 100,000-entry FAT32 root chain spans 6,250 linked clusters and
+checks full entry count, first/last names, and the final absolute source offset.
+It completed in 0.97 seconds on the current development host. This exercises
+large directory traversal and memory accounting but is not a representative
+volume benchmark or UI responsiveness measurement.
+
 ## Linux MD RAID 6 P/Q reconstruction — 2026-11-15
 
 Added operator-configured full-member RAID 6 reconstruction for Linux MD's
@@ -1710,8 +1716,10 @@ still needs an independently generated Linux MD array and exact-byte comparison
 before it can be considered production-qualified. RAID Reconstruction as a
 whole remains not production-qualified.
 
-A synthetic 100,000-entry FAT32 root chain spans 6,250 linked clusters and
-checks full entry count, first/last names, and the final absolute source offset.
-It completed in 0.97 seconds on the current development host. This exercises
-large directory traversal and memory accounting but is not a representative
-volume benchmark or UI responsiveness measurement.
+## Windows same-disk destination guard — 2026-11-15
+
+Ran the previously ignored Windows extent-query test against the development
+machine's temp volume. It passed: a source image and requested output folder on
+the same physical disk were rejected. This verifies the check on one local
+volume only; it does not qualify mount points, dynamic disks, Storage Spaces,
+external enclosures, or physical acquisition destinations generally.
