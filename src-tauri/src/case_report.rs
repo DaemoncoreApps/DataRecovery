@@ -203,6 +203,61 @@ fn case_operations(
     Ok(operations)
 }
 
+fn check_report_scan_budget(
+    db: &rusqlite::Connection,
+    case_id: i64,
+    max_snapshot_bytes: u64,
+) -> Result<()> {
+    let (scan_count, audit_count): (i64, i64) = db
+        .query_row(
+            "SELECT
+                (SELECT COUNT(*) FROM scan_sessions WHERE case_id=?1) +
+                (SELECT COUNT(*) FROM fat32_scan_sessions WHERE case_id=?1) +
+                (SELECT COUNT(*) FROM exfat_scan_sessions WHERE case_id=?1) +
+                (SELECT COUNT(*) FROM carve_scan_sessions WHERE case_id=?1),
+                (SELECT COUNT(*) FROM audit
+                 WHERE event IN ('ntfs_scan_persisted','fat32_scan_persisted','exfat_scan_persisted','carve_scan_persisted')
+                   AND CASE WHEN json_valid(payload) THEN json_extract(payload, '$.case_id') ELSE NULL END=?1)",
+            [case_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(err)?;
+    if scan_count > MAX_REPORT_SCANS as i64 || audit_count > MAX_REPORT_SCANS as i64 {
+        return Err(format!(
+            "The case exceeds the supported {MAX_REPORT_SCANS}-scan report limit."
+        ));
+    }
+
+    let mut statement = db
+        .prepare(
+            "SELECT length(CAST(boot_json AS BLOB)) + length(CAST(candidates_json AS BLOB)) FROM scan_sessions WHERE case_id=?1
+             UNION ALL SELECT length(CAST(boot_json AS BLOB)) + length(CAST(entries_json AS BLOB)) FROM fat32_scan_sessions WHERE case_id=?1
+             UNION ALL SELECT length(CAST(boot_json AS BLOB)) + length(CAST(entries_json AS BLOB)) FROM exfat_scan_sessions WHERE case_id=?1
+             UNION ALL SELECT length(CAST(candidates_json AS BLOB)) FROM carve_scan_sessions WHERE case_id=?1
+             UNION ALL SELECT length(CAST(payload AS BLOB)) FROM audit
+                WHERE event IN ('ntfs_scan_persisted','fat32_scan_persisted','exfat_scan_persisted','carve_scan_persisted')
+                  AND CASE WHEN json_valid(payload) THEN json_extract(payload, '$.case_id') ELSE NULL END=?1",
+        )
+        .map_err(err)?;
+    let sizes = statement
+        .query_map([case_id], |row| row.get::<_, i64>(0))
+        .map_err(err)?;
+    let mut snapshot_bytes = 0u64;
+    for size in sizes {
+        let size = u64::try_from(size.map_err(err)?).map_err(err)?;
+        snapshot_bytes = snapshot_bytes
+            .checked_add(size)
+            .ok_or("Case scan snapshot size overflow")?;
+        if snapshot_bytes > max_snapshot_bytes {
+            return Err(format!(
+                "Case scan snapshots exceed the {} byte report preflight limit.",
+                max_snapshot_bytes
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn case_imaging_and_raid_operations(
     db: &rusqlite::Connection,
     case_id: i64,
@@ -262,6 +317,8 @@ fn case_report_from(db: &rusqlite::Connection, case_id: i64) -> Result<CaseRepor
         .find(|case| case.id == case_id)
         .filter(|case| case.integrity == "audit_matched")
         .ok_or("The selected case does not have a verified creation record.")?;
+    // Bound stored payloads before serde materializes the report's scan trees in memory.
+    check_report_scan_budget(db, case_id, MAX_REPORT_BYTES as u64)?;
     let evidence = list_case_evidence_from(db, case_id)?;
     verify_evidence_record_integrity(db, &evidence)?;
     let sessions = crate::recovery_commands::list_case_scan_sessions_from(db, case_id)?;
@@ -1057,6 +1114,13 @@ mod tests {
         )
         .unwrap();
         db
+    }
+
+    #[test]
+    fn report_scan_preflight_rejects_oversized_snapshot_payloads() {
+        let db = populated_case();
+        let error = check_report_scan_budget(&db, 1, 1).unwrap_err();
+        assert!(error.contains("report preflight limit"));
     }
 
     #[test]
