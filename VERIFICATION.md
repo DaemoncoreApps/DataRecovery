@@ -1914,3 +1914,18 @@ build, formatting, 63 core tests, 166 desktop tests, and Clippy with warnings
 denied (3 core and 10 desktop tests are ignored). This improves indexed lookup
 behavior, but large forensic case databases still need representative
 performance benchmarks.
+
+## Report case setup and refreshed Windows package — 2026-11-16
+
+The Reports screen now offers a direct route to Case Management when no case is
+active or the current case needs audit reconfirmation. The frontend TypeScript
+check and production build passed. `npm exec -- tauri build --no-bundle`
+completed for the updated frontend, and the NSIS bundle completed outside the
+restricted process sandbox. The latest unsigned standalone executable is
+15,450,112 bytes (SHA-256
+`45f30daae08ee2a2a5c079b276574c165cd34a244595f553e2127f1a9aaf97ad`); the
+latest unsigned setup is 222,904,092 bytes (SHA-256
+`422cd6be9371b0121b8afd6d2b1ae373e225f31baad94d7d3ed8a7eca12aeedc`).
+Neither binary has been launched or installed. The earlier smoke approval
+covered a different executable hash, so startup is still unverified. Report
+export with an active case and installer lifecycle checks also remain open.

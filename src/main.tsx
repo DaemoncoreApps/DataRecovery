@@ -1277,12 +1277,36 @@ function App() {
               </span>
             )}
             {activeCaseId === null && (
-              <span className="muted">Select a case before exporting.</span>
+              <>
+                <span className="muted">
+                  {cases.length === 0
+                    ? "Create a case before exporting."
+                    : "Select a case before exporting."}
+                </span>
+                {native && (
+                  <button
+                    className="secondary"
+                    type="button"
+                    onClick={() => setPage("Case Management")}
+                  >
+                    Open case register <ChevronRight size={14} />
+                  </button>
+                )}
+              </>
             )}
             {activeCaseId !== null && !activeCaseAuditMatched && (
-              <span className="archivedSourceWarning">
-                Reconfirm the active case before reporting.
-              </span>
+              <>
+                <span className="archivedSourceWarning">
+                  Reconfirm the active case before reporting.
+                </span>
+                <button
+                  className="secondary"
+                  type="button"
+                  onClick={() => setPage("Case Management")}
+                >
+                  Review case register <ChevronRight size={14} />
+                </button>
+              </>
             )}
           </div>
           {caseReport && caseReport.case_id === activeCaseId && (
