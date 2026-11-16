@@ -1647,3 +1647,16 @@ all four layouts at 3, 4, 5, 8, and 32 members, with more than two parity
 rotations per width; it compares exact logical bytes and runs package
 verification for all 20 configurations. These tests do not replace the missing
 independent Linux MD references for all four layouts.
+
+## FAT32 directory memory bounds — 2026-11-15
+
+FAT32 directory parsing now limits retained per-directory entry data and backing
+capacity to an estimated 128 MiB. Full-tree enumeration separately accounts for
+retained paths, names, result storage, traversal paths, and visited-directory
+state, and stops when the estimate exceeds 256 MiB. Directory and tree vectors
+reserve fallibly so allocation failure returns an operator-visible error. The
+memory-limit arithmetic regression and full local `npm run validate` passed:
+frontend build, 62 core tests and 156 desktop tests, formatting, and Clippy with
+warnings denied (3 core and 9 desktop tests are ignored). The limits are
+safeguards, not evidence of large-volume throughput or UI responsiveness;
+representative scale benchmarks remain open.

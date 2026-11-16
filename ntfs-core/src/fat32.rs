@@ -10,6 +10,8 @@ const FAT32_RESERVED_START: u32 = 0x0fff_fff0;
 const MAX_CHAIN_CLUSTERS: usize = 1_000_000;
 const MAX_DIRECTORY_ENTRIES: usize = 1_000_000;
 const MAX_DIRECTORY_DEPTH: usize = 256;
+const MAX_PARSED_DIRECTORY_MEMORY: usize = 128 * 1024 * 1024;
+const MAX_DIRECTORY_TREE_MEMORY: usize = 256 * 1024 * 1024;
 const FAT_RANGE_READ_BYTES: usize = 64 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -287,6 +289,7 @@ impl Volume {
             return Err("FAT32 directory starting cluster is invalid".into());
         }
         let mut entries = Vec::new();
+        let mut parsed_memory = 0usize;
         let mut visited = HashSet::new();
         let mut cluster = first_cluster;
         let mut lfn_parts: Option<Vec<Option<[u16; 13]>>> = None;
@@ -415,7 +418,7 @@ impl Volume {
                 let low = u16::from_le_bytes([record[26], record[27]]) as u32;
                 let mut raw_record = [0; 32];
                 raw_record.copy_from_slice(record);
-                entries.push(DirectoryEntry {
+                let entry = DirectoryEntry {
                     source_offset: offset + (record_index * 32) as u64,
                     raw_record,
                     short_name,
@@ -425,7 +428,29 @@ impl Volume {
                     attributes: record[11],
                     first_cluster: (high << 16) | low,
                     size: u32::from_le_bytes(record[28..32].try_into().unwrap()),
-                });
+                };
+                parsed_memory = Self::checked_directory_memory(
+                    parsed_memory,
+                    Self::directory_entry_dynamic_memory(&entry)?,
+                    MAX_PARSED_DIRECTORY_MEMORY,
+                    "FAT32 directory exceeds the 128 MiB parsed-memory safety limit",
+                )?;
+                if entries.len() == entries.capacity() {
+                    entries
+                        .try_reserve_exact(256)
+                        .map_err(|_| "Could not allocate bounded FAT32 directory entries")?;
+                }
+                let allocation = entries
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<DirectoryEntry>())
+                    .ok_or("FAT32 directory memory estimate overflow")?;
+                Self::checked_directory_memory(
+                    parsed_memory,
+                    allocation,
+                    MAX_PARSED_DIRECTORY_MEMORY,
+                    "FAT32 directory exceeds the 128 MiB parsed-memory safety limit",
+                )?;
+                entries.push(entry);
             }
             if ended {
                 return Ok(entries);
@@ -455,13 +480,35 @@ impl Volume {
         include_deleted: bool,
     ) -> Result<Vec<TreeEntry>> {
         let mut output = Vec::new();
+        let mut output_memory = 0usize;
         let mut visited_directories = HashSet::new();
         let mut pending = vec![(self.root_cluster, Vec::<String>::new(), 0_usize)];
+        let mut pending_memory = std::mem::size_of::<(u32, Vec<String>, usize)>();
         visited_directories.insert(self.root_cluster);
 
         while let Some((cluster, parent_path, depth)) = pending.pop() {
+            let active_path_memory = Self::path_memory(&parent_path)?;
+            let pending_entry_memory = std::mem::size_of::<(u32, Vec<String>, usize)>()
+                .checked_add(active_path_memory)
+                .ok_or("FAT32 directory tree memory estimate overflow")?;
+            pending_memory = pending_memory
+                .checked_sub(pending_entry_memory)
+                .ok_or("FAT32 directory tree memory estimate underflow")?;
             let entries = self.read_directory_records(source, cluster, include_deleted)?;
+            let entries_storage = entries
+                .capacity()
+                .checked_mul(std::mem::size_of::<DirectoryEntry>())
+                .ok_or("FAT32 directory tree memory estimate overflow")?;
+            let mut remaining_entry_memory = entries.iter().try_fold(0usize, |total, entry| {
+                Self::checked_directory_memory(
+                    total,
+                    Self::directory_entry_dynamic_memory(entry)?,
+                    MAX_PARSED_DIRECTORY_MEMORY,
+                    "FAT32 directory exceeds the 128 MiB parsed-memory safety limit",
+                )
+            })?;
             let mut child_directories = Vec::new();
+            let mut child_directory_memory = 0usize;
             for entry in entries {
                 if !entry.deleted
                     && (entry.short_name == *b".          " || entry.short_name == *b"..         ")
@@ -473,6 +520,31 @@ impl Volume {
                 }
                 let mut path = parent_path.clone();
                 path.push(entry.display_name());
+                let entry_dynamic_memory = Self::directory_entry_dynamic_memory(&entry)?;
+                remaining_entry_memory = remaining_entry_memory
+                    .checked_sub(entry_dynamic_memory)
+                    .ok_or("FAT32 directory memory estimate underflow")?;
+                output_memory = Self::checked_directory_memory(
+                    output_memory,
+                    Self::tree_entry_dynamic_memory(&path, &entry)?,
+                    MAX_DIRECTORY_TREE_MEMORY,
+                    "FAT32 directory tree exceeds the 256 MiB estimated-result safety limit",
+                )?;
+                if output.len() == output.capacity() {
+                    output
+                        .try_reserve_exact(256)
+                        .map_err(|_| "Could not allocate bounded FAT32 directory results")?;
+                }
+                let allocation = output
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<TreeEntry>())
+                    .ok_or("FAT32 directory tree memory estimate overflow")?;
+                Self::checked_directory_memory(
+                    output_memory,
+                    allocation,
+                    MAX_DIRECTORY_TREE_MEMORY,
+                    "FAT32 directory tree exceeds the 256 MiB estimated-result safety limit",
+                )?;
                 if !entry.deleted && entry.is_directory() && !entry.is_volume_label() {
                     if depth >= MAX_DIRECTORY_DEPTH {
                         return Err("FAT32 directory tree exceeds the depth safety bound".into());
@@ -480,19 +552,161 @@ impl Volume {
                     if entry.first_cluster < 2 {
                         return Err("FAT32 subdirectory has an invalid starting cluster".into());
                     }
+                    if visited_directories.len() == visited_directories.capacity() {
+                        visited_directories.try_reserve(256).map_err(|_| {
+                            "Could not allocate bounded FAT32 directory traversal state"
+                        })?;
+                    }
                     if !visited_directories.insert(entry.first_cluster) {
                         return Err(
                             "FAT32 directory tree contains a cycle or cross-linked directory"
                                 .into(),
                         );
                     }
-                    child_directories.push((entry.first_cluster, path.clone(), depth + 1));
+                    let child_path = path.clone();
+                    let child_bytes = std::mem::size_of::<(u32, Vec<String>, usize)>()
+                        .checked_add(Self::path_memory(&child_path)?)
+                        .ok_or("FAT32 directory tree memory estimate overflow")?;
+                    child_directory_memory = Self::checked_directory_memory(
+                        child_directory_memory,
+                        child_bytes,
+                        MAX_DIRECTORY_TREE_MEMORY,
+                        "FAT32 directory tree exceeds the 256 MiB estimated-result safety limit",
+                    )?;
+                    if child_directories.len() == child_directories.capacity() {
+                        child_directories
+                            .try_reserve_exact(64)
+                            .map_err(|_| "Could not allocate bounded FAT32 pending directories")?;
+                    }
+                    child_directories.push((entry.first_cluster, child_path, depth + 1));
                 }
+                let output_storage = output
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<TreeEntry>())
+                    .ok_or("FAT32 directory tree memory estimate overflow")?;
+                let pending_storage = pending
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<(u32, Vec<String>, usize)>())
+                    .ok_or("FAT32 directory tree memory estimate overflow")?;
+                let child_storage = child_directories
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<(u32, Vec<String>, usize)>())
+                    .ok_or("FAT32 directory tree memory estimate overflow")?;
+                let visited_storage = visited_directories
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<u32>() * 2)
+                    .ok_or("FAT32 directory tree memory estimate overflow")?;
+                [
+                    output_memory,
+                    output_storage,
+                    remaining_entry_memory,
+                    entries_storage,
+                    pending_memory,
+                    pending_storage,
+                    child_directory_memory,
+                    child_storage,
+                    active_path_memory,
+                    visited_storage,
+                ]
+                .into_iter()
+                .try_fold(0usize, |total, component| {
+                    Self::checked_directory_memory(
+                        total,
+                        component,
+                        MAX_DIRECTORY_TREE_MEMORY,
+                        "FAT32 directory tree exceeds the 256 MiB estimated-result safety limit",
+                    )
+                })?;
                 output.push(TreeEntry { path, entry });
             }
+            pending
+                .try_reserve_exact(child_directories.len())
+                .map_err(|_| "Could not allocate bounded FAT32 directory traversal state")?;
+            pending_memory = pending_memory
+                .checked_add(child_directory_memory)
+                .ok_or("FAT32 directory tree memory estimate overflow")?;
+            let output_storage = output
+                .capacity()
+                .checked_mul(std::mem::size_of::<TreeEntry>())
+                .ok_or("FAT32 directory tree memory estimate overflow")?;
+            let pending_storage = pending
+                .capacity()
+                .checked_mul(std::mem::size_of::<(u32, Vec<String>, usize)>())
+                .ok_or("FAT32 directory tree memory estimate overflow")?;
+            let visited_storage = visited_directories
+                .capacity()
+                .checked_mul(std::mem::size_of::<u32>() * 2)
+                .ok_or("FAT32 directory tree memory estimate overflow")?;
+            [
+                output_memory,
+                output_storage,
+                pending_memory,
+                pending_storage,
+                visited_storage,
+            ]
+            .into_iter()
+            .try_fold(0usize, |total, component| {
+                Self::checked_directory_memory(
+                    total,
+                    component,
+                    MAX_DIRECTORY_TREE_MEMORY,
+                    "FAT32 directory tree exceeds the 256 MiB estimated-result safety limit",
+                )
+            })?;
             pending.extend(child_directories.into_iter().rev());
         }
         Ok(output)
+    }
+
+    fn directory_entry_dynamic_memory(entry: &DirectoryEntry) -> Result<usize> {
+        [
+            entry.long_name.as_ref(),
+            entry.deleted_long_name_lead.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        .try_fold(0usize, |total, name| {
+            total
+                .checked_add(name.capacity())
+                .ok_or_else(|| "FAT32 directory memory estimate overflow".into())
+        })
+    }
+
+    fn path_memory(path: &[String]) -> Result<usize> {
+        // Each path is cloned and extended by one component during traversal;
+        // allow for the clone's next Vec growth as well as its live elements.
+        let slots = path
+            .len()
+            .checked_mul(std::mem::size_of::<String>())
+            .and_then(|bytes| bytes.checked_mul(2))
+            .ok_or("FAT32 directory path memory estimate overflow")?;
+        path.iter().try_fold(slots, |total, component| {
+            total
+                .checked_add(component.capacity())
+                .ok_or_else(|| "FAT32 directory path memory estimate overflow".into())
+        })
+    }
+
+    fn tree_entry_dynamic_memory(path: &[String], entry: &DirectoryEntry) -> Result<usize> {
+        let path_bytes = Self::path_memory(path)?;
+        let entry_bytes = Self::directory_entry_dynamic_memory(entry)?;
+        path_bytes
+            .checked_add(std::mem::size_of::<DirectoryEntry>())
+            .and_then(|total| total.checked_add(entry_bytes))
+            .ok_or_else(|| "FAT32 directory tree memory estimate overflow".into())
+    }
+
+    fn checked_directory_memory(
+        current: usize,
+        additional: usize,
+        maximum: usize,
+        message: &'static str,
+    ) -> Result<usize> {
+        let total = current.checked_add(additional).ok_or(message)?;
+        if total > maximum {
+            return Err(message.into());
+        }
+        Ok(total)
     }
 
     fn cluster_offset(&self, cluster: u32) -> Result<u64> {
@@ -914,6 +1128,17 @@ mod tests {
         image[data + 512..data + 1024].fill(b'a');
         image[data + 3 * 512..data + 4 * 512].fill(b'b');
         image
+    }
+
+    #[test]
+    fn directory_memory_accounting_is_bounded_and_checked() {
+        let error = "FAT32 directory exceeds its memory safety limit";
+        assert_eq!(
+            Volume::checked_directory_memory(4, 6, 10, error).unwrap(),
+            10
+        );
+        assert!(Volume::checked_directory_memory(4, 7, 10, error).is_err());
+        assert!(Volume::checked_directory_memory(usize::MAX, 1, usize::MAX, error).is_err());
     }
 
     #[test]
