@@ -1865,3 +1865,15 @@ machine's temp volume. It passed: a source image and requested output folder on
 the same physical disk were rejected. This verifies the check on one local
 volume only; it does not qualify mount points, dynamic disks, Storage Spaces,
 external enclosures, or physical acquisition destinations generally.
+
+## Case report scan preflight — 2026-11-16
+
+Before decoding archived scan snapshots, report generation now checks that the
+selected case has no more than 200 stored scans and that its scan snapshot plus
+case-linked scan audit payloads total no more than 64 MiB. This bounds database
+payload materialization before JSON decoding; the report's existing final
+serialized-size limit remains in place. The focused report suite passes all 13
+tests, including the new oversized-snapshot preflight regression. `cargo fmt --check`,
+`cargo check --release --locked`, and `git diff --check` pass. The
+change is committed and pushed as `ca8efc0`. End-to-end report generation from
+the packaged UI remains unverified because the prior smoke had no active case.
