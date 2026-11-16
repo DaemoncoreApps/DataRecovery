@@ -384,10 +384,10 @@ fn case_report_from(db: &rusqlite::Connection, case_id: i64) -> Result<CaseRepor
     let mut exfat_scans = Vec::new();
     let mut exfat_audit = std::collections::HashMap::new();
     let mut exfat_audit_statement = db
-        .prepare("SELECT payload FROM audit WHERE event='exfat_scan_persisted'")
+        .prepare("SELECT payload FROM audit WHERE event='exfat_scan_persisted' AND CASE WHEN json_valid(payload) THEN json_extract(payload, '$.case_id') ELSE NULL END=?1")
         .map_err(err)?;
     for row in exfat_audit_statement
-        .query_map([], |row| row.get::<_, String>(0))
+        .query_map([case_id], |row| row.get::<_, String>(0))
         .map_err(err)?
     {
         let payload: serde_json::Value = serde_json::from_str(&row.map_err(err)?).map_err(err)?;

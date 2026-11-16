@@ -84,20 +84,18 @@ pub fn list_case_scan_sessions_from(
     case_id: i64,
 ) -> crate::Result<Vec<CarveScanRecord>> {
     let mut audit_statement = db
-        .prepare("SELECT payload FROM audit WHERE event='carve_scan_persisted'")
+        .prepare("SELECT payload FROM audit WHERE event='carve_scan_persisted' AND CASE WHEN json_valid(payload) THEN json_extract(payload, '$.case_id') ELSE NULL END=?1")
         .map_err(crate::err)?;
-    let mut audit_rows = audit_statement.query([]).map_err(crate::err)?;
+    let mut audit_rows = audit_statement.query([case_id]).map_err(crate::err)?;
     let mut audit_payloads = std::collections::BTreeMap::new();
     while let Some(row) = audit_rows.next().map_err(crate::err)? {
         let encoded: String = row.get(0).map_err(crate::err)?;
         let payload: serde_json::Value = serde_json::from_str(&encoded).map_err(crate::err)?;
-        if payload["case_id"].as_i64() == Some(case_id) {
-            let scan_id = payload["scan_session_id"].as_i64().unwrap_or_default();
-            if audit_payloads.insert(scan_id, payload).is_some() {
-                return Err(format!(
-                    "Carving scan {scan_id} has duplicate audit references."
-                ));
-            }
+        let scan_id = payload["scan_session_id"].as_i64().unwrap_or_default();
+        if audit_payloads.insert(scan_id, payload).is_some() {
+            return Err(format!(
+                "Carving scan {scan_id} has duplicate audit references."
+            ));
         }
     }
     let mut statement = db

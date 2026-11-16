@@ -706,10 +706,10 @@ pub(super) fn list_case_fat32_scan_sessions_from(
         ));
     }
     let mut audit_statement = db
-        .prepare("SELECT payload FROM audit WHERE event='fat32_scan_persisted'")
+        .prepare("SELECT payload FROM audit WHERE event='fat32_scan_persisted' AND CASE WHEN json_valid(payload) THEN json_extract(payload, '$.case_id') ELSE NULL END=?1")
         .map_err(err)?;
     let audit_rows = audit_statement
-        .query_map([], |row| row.get::<_, String>(0))
+        .query_map([case_id], |row| row.get::<_, String>(0))
         .map_err(err)?;
     let mut audit_snapshots = std::collections::HashMap::new();
     for row in audit_rows {

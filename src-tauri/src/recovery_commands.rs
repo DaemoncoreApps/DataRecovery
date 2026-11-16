@@ -357,10 +357,10 @@ pub(super) fn list_case_scan_sessions_from(
         ));
     }
     let mut audit_statement = db
-        .prepare("SELECT payload FROM audit WHERE event='ntfs_scan_persisted'")
+        .prepare("SELECT payload FROM audit WHERE event='ntfs_scan_persisted' AND CASE WHEN json_valid(payload) THEN json_extract(payload, '$.case_id') ELSE NULL END=?1")
         .map_err(err)?;
     let audit_rows = audit_statement
-        .query_map([], |row| row.get::<_, String>(0))
+        .query_map([case_id], |row| row.get::<_, String>(0))
         .map_err(err)?;
     let mut audit_snapshots = std::collections::HashMap::new();
     for row in audit_rows {
@@ -374,7 +374,12 @@ pub(super) fn list_case_scan_sessions_from(
                 .get("snapshot_sha256")
                 .and_then(serde_json::Value::as_str),
         ) {
-            audit_snapshots.insert(id, (case, snapshot_hash.to_owned(), payload));
+            if audit_snapshots
+                .insert(id, (case, snapshot_hash.to_owned(), payload))
+                .is_some()
+            {
+                return Err(format!("Duplicate NTFS scan audit reference: {id}."));
+            }
         }
     }
     let mut statement = db
@@ -402,8 +407,10 @@ pub(super) fn list_case_scan_sessions_from(
         })
         .map_err(err)?;
     let mut sessions = Vec::new();
+    let mut session_ids = std::collections::HashSet::new();
     for row in rows {
         let (session, boot_json, candidates_json, stored_hash) = row.map_err(err)?;
+        session_ids.insert(session.id);
         let calculated_hash = scan_snapshot_digest(&boot_json, &candidates_json);
         let payload = audit_snapshots
             .get(&session.id)
@@ -430,6 +437,9 @@ pub(super) fn list_case_scan_sessions_from(
             ));
         }
         sessions.push(session);
+    }
+    if audit_snapshots.keys().any(|id| !session_ids.contains(id)) {
+        return Err("An audited NTFS scan has no matching stored snapshot.".into());
     }
     Ok(sessions)
 }
@@ -1035,6 +1045,34 @@ mod tests {
         .unwrap();
         assert!(list_case_scan_sessions_from(&db, 1).is_err());
         assert!(archived_scan_results_from(&db, 1, scan_id, 0, 10).is_err());
+
+        db.execute("DELETE FROM scan_sessions WHERE id=?1", [scan_id])
+            .unwrap();
+        let orphan_error = match list_case_scan_sessions_from(&db, 1) {
+            Ok(_) => panic!("an audited scan without a stored snapshot was accepted"),
+            Err(error) => error,
+        };
+        assert!(orphan_error.contains("audited NTFS scan has no matching stored snapshot"));
+
+        let duplicate_payload = serde_json::json!({
+            "case_id": 1,
+            "evidence_id": 2,
+            "scan_session_id": scan_id,
+            "source_id": 9,
+            "volume_offset": 0,
+            "source_sha256": "b".repeat(64),
+            "records": 100,
+            "skipped": 3,
+            "found": 1,
+            "limited": false,
+            "snapshot_sha256": "f".repeat(64),
+        });
+        audit(&db, "ntfs_scan_persisted", &duplicate_payload.to_string()).unwrap();
+        let duplicate_error = match list_case_scan_sessions_from(&db, 1) {
+            Ok(_) => panic!("a duplicate NTFS scan audit reference was accepted"),
+            Err(error) => error,
+        };
+        assert!(duplicate_error.contains("Duplicate NTFS scan audit reference"));
     }
 
     #[test]
