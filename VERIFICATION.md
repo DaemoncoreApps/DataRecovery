@@ -43,6 +43,26 @@ the TypeScript and production bundle; there is not yet a dedicated component
 test suite for the timing estimate behavior. The Disk Imaging page also no
 longer renders the operation monitor twice.
 
+## Packaged UI smoke and stale-error correction — 2026-11-15
+
+The unsigned Windows executable built from commit `66b7114`
+(`src-tauri/target/release/daemoncore.exe`, 15,468,544 bytes, SHA-256
+`1a54b3b16a752509de46fa46a69a2638faa3fc0ef663de2b04a295663e3e5687`,
+Authenticode `NotSigned`) launched and rendered the Recovery Workspace,
+dashboard, operation monitor, and Reports route. The supplied logo appeared
+above navigation, and the new elapsed/rate/ETA fields were present. Reports
+correctly required an active case before enabling export; one stored case was
+listed, but none was selected. No evidence image was opened and no report was
+exported.
+
+The smoke check also exposed a transient UI error that stayed visible after
+navigating away from the failed action. The current source clears that
+page-scoped error on route changes. Full `npm run validate` passed after the
+fix (63 core and 162 desktop tests; 10 ignored). A fresh executable build was
+attempted but could not replace the tested binary because the still-open app
+held the file (`Access is denied`). The fix therefore has source/test evidence,
+not native packaged-runtime confirmation yet.
+
 ## Current optimized Windows build — 2026-11-15
 
 The newest source-only validation on 2026-11-15 passed `npm run validate`:

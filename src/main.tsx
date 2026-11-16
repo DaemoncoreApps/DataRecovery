@@ -176,6 +176,9 @@ function App() {
     }
   }, []);
   useEffect(() => {
+    setError("");
+  }, [page]);
+  useEffect(() => {
     setCaseReport(null);
   }, [activeCaseId, activeCaseAuditMatched]);
   useEffect(() => {
