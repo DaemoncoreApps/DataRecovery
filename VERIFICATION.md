@@ -1937,12 +1937,13 @@ export with an active case and installer lifecycle checks also remain open.
 Image byte-offset inputs now share strict decimal/hex parsing across NTFS,
 FAT32, exFAT, hex inspection/search, and RAID. Empty values, malformed
 numbers, fractions, exponent notation, negatives, and values beyond JavaScript's
-safe integer range are rejected before invoking a native command. Direct Node
-checks passed for four accepted inputs (decimal, hex, whitespace trimming) and
-seven rejected inputs. Full `npm run validate` passed after the change: 63 core
-tests (3 ignored), 166 desktop tests (10 ignored), formatting, frontend build,
-and Clippy with warnings denied. The optimized Windows executable is
-15,450,112 bytes (SHA-256
+safe integer range are rejected before invoking a native command. A regression
+script now runs as the first step in `npm run validate`, exercising five
+accepted decimal/hex inputs and eight rejected malformed or unsafe inputs
+against the actual TypeScript helper. Full `npm run validate` passed with that
+regression: 63 core tests (3 ignored), 166 desktop tests (10 ignored),
+formatting, frontend build, and Clippy with warnings denied. The optimized
+Windows executable is 15,450,112 bytes (SHA-256
 `3a45bf518f72e611f735f437a83eec6811fb83fc8b12e54319c636adca92fcac`); the
 staged NSIS setup is 222,906,451 bytes (SHA-256
 `44e21ad9daeb8835d3aebcb27b4dd6506b1e7baf8fdf3dd0691781aaf2b6fd78`). Both
