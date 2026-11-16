@@ -6,18 +6,14 @@ Removed the repository's hosted validation and installer workflows after the
 DaemoncoreApps account exhausted its included Actions minutes. Also disabled
 Actions in the GitHub repository settings. A read-back returned
 `enabled=false` and zero registered workflows on `main` at commit `29a6ef1`.
-The control is repository-scoped; the account-level Actions budget for this
-account and its other repositories was not changed. Validation and packaging
-now run locally. A $0 Actions budget with stop-at-limit enabled is still needed
-in the account's Billing & Licensing settings to block overage across the
-account.
+Validation and packaging now run locally. The DaemoncoreApps account-level
+Actions budget is set to $0.00 with stop-at-limit behavior, and GitHub showed
+usage blocked in Billing and licensing > Budgets and alerts on 2026-11-15. The
+account cap covers its repositories; checked-in hosted workflows are also
+absent, and repository Actions were read back as disabled.
 
-The local `npm run validate` gate passed against the current worktree: frontend
-build, 63 core tests passed with 3 ignored, 160 desktop tests passed with 9
-ignored, formatting checks, and both Clippy checks. The ignored tests require
-external fixtures or Windows volume behavior unavailable in this local run.
-The desktop suite now verifies RAID 5 output and XOR parity for all four Linux
-MD rotating layouts against explicitly ordered known-byte fixtures.
+The historical local `npm run validate` gate passed with 63 core tests and 160
+desktop tests. The latest validation totals are recorded below.
 
 ## RAID 1 mirror comparison memory reuse — 2026-11-15
 
@@ -32,6 +28,22 @@ functional testing; it does not provide large-array throughput benchmarks or
 physical RAID qualification.
 
 ## Current optimized Windows build — 2026-11-15
+
+The newest source-only validation on 2026-11-15 passed `npm run validate`:
+frontend production build, formatting checks, 63 core tests (3 ignored), 162
+desktop tests (10 ignored), and Clippy with warnings denied for both Rust
+crates. Ignored tests need external reference images or Windows volume behavior
+unavailable to this run. Cargo emitted only the Windows incremental-cache
+hard-link fallback warning.
+
+`npm run tauri -- build --no-bundle` then produced the optimized Windows
+executable at `src-tauri/target/release/daemoncore.exe` (15,467,520 bytes,
+SHA-256 `35f7ffea6c97c22f0d05f0aea232200269d292cb21fa2c99bc9476cff1440549`).
+File version is 0.1.0 and Authenticode reports `NotSigned`. It was not launched
+and no installer was created; this proves the current Windows binary compiles,
+not that the runtime or distribution package is qualified.
+
+The prior bundled Windows build was:
 
 `npm exec -- tauri build --verbose` built the production frontend and optimized
 Windows executable against the current worktree. The executable is
