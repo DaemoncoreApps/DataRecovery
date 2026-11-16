@@ -100,7 +100,12 @@ checks. `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check` passed. The
 focused native RAID suite passed: 12 passed, 2 ignored, 158 filtered out; the
 ignored cases require independently generated Linux MD RAID 5/6 reference
 arrays. No representative large-array benchmark has been run, so the expected
-throughput improvement has not yet been measured.
+throughput improvement has not yet been measured. The full local
+`npm run validate` gate also completed on this updated worktree: production
+frontend build, formatting checks, 63 core tests (3 ignored), 162 desktop tests
+(10 ignored), and Clippy with warnings denied for both Rust crates. The ignored
+cases require external fixtures or Windows volume behavior not available to
+this run.
 
 ## Current optimized Windows build — 2026-11-15
 
