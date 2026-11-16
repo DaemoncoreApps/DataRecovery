@@ -1998,3 +1998,25 @@ evidence: the generator could not run on this host because `mkntfs`, `ntfs-3g`,
 `Wsl/E_ACCESSDENIED`; Docker's Linux engine is not running; hosted Actions are
 disabled by the account's $0 spending cap. Independent fragmented NTFS recovery
 remains unqualified until that fixture and the Windows native export test pass.
+
+## Evidence filesystem labels and refreshed Windows build — 2026-11-16
+
+Evidence registration now calls NTFS, FAT32, and exFAT boot identifiers
+signatures rather than treating those bytes as proof of a validated volume.
+FAT32 and exFAT records no longer say recovery is unavailable; they disclose
+read-only directory analysis and limited deleted-file export. Regression
+coverage verifies the three labels.
+
+Full `npm run validate` passed: 5 accepted and 8 rejected strict-offset cases,
+production frontend build, formatting, 63 core tests (3 ignored), 167 desktop
+tests (10 ignored), and Clippy with warnings denied for both Rust crates.
+
+The optimized standalone executable is
+`src-tauri/target/release/daemoncore.exe` (15,539,200 bytes, SHA-256
+`fe5c3f532b3e5e3a42903f722bc858446f6a39f3b65174ba174e9e9f6323a95e`). The
+unsigned NSIS setup is
+`src-tauri/target/release/bundle/nsis/DaemonCore Data Recovery_0.1.0_x64-setup.exe`
+(222,915,332 bytes, SHA-256
+`488e71e11956e02c186ea331fd22fa43f4af02757cf3895aa3d20ccc1a6b7d61`). Both
+are staged and neither was launched or installed. The exact current-source UI
+smoke remains unverified; the earlier approved smoke used a different hash.

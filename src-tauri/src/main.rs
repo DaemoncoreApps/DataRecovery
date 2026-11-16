@@ -141,11 +141,13 @@ fn read_job_status(job: &Mutex<Job>) -> Job {
 }
 fn detect(bytes: &[u8]) -> String {
     match bytes.get(3..11) {
-        Some(b"NTFS    ") => "NTFS volume (metadata scan available)",
-        Some(b"EXFAT   ") => "exFAT volume (live directory analysis available)",
+        Some(b"NTFS    ") => "NTFS boot signature (metadata scan available)",
+        Some(b"EXFAT   ") => {
+            "exFAT boot signature (directory analysis; deleted-file export is limited)"
+        }
         Some(b"-FVE-FS-") => "BitLocker signature (locked)",
         _ if bytes.get(82..90) == Some(b"FAT32   ") => {
-            "FAT32 boot signature (recovery unavailable)"
+            "FAT32 boot signature (directory analysis; deleted-file export is limited)"
         }
         _ => "Unknown / partitioned image",
     }
@@ -1844,11 +1846,24 @@ mod tests {
     }
 
     #[test]
-    fn detect_short_and_ntfs() {
+    fn detect_reports_signatures_and_supported_filesystem_capabilities() {
         assert!(detect(&[]).starts_with("Unknown"));
         let mut b = vec![0; 512];
         b[3..11].copy_from_slice(b"NTFS    ");
-        assert!(detect(&b).starts_with("NTFS"));
+        assert_eq!(detect(&b), "NTFS boot signature (metadata scan available)");
+
+        b[3..11].copy_from_slice(b"EXFAT   ");
+        assert_eq!(
+            detect(&b),
+            "exFAT boot signature (directory analysis; deleted-file export is limited)"
+        );
+
+        b[3..11].fill(0);
+        b[82..90].copy_from_slice(b"FAT32   ");
+        assert_eq!(
+            detect(&b),
+            "FAT32 boot signature (directory analysis; deleted-file export is limited)"
+        );
     }
     #[test]
     fn cases_and_audit_persist() {
