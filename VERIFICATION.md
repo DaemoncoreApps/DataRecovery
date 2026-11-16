@@ -115,10 +115,10 @@ both Rust crates. The hard-link detection uses Windows' documented volume
 serial/file-index identity fields described by
 [GetFileInformationByHandle](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getfileinformationbyhandle).
 
-The isolated native release target was rebuilt after these RAID changes. Its
+The isolated native release target was rebuilt after the stale-verification UI fix at commit `b18f2b5`. Its
 current executable is
 `src-tauri/target/release-case-entry/release/daemoncore.exe` (15,481,856 bytes,
-SHA-256 `0cef087bbb1cb67fc3b88d11ceac3495fd0897c3544a560bbb5be6ba05df95f7`,
+SHA-256 `94b75417d1dc8822e979b3ca6ad19bb7dcb53796c29d3c22a0cfef1437d3ea3e`,
 version 0.1.0, Authenticode `NotSigned`). It has not been launched; desktop
 runtime validation is still pending.
 
