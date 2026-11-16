@@ -127,8 +127,11 @@ evidence image was opened and no device was accessed. This smoke did not verify
 report generation or installer behavior.
 
 The current source at commit `84ade4b` updates the Dashboard capability note.
-`npm run build` passed, and an isolated optimized native executable was built
-at `src-tauri/target/release-dashboard-copy/release/daemoncore.exe` (15,481,856
+The full `npm run validate` gate passed on code-identical HEAD `7e3b5c1`:
+frontend production build, formatting checks, 63 core tests (3 ignored), 163
+desktop tests (10 ignored), and Clippy with warnings denied for both Rust
+crates. An isolated optimized native executable was built at
+`src-tauri/target/release-dashboard-copy/release/daemoncore.exe` (15,481,856
 bytes, SHA-256
 `4e482179bd910ae626aedcc75f9407e911696fd293e10effbf716c519be9a0fa`, version
 0.1.0, Authenticode `NotSigned`). This newer binary has not yet been launched;
