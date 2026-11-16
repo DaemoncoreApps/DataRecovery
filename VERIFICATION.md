@@ -1961,3 +1961,28 @@ staged NSIS setup is 222,906,451 bytes (SHA-256
 `44e21ad9daeb8835d3aebcb27b4dd6506b1e7baf8fdf3dd0691781aaf2b6fd78`). Both
 are unsigned. Neither has been launched or installed; prior smoke approvals
 named older executable hashes.
+
+## Case report destination read-back — 2026-11-16
+
+Case report publication now reopens the final destination and streams its bytes
+through SHA-256 before writing the successful completion audit event. A size
+change or digest mismatch returns an explicit do-not-use error and attempts to
+record `case_report_export_verification_failed`. A regression changes the
+published bytes without changing the length and verifies that read-back rejects
+the mismatch; the populated report export regression verifies the successful
+path and audit records.
+
+Both focused report tests passed. Full `npm run validate` passed afterward:
+production frontend build, strict-offset checks, formatting, 63 core tests (3
+ignored), 167 desktop tests (10 ignored), and Clippy with warnings denied for
+both Rust crates.
+
+The optimized Windows executable was rebuilt from this source at
+`src-tauri/target/release/daemoncore.exe` (15,539,200 bytes, SHA-256
+`124fec2e92138ccc7ecf080f8c0aaf0e12654923632b72df02b14f87e8da0e35`). The
+current NSIS setup was regenerated at
+`src-tauri/target/release/bundle/nsis/DaemonCore Data Recovery_0.1.0_x64-setup.exe`
+(222,919,535 bytes, SHA-256
+`ee740aa5e19d61c088770e3f21703adef566053f58eb6e4c884fd3c87fb5df3d`). Both
+are unsigned and staged only. The installer has not been installed; current-
+source UI smoke is pending fresh hash-specific approval.

@@ -6,8 +6,8 @@ use crate::{
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::{
-    fs::{self, OpenOptions},
-    io::Write,
+    fs::{self, File, OpenOptions},
+    io::{Read, Write},
     path::{Path, PathBuf},
     sync::atomic::Ordering,
     time::{SystemTime, UNIX_EPOCH},
@@ -761,6 +761,42 @@ fn stage_report(destination: &Path, bytes: &[u8]) -> Result<StagedFile> {
     Ok(staged)
 }
 
+fn verify_published_report(path: &Path, expected_bytes: u64, expected_sha256: &str) -> Result<()> {
+    let mut file = File::open(path).map_err(err)?;
+    let initial_size = file.metadata().map_err(err)?.len();
+    if initial_size != expected_bytes {
+        return Err(format!(
+            "The published report has {initial_size} bytes; expected {expected_bytes}."
+        ));
+    }
+
+    let mut digest = Sha256::new();
+    let mut total_read = 0u64;
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let count = file.read(&mut buffer).map_err(err)?;
+        if count == 0 {
+            break;
+        }
+        total_read = total_read
+            .checked_add(count as u64)
+            .ok_or("Published report size overflow")?;
+        digest.update(&buffer[..count]);
+    }
+
+    let final_size = file.metadata().map_err(err)?.len();
+    if total_read != expected_bytes || final_size != expected_bytes {
+        return Err(format!(
+            "The published report changed size during read-back verification (read {total_read} bytes; final size {final_size})."
+        ));
+    }
+    let actual_sha256 = format!("{:x}", digest.finalize());
+    if actual_sha256 != expected_sha256 {
+        return Err("The published report SHA-256 does not match the prepared report.".into());
+    }
+    Ok(())
+}
+
 fn publish_case_report(
     db: &rusqlite::Connection,
     case_id: i64,
@@ -810,6 +846,31 @@ fn publish_case_report(
             path.display()
         )
     })?;
+    if let Err(error) = verify_published_report(path, bytes.len() as u64, &digest) {
+        let audit_error = audit(
+            db,
+            "case_report_export_verification_failed",
+            &serde_json::json!({
+                "case_id": case_id,
+                "destination": path.to_string_lossy(),
+                "expected_sha256": digest,
+                "bytes": bytes.len(),
+                "error": error,
+            })
+            .to_string(),
+        )
+        .err();
+        return Err(match audit_error {
+            Some(audit_error) => format!(
+                "The report was published to {} but read-back verification failed; do not use it until verified: {error}. The failure could not be recorded in the audit log: {audit_error}",
+                path.display()
+            ),
+            None => format!(
+                "The report was published to {} but read-back verification failed; do not use it until verified: {error}",
+                path.display()
+            ),
+        });
+    }
     let published = CaseReportExport {
         case_id: report.case.id,
         path: path.to_string_lossy().into_owned(),
@@ -1246,6 +1307,37 @@ mod tests {
         assert!(html.contains("&quot;title&quot;: &quot;&lt;img src=x onerror=alert(1)&gt;"));
         assert!(encode_report_for_path(&report, Path::new("case.HTML")).is_ok());
         assert!(encode_report_for_path(&report, Path::new("case.pdf")).is_err());
+    }
+
+    #[test]
+    fn published_report_readback_rejects_changed_destination_bytes() {
+        let root = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join(format!(
+                "daemoncore-case-report-readback-{}-{}",
+                std::process::id(),
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+        fs::create_dir(&root).unwrap();
+        let path = root.join("case-report.json");
+        let expected = br#"{"format":"daemoncore-case-report-v6"}"#;
+        let expected_sha256 = format!("{:x}", Sha256::digest(expected));
+
+        fs::write(&path, expected).unwrap();
+        verify_published_report(&path, expected.len() as u64, &expected_sha256).unwrap();
+
+        let mut changed = expected.to_vec();
+        changed[0] ^= 1;
+        fs::write(&path, changed).unwrap();
+        let error =
+            verify_published_report(&path, expected.len() as u64, &expected_sha256).unwrap_err();
+        assert!(error.contains("SHA-256 does not match"));
+
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
