@@ -30,7 +30,7 @@ import { Overview } from "./Overview";
 import { RecoveryPanel } from "./RecoveryPanel";
 import { DiskImagingPanel } from "./DiskImagingPanel";
 import { RaidPanel } from "./RaidPanel";
-import { bytes } from "./format";
+import { bytes, parseByteOffset } from "./format";
 class AppErrorBoundary extends React.Component<
   React.PropsWithChildren,
   { error: Error | null }
@@ -375,21 +375,15 @@ function App() {
     });
   const inspect = () =>
     run(async () => {
-      const n = Number(offset);
-      if (!Number.isSafeInteger(n) || n < 0)
-        throw new Error(
-          "Enter a nonnegative decimal or 0x hexadecimal offset.",
-        );
+      const n = parseByteOffset(offset, "image byte offset");
       const d = await command<number[]>("read_hex", { offset: n, length: 512 });
       setData(d);
       setReadOffset(n);
     });
   const searchHex = () =>
     run(async () => {
-      const startOffset = Number(offset);
+      const startOffset = parseByteOffset(offset, "search start offset");
       const scanLength = Number(searchLength);
-      if (!Number.isSafeInteger(startOffset) || startOffset < 0)
-        throw new Error("Enter a nonnegative decimal or 0x hexadecimal start offset.");
       if (!Number.isSafeInteger(scanLength) || scanLength < 1 || scanLength > 1024 * 1024 * 1024)
         throw new Error("Search length must be from 1 byte through 1 GiB.");
       const matches = await command<number[]>("search_hex", {
@@ -686,8 +680,7 @@ function App() {
               <div className="actions">
                 <label>Volume byte offset <input value={filesystemOffset} onChange={(event) => setFilesystemOffset(event.target.value)} placeholder="0 or 0x..." /></label>
                 <button className="primary" disabled={!source?.sha256 || busy || job.state === "running"} onClick={() => void run(async () => {
-                  const parsedOffset = filesystemOffset.trim().toLowerCase().startsWith("0x") ? Number.parseInt(filesystemOffset.trim().slice(2), 16) : Number(filesystemOffset);
-                  if (!Number.isSafeInteger(parsedOffset) || parsedOffset < 0) throw new Error("Enter a valid nonnegative decimal or 0x hexadecimal volume offset.");
+                  const parsedOffset = parseByteOffset(filesystemOffset, "exFAT volume byte offset");
                   setExfatPage(null);
                   setExfatSummary(null);
                   setExfatSelected(new Set());

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { ArrowDown, ArrowUp, Database, HardDrive, Plus, ShieldCheck } from "lucide-react";
 import { command, native, type Job, type RecoveryExportVerification, type Source } from "./bridge";
+import { parseByteOffset } from "./format";
 
 interface Props {
   job: Job;
@@ -40,10 +41,7 @@ export function RaidPanel({ job, busy, canReconstruct, run, onJob, onSource }: P
   };
 
   const reconstruct = () => run(async () => {
-    const offset = Number(dataOffset);
-    if (!Number.isSafeInteger(offset) || offset < 0) {
-      throw new Error("Enter a valid member data offset in bytes.");
-    }
+    const offset = parseByteOffset(dataOffset, "RAID member data offset");
     setVerification(null);
     const started = await command<boolean>("reconstruct_raid", {
       memberPaths: members,

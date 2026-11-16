@@ -21,7 +21,7 @@ import {
   type Fat32ScanSummary,
   type Fat32Page,
 } from "./bridge";
-import { bytes } from "./format";
+import { bytes, parseByteOffset } from "./format";
 
 type Props = {
   source: Source | null;
@@ -161,9 +161,7 @@ export function RecoveryPanel({ source, job, busy, run, onJob }: Props) {
   }, [fat32Summary, source?.id, fat32PageIndex, fat32Query, fat32DeletedOnly]);
   const scan = () =>
     run(async () => {
-      const n = Number(offset);
-      if (!Number.isSafeInteger(n) || n < 0)
-        throw new Error("Enter a valid byte offset, such as 0 or 0x100000.");
+      const n = parseByteOffset(offset, "NTFS volume byte offset");
       await command("start_ntfs_scan", { offset: n });
       setSummary(null);
       setPage({ total: 0, rows: [] });
@@ -174,9 +172,7 @@ export function RecoveryPanel({ source, job, busy, run, onJob }: Props) {
     });
   const scanFat32 = () =>
     run(async () => {
-      const n = Number(offset);
-      if (!Number.isSafeInteger(n) || n < 0)
-        throw new Error("Enter a valid byte offset, such as 0 or 0x100000.");
+      const n = parseByteOffset(offset, "FAT32 volume byte offset");
       await command("start_fat32_scan", { offset: n });
       setFat32Summary(null);
       setFat32Page({ total: 0, rows: [] });
