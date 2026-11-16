@@ -126,16 +126,22 @@ and Reports opened. The report export stayed disabled with the expected
 evidence image was opened and no device was accessed. This smoke did not verify
 report generation or installer behavior.
 
-The current source at commit `84ade4b` updates the Dashboard capability note.
-The full `npm run validate` gate passed on code-identical HEAD `7e3b5c1`:
-frontend production build, formatting checks, 63 core tests (3 ignored), 163
-desktop tests (10 ignored), and Clippy with warnings denied for both Rust
-crates. An isolated optimized native executable was built at
-`src-tauri/target/release-dashboard-copy/release/daemoncore.exe` (15,481,856
+The current source at commit `1732e68` scopes NTFS, FAT32, exFAT, and carving
+scan-audit lookup to the selected case. NTFS scan listing now rejects duplicate
+audit references and refuses to omit a scan whose audit record remains after
+its persisted snapshot is missing. The full `npm run validate` gate passed
+after these code changes: frontend production build, formatting checks, 63
+core tests (3 ignored), 163 desktop tests (10 ignored), and Clippy with
+warnings denied for both Rust crates. The NTFS orphan/duplicate regression,
+formatting, and desktop Clippy also passed after the final test assertion was
+added.
+
+An isolated optimized native executable was built from commit `1732e68` at
+`src-tauri/target/release-dashboard-copy/release/daemoncore.exe` (15,482,368
 bytes, SHA-256
-`4e482179bd910ae626aedcc75f9407e911696fd293e10effbf716c519be9a0fa`, version
-0.1.0, Authenticode `NotSigned`). This newer binary has not yet been launched;
-the smoke above therefore verifies the prior build, not the current package.
+`de8b7f927290e59023c4df24ce3ee6171ea5fa909a938ff79319c9dd255644e7`, version
+0.1.0, Authenticode `NotSigned`). This newest binary has not yet been launched;
+the earlier smoke above verifies a prior build.
 
 ## Stale package-verification state — 2026-11-15
 
