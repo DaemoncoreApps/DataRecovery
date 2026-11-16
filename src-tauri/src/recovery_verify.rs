@@ -235,6 +235,7 @@ struct RaidManifest {
     data_offset_bytes: u64,
     bytes_per_sector: u32,
     stripe_size_bytes: Option<u64>,
+    raid5_layout: Option<String>,
     reconstructed_size_bytes: u64,
     image_name: String,
     image_sha256: String,
@@ -1011,7 +1012,8 @@ fn verify_raid_package(
             let stripe = manifest
                 .stripe_size_bytes
                 .ok_or("RAID 0 manifest has no stripe size.")?;
-            if !(512..=16 * 1024 * 1024).contains(&stripe)
+            if manifest.raid5_layout.is_some()
+                || !(512..=16 * 1024 * 1024).contains(&stripe)
                 || !stripe.is_power_of_two()
                 || !stripe.is_multiple_of(u64::from(manifest.bytes_per_sector))
                 || !first_data_size.is_multiple_of(stripe)
@@ -1026,6 +1028,7 @@ fn verify_raid_package(
         }
         "RAID 1" => {
             if manifest.stripe_size_bytes.is_some()
+                || manifest.raid5_layout.is_some()
                 || manifest.layout_method
                     != "RAID 1 mirror copy after byte-for-byte agreement across all selected data regions"
             {
@@ -1037,15 +1040,24 @@ fn verify_raid_package(
             let stripe = manifest
                 .stripe_size_bytes
                 .ok_or("RAID 5 manifest has no stripe size.")?;
+            let expected_layout_method = match manifest.raid5_layout.as_deref() {
+                Some("left_asymmetric") => "RAID 5 left-asymmetric rotating mapping; member hashes stable and XOR parity matches",
+                Some("right_asymmetric") => "RAID 5 right-asymmetric rotating mapping; member hashes stable and XOR parity matches",
+                Some("left_symmetric") => "RAID 5 left-symmetric rotating mapping; member hashes stable and XOR parity matches",
+                Some("right_symmetric") => "RAID 5 right-symmetric rotating mapping; member hashes stable and XOR parity matches",
+                None if manifest.layout_method == "RAID 5 left-symmetric rotating parity; all member data and XOR parity verified" => "RAID 5 left-symmetric rotating parity; all member data and XOR parity verified",
+                _ => return Err("RAID 5 manifest has an unknown or inconsistent parity layout.".into()),
+            };
             if manifest.members.len() < 3
                 || !(512..=16 * 1024 * 1024).contains(&stripe)
                 || !stripe.is_power_of_two()
                 || !stripe.is_multiple_of(u64::from(manifest.bytes_per_sector))
                 || !first_data_size.is_multiple_of(stripe)
-                || manifest.layout_method
-                    != "RAID 5 left-symmetric rotating parity; all member data and XOR parity verified"
+                || manifest.layout_method != expected_layout_method
             {
-                return Err("RAID 5 stripe geometry or parity-validation method is invalid.".into());
+                return Err(
+                    "RAID 5 stripe geometry or parity-validation method is invalid.".into(),
+                );
             }
             first_data_size
                 .checked_mul((manifest.members.len() - 1) as u64)

@@ -14,6 +14,7 @@ interface Props {
 export function RaidPanel({ job, busy, canReconstruct, run, onJob, onSource }: Props) {
   const [members, setMembers] = useState<string[]>([]);
   const [level, setLevel] = useState<"raid0" | "raid1" | "raid5">("raid0");
+  const [raid5Layout, setRaid5Layout] = useState("left_symmetric");
   const [dataOffset, setDataOffset] = useState("0");
   const [stripeSize, setStripeSize] = useState("65536");
   const [sectorSize, setSectorSize] = useState("512");
@@ -47,7 +48,10 @@ export function RaidPanel({ job, busy, canReconstruct, run, onJob, onSource }: P
       memberPaths: members,
       level,
       dataOffsetBytes: offset,
-      stripeSizeBytes: level === "raid1" ? 0 : Number(stripeSize),
+      layout: {
+        stripeSizeBytes: level === "raid1" ? 0 : Number(stripeSize),
+        raid5Layout,
+      },
       bytesPerSector: Number(sectorSize),
     });
     if (started) {
@@ -61,16 +65,18 @@ export function RaidPanel({ job, busy, canReconstruct, run, onJob, onSource }: P
       <section className="panel raidPanel">
         <div className="panelTitle">
           <div className="panelHeading"><span className="panelIcon"><Database size={16} /></span><h2>Operator-configured array</h2></div>
-          <span className="tag">RAID 0 + RAID 1 + RAID 5</span>
+          <span className="tag">RAID 0 + RAID 1 + RAID 5 layouts</span>
         </div>
         <div className="warning" role="note">
           <ShieldCheck size={16} />
           <p>
             This does not identify RAID metadata automatically. Supply the correct member order, member data offset,
-            sector size, and stripe size from case notes or validated array metadata. RAID 5 uses a left-symmetric
-            rotating parity layout and requires every member; it validates XOR parity but cannot rebuild a missing
-            member. The reconstruction is a new derived image; keep every original member unchanged. RAID 1 is
-            reconstructed only when all selected member data regions match byte for byte.
+            sector size, stripe size, and RAID 5 layout from validated array metadata. RAID 5 requires every
+            member and checks XOR parity, but parity agreement does not prove the selected layout or logical data
+            order is correct. Confirm layout and member order from metadata and compare recovered files with
+            independent references before forensic use. Missing-member reconstruction is not supported. The
+            output is a derived image; keep every original member unchanged. RAID 1 reconstructs only when all
+            selected member data regions match byte for byte.
           </p>
         </div>
         {!native ? (
@@ -82,9 +88,19 @@ export function RaidPanel({ job, busy, canReconstruct, run, onJob, onSource }: P
                 <select value={level} disabled={operationRunning} onChange={(event) => setLevel(event.target.value as "raid0" | "raid1" | "raid5")}>
                   <option value="raid0">RAID 0 · striped</option>
                   <option value="raid1">RAID 1 · mirrored</option>
-                  <option value="raid5">RAID 5 · left-symmetric parity</option>
+                  <option value="raid5">RAID 5 · rotating parity</option>
                 </select>
               </label>
+              {level === "raid5" && (
+                <label>RAID 5 parity layout
+                  <select value={raid5Layout} disabled={operationRunning} onChange={(event) => setRaid5Layout(event.target.value)}>
+                    <option value="left_symmetric">Left-symmetric</option>
+                    <option value="right_symmetric">Right-symmetric</option>
+                    <option value="left_asymmetric">Left-asymmetric</option>
+                    <option value="right_asymmetric">Right-asymmetric</option>
+                  </select>
+                </label>
+              )}
               <label>Member data offset (bytes)
                 <input value={dataOffset} disabled={operationRunning} onChange={(event) => setDataOffset(event.target.value)} inputMode="numeric" />
               </label>
@@ -104,7 +120,7 @@ export function RaidPanel({ job, busy, canReconstruct, run, onJob, onSource }: P
               )}
             </div>
             <div className="panelTitle raidMembersHeading">
-              <div><h3>Members in logical order</h3><p className="muted">Use the controller’s member order. RAID 5 parity rotates left-symmetrically by stripe row.</p></div>
+              <div><h3>Members in logical order</h3><p className="muted">Use the controller’s member order and the layout reported by validated array metadata.</p></div>
               <button disabled={operationRunning} onClick={chooseMembers}><Plus size={14} /> Choose member images</button>
             </div>
             {members.length ? (

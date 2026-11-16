@@ -13,16 +13,18 @@ in the account's Billing & Licensing settings to block overage across the
 account.
 
 The local `npm run validate` gate passed against the current worktree: frontend
-build, 61 core tests passed with 3 ignored, 154 desktop tests passed with 9
+build, 61 core tests passed with 3 ignored, 155 desktop tests passed with 9
 ignored, formatting checks, and both Clippy checks. The ignored tests require
 external fixtures or Windows volume behavior unavailable in this local run.
+The desktop suite now verifies RAID 5 output and XOR parity for all four Linux
+MD rotating layouts against explicitly ordered known-byte fixtures.
 
 ## Current optimized Windows build — 2026-11-15
 
 `npm exec -- tauri build --verbose` built the production frontend and optimized
 Windows executable against the current worktree. The executable is
-`src-tauri/target/release/daemoncore.exe` (15,442,432 bytes, SHA-256
-`6492e354d326218fa0aaf066126e6a20a6abcaaacac18c4f672245d2b1e159fe`).
+`src-tauri/target/release/daemoncore.exe` (15,518,208 bytes, SHA-256
+`89a5671e65e230926420951b903211bca55eda6256d271c1a909b7eb4a905aab`).
 Authenticode reports `NotSigned`. The executable was not launched; this proves
 compilation only, not runtime behavior.
 
@@ -31,15 +33,19 @@ when the sandbox launched `makensis.exe`. Retrying the same build outside the
 restricted process sandbox succeeded. Tauri embedded its offline WebView2
 runtime and produced the unsigned NSIS setup at
 `src-tauri/target/release/bundle/nsis/DaemonCore Data Recovery_0.1.0_x64-setup.exe`
-(222,898,592 bytes, SHA-256
-`816b4361fdf9b6049ca640b87062887b626b9cec4b24220d8e20b9e080affebf`).
+(222,913,405 bytes, SHA-256
+`20b9395167fa80c6050920089ce6bed573d48589d106db10817b8a5b4f29877d`).
 Authenticode reports `NotSigned`. NSIS emitted warning 6040 for
 `choowHowToInstall`; the generated script uses the correctly spelled
 `chooseHowToInstall` and keeps the misspelled string as an empty compatibility
-fallback. The setup is staged only; it has not been installed or launched. A
-Windows regression now verifies that the acquisition source handle blocks new
-write opens until released; it cannot revoke an existing writer, so a validated
-hardware write blocker remains required.
+fallback. The setup is staged only; it has not been installed or launched. This
+build includes the four Linux MD RAID 5 layouts; local fixtures verified their
+reconstructed bytes, recorded layout IDs, and XOR parity. XOR parity alone does
+not validate the selected layout or logical data order. The package remains unsigned and has not
+been smoke-tested through install, upgrade, or uninstall. A Windows regression
+verifies that the acquisition source handle blocks new write opens until
+released; it cannot revoke an existing writer, so a validated hardware write
+blocker remains required.
 
 ## Independent GIF carving fixture — 2026-11-15
 

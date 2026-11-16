@@ -1,6 +1,6 @@
 use crate::{destination, storage::Image, Result};
 use daemoncore_ntfs_core::storage::BlockSource;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     fs::{self, File, OpenOptions},
@@ -49,6 +49,55 @@ impl RaidLevel {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Raid5Layout {
+    LeftAsymmetric,
+    RightAsymmetric,
+    LeftSymmetric,
+    RightSymmetric,
+}
+
+impl Raid5Layout {
+    fn parse(value: &str) -> Result<Self> {
+        match value {
+            "left_asymmetric" => Ok(Self::LeftAsymmetric),
+            "right_asymmetric" => Ok(Self::RightAsymmetric),
+            "left_symmetric" => Ok(Self::LeftSymmetric),
+            "right_symmetric" => Ok(Self::RightSymmetric),
+            _ => Err("Select a supported RAID 5 rotating parity layout.".into()),
+        }
+    }
+
+    fn id(self) -> &'static str {
+        match self {
+            Self::LeftAsymmetric => "left_asymmetric",
+            Self::RightAsymmetric => "right_asymmetric",
+            Self::LeftSymmetric => "left_symmetric",
+            Self::RightSymmetric => "right_symmetric",
+        }
+    }
+
+    fn parity_member(self, stripe: u64, member_count: usize) -> Result<usize> {
+        let rotation = usize::try_from(stripe % member_count as u64)
+            .map_err(|_| "RAID 5 stripe index exceeds addressable memory")?;
+        Ok(match self {
+            Self::LeftAsymmetric | Self::LeftSymmetric => member_count - 1 - rotation,
+            Self::RightAsymmetric | Self::RightSymmetric => rotation,
+        })
+    }
+
+    fn data_members(self, parity_member: usize, member_count: usize) -> Vec<usize> {
+        match self {
+            Self::LeftAsymmetric | Self::RightAsymmetric => (0..member_count)
+                .filter(|member| *member != parity_member)
+                .collect(),
+            Self::LeftSymmetric | Self::RightSymmetric => (1..member_count)
+                .map(|position| (parity_member + position) % member_count)
+                .collect(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 struct MemberManifest {
     order: usize,
@@ -72,6 +121,7 @@ struct RaidManifest {
     data_offset_bytes: u64,
     bytes_per_sector: u32,
     stripe_size_bytes: Option<u64>,
+    raid5_layout: Option<&'static str>,
     reconstructed_size_bytes: u64,
     image_name: &'static str,
     image_sha256: String,
@@ -92,6 +142,7 @@ pub struct RaidPackage {
     pub image_sha256: String,
     pub size_bytes: u64,
     pub level: RaidLevel,
+    pub raid5_layout: Option<Raid5Layout>,
     pub member_count: usize,
 }
 
@@ -100,9 +151,17 @@ pub struct ReconstructionRequest<'a> {
     pub member_paths: &'a [PathBuf],
     pub data_offset_bytes: u64,
     pub stripe_size_bytes: u64,
+    pub raid5_layout: Raid5Layout,
     pub bytes_per_sector: u32,
     pub case_id: i64,
     pub destination: &'a Path,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RaidLayoutInput {
+    stripe_size_bytes: u64,
+    raid5_layout: String,
 }
 
 struct Staging(Option<PathBuf>);
@@ -324,6 +383,7 @@ fn reconstruct_package_into(
         member_paths,
         data_offset_bytes,
         stripe_size_bytes,
+        raid5_layout,
         bytes_per_sector,
         case_id,
         destination: _,
@@ -477,9 +537,8 @@ fn reconstruct_package_into(
                     staging.discard()?;
                     return Ok(None);
                 }
-                let parity_rotation = usize::try_from(stripe % members.len() as u64)
-                    .map_err(|_| "RAID 5 stripe index exceeds addressable memory")?;
-                let parity_member = members.len() - 1 - parity_rotation;
+                let parity_member = raid5_layout.parity_member(stripe, members.len())?;
+                let data_members = raid5_layout.data_members(parity_member, members.len());
                 let member_offset = data_offset_bytes + stripe * stripe_size_bytes;
                 for within in (0..stripe_size_bytes).step_by(buffer.len()) {
                     if cancel.load(Ordering::SeqCst) {
@@ -489,9 +548,8 @@ fn reconstruct_package_into(
                     }
                     let count = (stripe_size_bytes - within).min(buffer.len() as u64) as usize;
                     parity[..count].fill(0);
-                    for data_position in 1..members.len() {
-                        let member_index = (parity_member + data_position) % members.len();
-                        members[member_index]
+                    for member_index in &data_members {
+                        members[*member_index]
                             .read_exact_at(member_offset + within, &mut buffer[..count])
                             .map_err(crate::err)?;
                         for (parity_byte, data_byte) in
@@ -577,15 +635,21 @@ fn reconstruct_package_into(
         bytes_per_sector,
         stripe_size_bytes: matches!(level, RaidLevel::Raid0 | RaidLevel::Raid5)
             .then_some(stripe_size_bytes),
+        raid5_layout: (level == RaidLevel::Raid5).then_some(raid5_layout.id()),
         reconstructed_size_bytes: output_size,
         image_name: "image.raw",
         image_sha256: verified_hash.clone(),
         layout_method: match level {
             RaidLevel::Raid0 => "RAID 0 left-symmetric striping in operator-supplied member order",
             RaidLevel::Raid1 => "RAID 1 mirror copy after byte-for-byte agreement across all selected data regions",
-            RaidLevel::Raid5 => "RAID 5 left-symmetric rotating parity; all member data and XOR parity verified",
+            RaidLevel::Raid5 => match raid5_layout {
+                Raid5Layout::LeftAsymmetric => "RAID 5 left-asymmetric rotating mapping; member hashes stable and XOR parity matches",
+                Raid5Layout::RightAsymmetric => "RAID 5 right-asymmetric rotating mapping; member hashes stable and XOR parity matches",
+                Raid5Layout::LeftSymmetric => "RAID 5 left-symmetric rotating mapping; member hashes stable and XOR parity matches",
+                Raid5Layout::RightSymmetric => "RAID 5 right-symmetric rotating mapping; member hashes stable and XOR parity matches",
+            },
         },
-        limitations: "The operator supplied member order, data offset, sector size, and stripe size. RAID 5 requires every member image and verifies rotating XOR parity; degraded or missing-member reconstruction is not supported. No on-disk RAID metadata was interpreted. Reconstructed bytes are not a hardware acquisition, do not establish which files were deleted, and are not validated against a vendor-specific array metadata format.",
+        limitations: "The operator supplied member order, data offset, sector size, stripe size, and RAID 5 layout. RAID 5 requires every member image and checks rotating XOR parity; parity agreement does not prove the selected layout or logical data order is correct. Degraded or missing-member reconstruction is not supported. No on-disk RAID metadata was interpreted. Reconstructed bytes are not a hardware acquisition, do not establish which files were deleted, and are not validated against a vendor-specific array metadata format.",
     };
     write_json(&staging_path.join("manifest.json"), &manifest)?;
     let checksums = format!(
@@ -619,6 +683,7 @@ fn reconstruct_package_into(
         image_sha256: verified_hash,
         size_bytes: output_size,
         level,
+        raid5_layout: (level == RaidLevel::Raid5).then_some(raid5_layout),
         member_count: members.len(),
     }))
 }
@@ -726,10 +791,15 @@ pub async fn reconstruct_raid(
     member_paths: Vec<String>,
     level: String,
     data_offset_bytes: u64,
-    stripe_size_bytes: u64,
+    layout: RaidLayoutInput,
     bytes_per_sector: u32,
 ) -> Result<bool> {
+    let RaidLayoutInput {
+        stripe_size_bytes,
+        raid5_layout,
+    } = layout;
     let level_value = RaidLevel::parse(&level)?;
+    let raid5_layout = Raid5Layout::parse(&raid5_layout)?;
     if !(MIN_MEMBERS..=MAX_MEMBERS).contains(&member_paths.len()) {
         return Err(format!(
             "Select between {MIN_MEMBERS} and {MAX_MEMBERS} RAID member images."
@@ -809,6 +879,7 @@ pub async fn reconstruct_raid(
                 "member_paths":canonical_members,
                 "data_offset_bytes":data_offset_bytes,
                 "stripe_size_bytes":if matches!(level_value, RaidLevel::Raid0 | RaidLevel::Raid5) { Some(stripe_size_bytes) } else { None },
+                "raid5_layout":if level_value == RaidLevel::Raid5 { Some(raid5_layout.id()) } else { None },
                 "bytes_per_sector":bytes_per_sector,
                 "member_data_size_bytes":member_data_size,
                 "reconstructed_size_bytes":output_size,
@@ -839,6 +910,7 @@ pub async fn reconstruct_raid(
                 member_paths: &canonical_members,
                 data_offset_bytes,
                 stripe_size_bytes,
+                raid5_layout,
                 bytes_per_sector,
                 case_id,
                 destination: &destination,
@@ -865,6 +937,7 @@ pub async fn reconstruct_raid(
                         &serde_json::json!({
                             "case_id":case_id,
                             "level":package.level.label(),
+                            "raid5_layout":package.raid5_layout.map(Raid5Layout::id),
                             "members":package.member_count,
                             "image_sha256":package.image_sha256,
                             "size_bytes":package.size_bytes,
@@ -1031,6 +1104,7 @@ mod tests {
                 member_paths: &paths,
                 data_offset_bytes: 0,
                 stripe_size_bytes: 512,
+                raid5_layout: Raid5Layout::LeftSymmetric,
                 bytes_per_sector: 512,
                 case_id: 7,
                 destination: &root,
@@ -1049,6 +1123,101 @@ mod tests {
         assert_eq!(verification.package_type, "raid_reconstruction");
         assert_eq!(verification.records, 3);
         assert_eq!(verification.state, "complete");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn reconstructs_all_linux_md_raid5_rotating_layouts() {
+        let root = root();
+        let data = [[0x11, 0x22], [0x33, 0x44], [0x55, 0x66]];
+        let cases = [
+            (
+                Raid5Layout::LeftAsymmetric,
+                [2, 1, 0],
+                [[0, 1], [0, 2], [1, 2]],
+            ),
+            (
+                Raid5Layout::RightAsymmetric,
+                [0, 1, 2],
+                [[1, 2], [0, 2], [0, 1]],
+            ),
+            (
+                Raid5Layout::LeftSymmetric,
+                [2, 1, 0],
+                [[0, 1], [2, 0], [1, 2]],
+            ),
+            (
+                Raid5Layout::RightSymmetric,
+                [0, 1, 2],
+                [[1, 2], [2, 0], [0, 1]],
+            ),
+        ];
+
+        for (layout, parity_members, data_order) in cases {
+            let case_root = root.join(layout.id());
+            fs::create_dir(&case_root).unwrap();
+            let mut member_bytes: [Vec<u8>; 3] = std::array::from_fn(|_| Vec::new());
+            for row in 0..3 {
+                let data_bytes = data[row].map(|value| vec![value; 512]);
+                let parity_byte = data[row][0] ^ data[row][1];
+                for member in 0..3 {
+                    let block = if member == parity_members[row] {
+                        vec![parity_byte; 512]
+                    } else {
+                        let logical_index = data_order[row]
+                            .iter()
+                            .position(|candidate| *candidate == member)
+                            .expect("each data member occurs once in the row");
+                        data_bytes[logical_index].clone()
+                    };
+                    member_bytes[member].extend(block);
+                }
+            }
+            let paths = [
+                case_root.join("member0.raw"),
+                case_root.join("member1.raw"),
+                case_root.join("member2.raw"),
+            ];
+            for (path, bytes) in paths.iter().zip(&member_bytes) {
+                write_member(path, bytes);
+            }
+            let package = reconstruct_package(
+                ReconstructionRequest {
+                    level_name: "raid5",
+                    member_paths: &paths,
+                    data_offset_bytes: 0,
+                    stripe_size_bytes: 512,
+                    raid5_layout: layout,
+                    bytes_per_sector: 512,
+                    case_id: 7,
+                    destination: &case_root,
+                },
+                &AtomicBool::new(false),
+                |_, _| {},
+            )
+            .unwrap()
+            .unwrap();
+
+            let expected = data
+                .iter()
+                .flat_map(|row| row.iter().flat_map(|value| vec![*value; 512]))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                fs::read(&package.image_path).unwrap(),
+                expected,
+                "{}",
+                layout.id()
+            );
+            let manifest: serde_json::Value =
+                serde_json::from_slice(&fs::read(package.directory.join("manifest.json")).unwrap())
+                    .unwrap();
+            assert_eq!(manifest["raid5_layout"], layout.id());
+            assert!(manifest["limitations"]
+                .as_str()
+                .unwrap()
+                .contains("parity agreement does not prove the selected layout"));
+            crate::recovery_verify::verify_package(&package.directory).unwrap();
+        }
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1081,6 +1250,7 @@ mod tests {
                 member_paths: &member_paths,
                 data_offset_bytes: 0,
                 stripe_size_bytes: 64 * 1024,
+                raid5_layout: Raid5Layout::LeftSymmetric,
                 bytes_per_sector: 512,
                 case_id: 7,
                 destination: &root,
@@ -1118,6 +1288,7 @@ mod tests {
                 member_paths: &paths,
                 data_offset_bytes: 0,
                 stripe_size_bytes: 512,
+                raid5_layout: Raid5Layout::LeftSymmetric,
                 bytes_per_sector: 512,
                 case_id: 7,
                 destination: &root,
@@ -1159,6 +1330,7 @@ mod tests {
                 member_paths: &[a, b],
                 data_offset_bytes: 0,
                 stripe_size_bytes: 512,
+                raid5_layout: Raid5Layout::LeftSymmetric,
                 bytes_per_sector: 512,
                 case_id: 7,
                 destination: &root,
@@ -1197,6 +1369,7 @@ mod tests {
                 member_paths: &[a, b],
                 data_offset_bytes: 0,
                 stripe_size_bytes: 0,
+                raid5_layout: Raid5Layout::LeftSymmetric,
                 bytes_per_sector: 512,
                 case_id: 7,
                 destination: &root,
@@ -1229,6 +1402,7 @@ mod tests {
                 member_paths: &[a, b],
                 data_offset_bytes: 0,
                 stripe_size_bytes: 0,
+                raid5_layout: Raid5Layout::LeftSymmetric,
                 bytes_per_sector: 512,
                 case_id: 7,
                 destination: &root,
@@ -1254,6 +1428,7 @@ mod tests {
                 member_paths: &[a, b],
                 data_offset_bytes: 0,
                 stripe_size_bytes: 0,
+                raid5_layout: Raid5Layout::LeftSymmetric,
                 bytes_per_sector: 512,
                 case_id: 7,
                 destination: &root,
@@ -1282,6 +1457,7 @@ mod tests {
                 member_paths: &[a, b],
                 data_offset_bytes: 0,
                 stripe_size_bytes: 0,
+                raid5_layout: Raid5Layout::LeftSymmetric,
                 bytes_per_sector: 512,
                 case_id: 7,
                 destination: &root,
