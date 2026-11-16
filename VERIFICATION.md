@@ -76,9 +76,16 @@ On 2026-11-15, a fresh `npm run tauri -- build --no-bundle` from commit
 There was no `daemoncore` process visible in the process check. Retrying with an
 isolated Cargo target avoided the locked output, but Tauri's build script failed
 while generating its permission documentation with another Windows `Access is
-denied`. No executable for `2838ef3` was produced, so case-entry guidance still
-needs a native runtime check. This is a local build-environment failure, not
-evidence that the changed UI works in the packaged app.
+denied`. The build script writes generated permission docs into its cached crate
+source, which this environment does not allow. A writable temporary copy of
+Tauri 2.12.4 was then used as a Cargo patch with an isolated target directory.
+That native release build succeeded, and the original `src-tauri/Cargo.lock`
+was restored afterward. It produced
+`src-tauri/target/release-case-entry/release/daemoncore.exe` (15,467,520 bytes,
+SHA-256 `d78292c34a4e7267c51d6fc14045c0d2d218713a23149a6fcd98182ab2753270`,
+version 0.1.0, Authenticode `NotSigned`). This exact executable has not been
+launched; case-entry guidance still needs a native runtime check. Build success
+is not evidence that the changed UI works in the packaged app.
 
 ## Current optimized Windows build — 2026-11-15
 
