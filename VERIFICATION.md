@@ -1890,11 +1890,17 @@ executable is
 `a6a69c54a3ad2de807a183260fcaacb6767b9eb071b6297d1b95ff08fb18c979`).
 Authenticode reports `NotSigned`. It has not been launched or installed, and
 the approved smoke-test hash did not match this executable, so it was not
-launched. A full `npm exec -- tauri build` compiled the app but failed when
-`makensis.exe` started with Windows error 623 (`Illegal System DLL
-Relocation`). A prior 222,906,631-byte setup file remains in the output folder;
-it is not a verified package for this commit. The native UI smoke and installer
-lifecycle checks remain open.
+launched. A full `npm exec -- tauri build` compiled the app but its sandboxed
+`makensis.exe` process failed with Windows error 623 (`Illegal System DLL
+Relocation`). Running `npm exec -- tauri bundle --bundles nsis` outside that
+process sandbox succeeded against the same code. The current setup is
+`src-tauri/target/release/bundle/nsis/DaemonCore Data Recovery_0.1.0_x64-setup.exe`
+(222,898,940 bytes, SHA-256
+`d2b47aa2eb5b9745197cc8b10a7d35bbec71134293f873e5e8b333a9f1cfff97`);
+Authenticode reports `NotSigned`. Tauri warned that the standalone executable
+lacked its `__TAURI_BUNDLE_TYPE` marker, which may affect updater packages; this
+application does not configure an updater. The new setup remains uninstalled.
+The native UI smoke and installer lifecycle checks remain open.
 
 ## Case-scoped audit index — 2026-11-16
 
