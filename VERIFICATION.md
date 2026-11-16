@@ -1872,8 +1872,10 @@ Before decoding archived scan snapshots, report generation now checks that the
 selected case has no more than 200 stored scans and that its scan snapshot plus
 case-linked scan audit payloads total no more than 64 MiB. This bounds database
 payload materialization before JSON decoding; the report's existing final
-serialized-size limit remains in place. The focused report suite passes all 13
-tests, including the new oversized-snapshot preflight regression. `cargo fmt --check`,
-`cargo check --release --locked`, and `git diff --check` pass. The
-change is committed and pushed as `ca8efc0`. End-to-end report generation from
-the packaged UI remains unverified because the prior smoke had no active case.
+serialized-size limit remains in place. The focused report suite passes all 14
+tests, including regressions for oversized snapshots and the aggregate scan
+limit across all four scan families. `cargo fmt --check`, `cargo check --release --locked`,
+and `git diff --check` pass. The preflight change is committed and pushed as
+`ca8efc0`; aggregate-limit coverage is in `fa0d054`. End-to-end report
+generation from the packaged UI remains unverified because the prior smoke had
+no active case.
