@@ -632,7 +632,12 @@ replace the audit-chain and independent-anchor checks.
 NTFS scan bounds now use only complete records within the MFT stream's initialized
 size. The parser rejects zero, unaligned, over-volume, or out-of-stream MFT sizes
 before scanning, avoiding treating uninitialized allocation tail as file records.
-Regression tests cover the initialized record count and malformed boundaries.
+Regression tests cover the initialized record count and malformed boundaries. A
+virtual-source stress regression scans 100,000 complete MFT records without
+allocating the corresponding 100 MiB image; all records parse, no invalid records
+or candidates are reported, and the scan is not marked limited. It completed in
+2.79 seconds on the current development host. This is regression coverage, not a
+formal performance benchmark or a million-record qualification.
 The prior optimized executable included this parser change and passed the native
 startup/navigation smoke check above.
 The configured NSIS installer was also attempted with `npm exec -- tauri build

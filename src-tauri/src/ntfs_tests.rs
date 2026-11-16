@@ -268,6 +268,99 @@ fn record(index: u32, flags: u16, attributes: &[Vec<u8>]) -> Vec<u8> {
 fn image() -> MemorySource {
     image_with_attribute_list_layout(false, false)
 }
+
+struct VirtualMftSource {
+    length: u64,
+    mft_start: u64,
+    record_count: u64,
+    boot: [u8; 512],
+    bootstrap: Vec<u8>,
+}
+
+impl BlockSource for VirtualMftSource {
+    fn len(&self) -> u64 {
+        self.length
+    }
+
+    fn read_exact_at(&self, offset: u64, buffer: &mut [u8]) -> std::io::Result<()> {
+        let end = offset
+            .checked_add(buffer.len() as u64)
+            .filter(|end| *end <= self.length)
+            .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::UnexpectedEof))?;
+        buffer.fill(0);
+        let mut cursor = offset;
+        while cursor < end {
+            if cursor < self.boot.len() as u64 {
+                let count = (end - cursor).min(self.boot.len() as u64 - cursor) as usize;
+                buffer[(cursor - offset) as usize..(cursor - offset) as usize + count]
+                    .copy_from_slice(&self.boot[cursor as usize..cursor as usize + count]);
+                cursor += count as u64;
+                continue;
+            }
+            let mft_end = self.mft_start + self.record_count * 1024;
+            if cursor >= self.mft_start && cursor < mft_end {
+                let index = (cursor - self.mft_start) / 1024;
+                let within = (cursor - self.mft_start) % 1024;
+                let count = (end - cursor).min(1024 - within) as usize;
+                if index == 0 {
+                    buffer[(cursor - offset) as usize..(cursor - offset) as usize + count]
+                        .copy_from_slice(&self.bootstrap[within as usize..within as usize + count]);
+                } else {
+                    let raw = record(index as u32, 1, &[]);
+                    buffer[(cursor - offset) as usize..(cursor - offset) as usize + count]
+                        .copy_from_slice(&raw[within as usize..within as usize + count]);
+                }
+                cursor += count as u64;
+                continue;
+            }
+            let next = if cursor < self.mft_start {
+                self.mft_start
+            } else {
+                end
+            };
+            cursor = next.min(end);
+        }
+        Ok(())
+    }
+}
+
+fn virtual_mft_source(record_count: u64) -> VirtualMftSource {
+    let mft_clusters = record_count * 2;
+    let mft_bytes = record_count * 1024;
+    let volume_sectors = 4 + mft_clusters + 8;
+    let mut boot = [0; 512];
+    boot[3..11].copy_from_slice(b"NTFS    ");
+    boot[11..13].copy_from_slice(&512u16.to_le_bytes());
+    boot[13] = 1;
+    boot[40..48].copy_from_slice(&volume_sectors.to_le_bytes());
+    boot[48..56].copy_from_slice(&4u64.to_le_bytes());
+    boot[64] = (-10i8) as u8;
+    boot[510..512].copy_from_slice(&[0x55, 0xaa]);
+    let runs = [
+        0x13,
+        (mft_clusters & 0xff) as u8,
+        (mft_clusters >> 8) as u8,
+        (mft_clusters >> 16) as u8,
+        4,
+        0,
+    ];
+    let bootstrap = record(
+        0,
+        1,
+        &[
+            filename("$MFT"),
+            nonresident(&runs, mft_clusters, mft_bytes, mft_bytes, 0),
+        ],
+    );
+    VirtualMftSource {
+        length: volume_sectors * 512,
+        mft_start: 4 * 512,
+        record_count,
+        boot,
+        bootstrap,
+    }
+}
+
 fn image_with_nonresident_attribute_list(nonresident_list: bool) -> MemorySource {
     image_with_attribute_list_layout(nonresident_list, false)
 }
@@ -526,6 +619,17 @@ fn synthetic_ntfs_scan_classifies_real_record_data() {
             .unwrap()
             .exportable
     );
+}
+
+#[test]
+fn synthetic_ntfs_scan_traverses_large_virtual_mft_without_materializing_image() {
+    let source = virtual_mft_source(100_000);
+    let result = ntfs::scan(&source, 0, &AtomicBool::new(false), |_, _, _| {}).unwrap();
+
+    assert_eq!(result.records, 100_000);
+    assert_eq!(result.invalid_records, 0);
+    assert!(result.candidates.is_empty());
+    assert!(!result.limited);
 }
 
 #[test]
