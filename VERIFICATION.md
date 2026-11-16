@@ -1986,3 +1986,15 @@ current NSIS setup was regenerated at
 `ee740aa5e19d61c088770e3f21703adef566053f58eb6e4c884fd3c87fb5df3d`). Both
 are unsigned and staged only. The installer has not been installed; current-
 source UI smoke is pending fresh hash-specific approval.
+
+## Fragmented NTFS reference fixture check — 2026-11-16
+
+The independent fixture generator now preallocates the second half of a deleted
+file after a 1 MiB interleaved file, then requires Sleuth Kit to report at least
+two physically non-adjacent `$DATA` runs before recovering and comparing the
+original bytes. The script passes a Git Bash syntax check. This is syntax-only
+evidence: the generator could not run on this host because `mkntfs`, `ntfs-3g`,
+`ntfsfallocate`, and Sleuth Kit are unavailable; WSL returns
+`Wsl/E_ACCESSDENIED`; Docker's Linux engine is not running; hosted Actions are
+disabled by the account's $0 spending cap. Independent fragmented NTFS recovery
+remains unqualified until that fixture and the Windows native export test pass.
