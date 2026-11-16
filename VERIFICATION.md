@@ -115,12 +115,24 @@ both Rust crates. The hard-link detection uses Windows' documented volume
 serial/file-index identity fields described by
 [GetFileInformationByHandle](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getfileinformationbyhandle).
 
-The isolated native release target was rebuilt after the stale-verification UI fix at commit `b18f2b5`. Its
-current executable is
-`src-tauri/target/release-case-entry/release/daemoncore.exe` (15,481,856 bytes,
-SHA-256 `94b75417d1dc8822e979b3ca6ad19bb7dcb53796c29d3c22a0cfef1437d3ea3e`,
-version 0.1.0, Authenticode `NotSigned`). It has not been launched; desktop
-runtime validation is still pending.
+## Native smoke and current build — 2026-11-15
+
+With fresh user approval, the isolated executable built from commit `b18f2b5`
+(`src-tauri/target/release-case-entry/release/daemoncore.exe`, SHA-256
+`94b75417d1dc8822e979b3ca6ad19bb7dcb53796c29d3c22a0cfef1437d3ea3e`) was
+launched once. Startup and the Dashboard rendered, the supplied logo appeared,
+and Reports opened. The report export stayed disabled with the expected
+“Select a case before exporting” message because no case was active. No
+evidence image was opened and no device was accessed. This smoke did not verify
+report generation or installer behavior.
+
+The current source at commit `84ade4b` updates the Dashboard capability note.
+`npm run build` passed, and an isolated optimized native executable was built
+at `src-tauri/target/release-dashboard-copy/release/daemoncore.exe` (15,481,856
+bytes, SHA-256
+`4e482179bd910ae626aedcc75f9407e911696fd293e10effbf716c519be9a0fa`, version
+0.1.0, Authenticode `NotSigned`). This newer binary has not yet been launched;
+the smoke above therefore verifies the prior build, not the current package.
 
 ## Stale package-verification state — 2026-11-15
 
