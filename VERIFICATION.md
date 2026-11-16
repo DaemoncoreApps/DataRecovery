@@ -1880,6 +1880,22 @@ and `git diff --check` pass. The preflight change is committed and pushed as
 generation from the packaged UI remains unverified because the prior smoke had
 no active case.
 
+## Windows executable after audit-index change — 2026-11-16
+
+`npm exec -- tauri build --no-bundle` completed for commit `a037a7c`, building
+the production frontend and optimized Windows executable. The staged unsigned
+executable is
+`src-tauri/target/release/DaemonCore-Data-Recovery-Windows-0.1.0-audit-index-a037-unsigned.exe`
+(15,450,112 bytes, SHA-256
+`a6a69c54a3ad2de807a183260fcaacb6767b9eb071b6297d1b95ff08fb18c979`).
+Authenticode reports `NotSigned`. It has not been launched or installed, and
+the approved smoke-test hash did not match this executable, so it was not
+launched. A full `npm exec -- tauri build` compiled the app but failed when
+`makensis.exe` started with Windows error 623 (`Illegal System DLL
+Relocation`). A prior 222,906,631-byte setup file remains in the output folder;
+it is not a verified package for this commit. The native UI smoke and installer
+lifecycle checks remain open.
+
 ## Case-scoped audit index — 2026-11-16
 
 The case database now indexes audit rows by event, validated JSON `case_id`,
