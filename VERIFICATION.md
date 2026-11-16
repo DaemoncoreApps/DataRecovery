@@ -67,9 +67,18 @@ Image-open entry points now route to Case Management when no active,
 audit-matched case is available. The prompt distinguishes creating a first case,
 selecting a stored case, and reconfirming an audit-mismatched case. The case
 register shows the matching instruction before the examiner proceeds. This
-change passed the full local `npm run validate` suite, but the open native
-smoke-test process still holds the executable built from the previous source;
-this latest UI change has not yet been built or verified in the desktop runtime.
+change passed the full local `npm run validate` suite, but has not yet been
+verified in the desktop runtime.
+
+On 2026-11-15, a fresh `npm run tauri -- build --no-bundle` from commit
+`2838ef3` compiled the frontend, then failed replacing
+`src-tauri/target/release/daemoncore.exe` with Windows `Access is denied`.
+There was no `daemoncore` process visible in the process check. Retrying with an
+isolated Cargo target avoided the locked output, but Tauri's build script failed
+while generating its permission documentation with another Windows `Access is
+denied`. No executable for `2838ef3` was produced, so case-entry guidance still
+needs a native runtime check. This is a local build-environment failure, not
+evidence that the changed UI works in the packaged app.
 
 ## Current optimized Windows build — 2026-11-15
 
