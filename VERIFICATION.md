@@ -1690,6 +1690,26 @@ warnings denied (3 core and 9 desktop tests are ignored). The limits are
 safeguards, not evidence of large-volume throughput or UI responsiveness;
 representative scale benchmarks remain open.
 
+## Linux MD RAID 6 P/Q reconstruction — 2026-11-15
+
+Added operator-configured full-member RAID 6 reconstruction for Linux MD's
+left-symmetric layout. It computes and verifies both XOR P parity and the GF(2^8)
+Q syndrome, with coefficients ordered as the Linux MD syndrome generator walks
+data slots. The package manifest and verifier bind the supported layout and
+member geometry; the UI requires four complete members and labels the supported
+layout. Corrupt P or Q parity leaves marked unpublished staging and fails closed.
+
+Synthetic multi-row mapping and parity tests pass, including exact output bytes,
+package verification, progress accounting, and P/Q mismatch rejection. The full
+local `npm run validate` passes: frontend production build, 63 core tests, 162
+desktop tests, formatting, and Clippy with warnings denied (3 core and 10
+desktop tests ignored). The ignored independent-reference test and Linux MD
+fixture generator are in place, but could not be run here: WSL returns
+`Wsl/E_ACCESSDENIED`, and Docker's Linux engine is unavailable. Therefore RAID 6
+still needs an independently generated Linux MD array and exact-byte comparison
+before it can be considered production-qualified. RAID Reconstruction as a
+whole remains not production-qualified.
+
 A synthetic 100,000-entry FAT32 root chain spans 6,250 linked clusters and
 checks full entry count, first/last names, and the final absolute source offset.
 It completed in 0.97 seconds on the current development host. This exercises

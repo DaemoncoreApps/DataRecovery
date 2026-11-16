@@ -25,6 +25,7 @@ pub enum RaidLevel {
     Raid0,
     Raid1,
     Raid5,
+    Raid6,
 }
 
 impl RaidLevel {
@@ -33,8 +34,9 @@ impl RaidLevel {
             "raid0" => Ok(Self::Raid0),
             "raid1" => Ok(Self::Raid1),
             "raid5" => Ok(Self::Raid5),
+            "raid6" => Ok(Self::Raid6),
             _ => Err(
-                "Supported reconstruction levels are RAID 0, RAID 1, and full-member RAID 5."
+                "Supported reconstruction levels are RAID 0, RAID 1, and full-member RAID 5/6."
                     .into(),
             ),
         }
@@ -45,6 +47,7 @@ impl RaidLevel {
             Self::Raid0 => "RAID 0",
             Self::Raid1 => "RAID 1",
             Self::Raid5 => "RAID 5",
+            Self::Raid6 => "RAID 6",
         }
     }
 }
@@ -102,6 +105,57 @@ impl Raid5Layout {
     }
 }
 
+// Linux MD rotates P right-to-left, places Q next to P, then starts data after Q.
+fn raid6_left_symmetric_parity_members(stripe: u64, member_count: usize) -> Result<(usize, usize)> {
+    let rotation = usize::try_from(stripe % member_count as u64)
+        .map_err(|_| "RAID 6 stripe index exceeds addressable memory")?;
+    let p = member_count - 1 - rotation;
+    let q = (p + 1) % member_count;
+    Ok((p, q))
+}
+
+fn raid6_left_symmetric_data_members(
+    p: usize,
+    q: usize,
+    member_count: usize,
+) -> impl Iterator<Item = usize> {
+    (0..member_count)
+        .map(move |position| (q + 1 + position) % member_count)
+        .filter(move |member| *member != p && *member != q)
+}
+
+fn raid6_gf_multiply(mut left: u8, mut right: u8) -> u8 {
+    let mut product = 0;
+    while right != 0 {
+        if right & 1 != 0 {
+            product ^= left;
+        }
+        let carry = left & 0x80 != 0;
+        left <<= 1;
+        if carry {
+            left ^= 0x1d;
+        }
+        right >>= 1;
+    }
+    product
+}
+
+fn raid6_q_tables(data_members: usize) -> Vec<[u8; 256]> {
+    let mut coefficient = 1;
+    let mut coefficients = Vec::with_capacity(data_members);
+    for _ in 0..data_members {
+        coefficients.push(coefficient);
+        coefficient = raid6_gf_multiply(coefficient, 2);
+    }
+    // The Linux MD syndrome generator walks data from the final slot backward;
+    // therefore the first logical slot carries the highest alpha coefficient.
+    coefficients
+        .into_iter()
+        .rev()
+        .map(|coefficient| std::array::from_fn(|value| raid6_gf_multiply(value as u8, coefficient)))
+        .collect()
+}
+
 #[derive(Clone, Debug, Serialize)]
 struct MemberManifest {
     order: usize,
@@ -126,6 +180,7 @@ struct RaidManifest {
     bytes_per_sector: u32,
     stripe_size_bytes: Option<u64>,
     raid5_layout: Option<&'static str>,
+    raid6_layout: Option<&'static str>,
     reconstructed_size_bytes: u64,
     image_name: &'static str,
     image_sha256: String,
@@ -147,6 +202,7 @@ pub struct RaidPackage {
     pub size_bytes: u64,
     pub level: RaidLevel,
     pub raid5_layout: Option<Raid5Layout>,
+    pub raid6_layout: Option<&'static str>,
     pub member_count: usize,
 }
 
@@ -323,22 +379,27 @@ fn validate_geometry(
         );
     }
     match level {
-        RaidLevel::Raid0 | RaidLevel::Raid5 => {
+        RaidLevel::Raid0 | RaidLevel::Raid5 | RaidLevel::Raid6 => {
             if level == RaidLevel::Raid5 && members.len() < 3 {
                 return Err("RAID 5 requires at least three complete member images; degraded reconstruction is not supported.".into());
+            }
+            if level == RaidLevel::Raid6 && members.len() < 4 {
+                return Err("RAID 6 requires at least four complete member images; degraded reconstruction is not supported.".into());
             }
             if !(512..=MAX_STRIPE_BYTES).contains(&stripe_bytes)
                 || !stripe_bytes.is_power_of_two()
                 || !stripe_bytes.is_multiple_of(u64::from(sector_bytes))
                 || !data_size.is_multiple_of(stripe_bytes)
             {
-                return Err("RAID 0/5 stripe size must be a 512-byte to 16-MiB power of two, aligned to the sector size, and divide each member data region evenly.".into());
+                return Err("RAID 0/5/6 stripe size must be a 512-byte to 16-MiB power of two, aligned to the sector size, and divide each member data region evenly.".into());
             }
-            let data_members = if level == RaidLevel::Raid5 {
-                members.len() - 1
-            } else {
-                members.len()
+            let parity_members = match level {
+                RaidLevel::Raid0 => 0,
+                RaidLevel::Raid5 => 1,
+                RaidLevel::Raid6 => 2,
+                RaidLevel::Raid1 => return Err("RAID 1 does not use striped geometry.".into()),
             };
+            let data_members = members.len() - parity_members;
             let output = data_size
                 .checked_mul(data_members as u64)
                 .ok_or("Reconstructed RAID size overflow")?;
@@ -426,6 +487,7 @@ fn reconstruct_package_into(
                 sum.checked_add(output_size.checked_mul(members.len().saturating_sub(1) as u64)?)
             }
             RaidLevel::Raid5 => sum.checked_add(member_data_size),
+            RaidLevel::Raid6 => sum.checked_add(member_data_size.checked_mul(2)?),
             RaidLevel::Raid0 => Some(sum),
         })
         .ok_or("RAID operation progress size overflow")?;
@@ -581,6 +643,66 @@ fn reconstruct_package_into(
                 }
             }
         }
+        RaidLevel::Raid6 => {
+            let stripe_count = member_data_size / stripe_size_bytes;
+            let mut p_parity = vec![0; buffer.len()];
+            let mut q_parity = vec![0; buffer.len()];
+            let mut observed_p = vec![0; buffer.len()];
+            let mut observed_q = vec![0; buffer.len()];
+            let data_members = members.len() - 2;
+            let q_tables = raid6_q_tables(data_members);
+            for stripe in 0..stripe_count {
+                if cancel.load(Ordering::SeqCst) {
+                    drop(output);
+                    staging.discard()?;
+                    return Ok(None);
+                }
+                let (p_member, q_member) =
+                    raid6_left_symmetric_parity_members(stripe, members.len())?;
+                let ordered_data: Vec<usize> =
+                    raid6_left_symmetric_data_members(p_member, q_member, members.len()).collect();
+                let member_offset = data_offset_bytes + stripe * stripe_size_bytes;
+                for within in (0..stripe_size_bytes).step_by(buffer.len()) {
+                    if cancel.load(Ordering::SeqCst) {
+                        drop(output);
+                        staging.discard()?;
+                        return Ok(None);
+                    }
+                    let count = (stripe_size_bytes - within).min(buffer.len() as u64) as usize;
+                    p_parity[..count].fill(0);
+                    q_parity[..count].fill(0);
+                    for (data_position, member_index) in ordered_data.iter().copied().enumerate() {
+                        members[member_index]
+                            .read_exact_at(member_offset + within, &mut buffer[..count])
+                            .map_err(crate::err)?;
+                        for index in 0..count {
+                            p_parity[index] ^= buffer[index];
+                            q_parity[index] ^= q_tables[data_position][buffer[index] as usize];
+                        }
+                        output.write_all(&buffer[..count]).map_err(crate::err)?;
+                        output_hash.update(&buffer[..count]);
+                        processed = processed.saturating_add(count as u64);
+                        progress(processed.min(total), total);
+                    }
+                    members[p_member]
+                        .read_exact_at(member_offset + within, &mut observed_p[..count])
+                        .map_err(crate::err)?;
+                    members[q_member]
+                        .read_exact_at(member_offset + within, &mut observed_q[..count])
+                        .map_err(crate::err)?;
+                    if p_parity[..count] != observed_p[..count]
+                        || q_parity[..count] != observed_q[..count]
+                    {
+                        return Err(format!(
+                            "RAID 6 P/Q parity mismatch at stripe row {stripe}, byte offset {}. Verify member order, stripe size, and data offset; no package was published.",
+                            member_offset + within
+                        ));
+                    }
+                    processed = processed.saturating_add((count as u64).saturating_mul(2));
+                    progress(processed.min(total), total);
+                }
+            }
+        }
     }
     output.sync_all().map_err(crate::err)?;
     drop(output);
@@ -638,9 +760,10 @@ fn reconstruct_package_into(
         members: member_manifest,
         data_offset_bytes,
         bytes_per_sector,
-        stripe_size_bytes: matches!(level, RaidLevel::Raid0 | RaidLevel::Raid5)
+        stripe_size_bytes: matches!(level, RaidLevel::Raid0 | RaidLevel::Raid5 | RaidLevel::Raid6)
             .then_some(stripe_size_bytes),
         raid5_layout: (level == RaidLevel::Raid5).then_some(raid5_layout.id()),
+        raid6_layout: (level == RaidLevel::Raid6).then_some("left_symmetric"),
         reconstructed_size_bytes: output_size,
         image_name: "image.raw",
         image_sha256: verified_hash.clone(),
@@ -653,8 +776,9 @@ fn reconstruct_package_into(
                 Raid5Layout::LeftSymmetric => "RAID 5 left-symmetric rotating mapping; member hashes stable and XOR parity matches",
                 Raid5Layout::RightSymmetric => "RAID 5 right-symmetric rotating mapping; member hashes stable and XOR parity matches",
             },
+            RaidLevel::Raid6 => "Linux MD RAID 6 left-symmetric P/Q; all complete member data and both parity syndromes verified",
         },
-        limitations: "The operator supplied member order, data offset, sector size, stripe size, and RAID 5 layout. RAID 5 requires every member image and checks rotating XOR parity; parity agreement does not prove the selected layout or logical data order is correct. Degraded or missing-member reconstruction is not supported. No on-disk RAID metadata was interpreted. Reconstructed bytes are not a hardware acquisition, do not establish which files were deleted, and are not validated against a vendor-specific array metadata format.",
+        limitations: "The operator supplied member order, data offset, sector size, stripe size, and parity layout. RAID 5 and RAID 6 require every member image and verify parity, but parity agreement does not prove the selected layout or logical data order is correct. RAID 6 supports only Linux MD left-symmetric rotating P/Q layout. Degraded or missing-member reconstruction is not supported. No on-disk RAID metadata was interpreted. Reconstructed bytes are not a hardware acquisition, do not establish which files were deleted, and are not validated against a vendor-specific array metadata format.",
     };
     write_json(&staging_path.join("manifest.json"), &manifest)?;
     let checksums = format!(
@@ -689,6 +813,7 @@ fn reconstruct_package_into(
         size_bytes: output_size,
         level,
         raid5_layout: (level == RaidLevel::Raid5).then_some(raid5_layout),
+        raid6_layout: (level == RaidLevel::Raid6).then_some("left_symmetric"),
         member_count: members.len(),
     }))
 }
@@ -861,6 +986,7 @@ pub async fn reconstruct_raid(
                 output_size.checked_mul(canonical_members.len().saturating_sub(1) as u64)?,
             ),
             RaidLevel::Raid5 => sum.checked_add(member_data_size),
+            RaidLevel::Raid6 => sum.checked_add(member_data_size.checked_mul(2)?),
             RaidLevel::Raid0 => Some(sum),
         })
         .ok_or("RAID progress size overflow")?;
@@ -883,8 +1009,9 @@ pub async fn reconstruct_raid(
                 "level":level_value.label(),
                 "member_paths":canonical_members,
                 "data_offset_bytes":data_offset_bytes,
-                "stripe_size_bytes":if matches!(level_value, RaidLevel::Raid0 | RaidLevel::Raid5) { Some(stripe_size_bytes) } else { None },
+                "stripe_size_bytes":if matches!(level_value, RaidLevel::Raid0 | RaidLevel::Raid5 | RaidLevel::Raid6) { Some(stripe_size_bytes) } else { None },
                 "raid5_layout":if level_value == RaidLevel::Raid5 { Some(raid5_layout.id()) } else { None },
+                "raid6_layout":if level_value == RaidLevel::Raid6 { Some("left_symmetric") } else { None },
                 "bytes_per_sector":bytes_per_sector,
                 "member_data_size_bytes":member_data_size,
                 "reconstructed_size_bytes":output_size,
@@ -943,6 +1070,7 @@ pub async fn reconstruct_raid(
                             "case_id":case_id,
                             "level":package.level.label(),
                             "raid5_layout":package.raid5_layout.map(Raid5Layout::id),
+                            "raid6_layout":package.raid6_layout,
                             "members":package.member_count,
                             "image_sha256":package.image_sha256,
                             "size_bytes":package.size_bytes,
@@ -1079,6 +1207,160 @@ mod tests {
             [vec![b; 512], vec![c ^ d; 512], vec![e; 512]].concat(),
             [vec![a ^ b; 512], vec![c; 512], vec![f; 512]].concat(),
         ]
+    }
+
+    fn reference_gf_multiply(value: u8, coefficient: u8) -> u8 {
+        let mut left = u16::from(value);
+        let mut right = coefficient;
+        let mut product = 0u16;
+        while right != 0 {
+            if right & 1 != 0 {
+                product ^= left;
+            }
+            right >>= 1;
+            left <<= 1;
+            if left & 0x100 != 0 {
+                left ^= 0x11d;
+            }
+        }
+        product as u8
+    }
+
+    #[test]
+    fn reconstructs_linux_md_raid6_left_symmetric_and_checks_both_syndromes() {
+        let root = root();
+        let q_tables = raid6_q_tables(2);
+        assert_eq!(q_tables[0][1], 2);
+        assert_eq!(q_tables[1][1], 1);
+        let member_count = 5;
+        let stripe_rows = 11;
+        let mut member_bytes = vec![Vec::new(); member_count];
+        let mut expected = Vec::new();
+
+        for row in 0..stripe_rows {
+            let p = member_count - 1 - row % member_count;
+            let q = (p + 1) % member_count;
+            let mut disk = (q + 1) % member_count;
+            let mut data_members = Vec::new();
+            while data_members.len() < member_count - 2 {
+                if disk != p && disk != q {
+                    data_members.push(disk);
+                }
+                disk = (disk + 1) % member_count;
+            }
+            let blocks: Vec<Vec<u8>> = (0..data_members.len())
+                .map(|slot| {
+                    (0..512)
+                        .map(|offset| (row * 41 + slot * 67 + offset * 13 + 3) as u8)
+                        .collect()
+                })
+                .collect();
+            let mut p_block = vec![0; 512];
+            let mut q_block = vec![0; 512];
+            for (slot, block) in blocks.iter().enumerate() {
+                let exponent = data_members.len() - 1 - slot;
+                let coefficient = (0..exponent).fold(1, |value, _| reference_gf_multiply(value, 2));
+                for index in 0..512 {
+                    p_block[index] ^= block[index];
+                    q_block[index] ^= reference_gf_multiply(block[index], coefficient);
+                }
+                expected.extend_from_slice(block);
+                member_bytes[data_members[slot]].extend_from_slice(block);
+            }
+            member_bytes[p].extend_from_slice(&p_block);
+            member_bytes[q].extend_from_slice(&q_block);
+        }
+
+        let paths: Vec<PathBuf> = (0..member_count)
+            .map(|member| root.join(format!("member{member}.raw")))
+            .collect();
+        for (path, bytes) in paths.iter().zip(&member_bytes) {
+            write_member(path, bytes);
+        }
+        let mut final_progress = (0, 0);
+        let package = reconstruct_package(
+            ReconstructionRequest {
+                level_name: "raid6",
+                member_paths: &paths,
+                data_offset_bytes: 0,
+                stripe_size_bytes: 512,
+                raid5_layout: Raid5Layout::LeftSymmetric,
+                bytes_per_sector: 512,
+                case_id: 7,
+                destination: &root,
+            },
+            &AtomicBool::new(false),
+            |processed, total| final_progress = (processed, total),
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(fs::read(&package.image_path).unwrap(), expected);
+        assert_eq!(package.size_bytes, expected.len() as u64);
+        assert_eq!(package.level, RaidLevel::Raid6);
+        assert_eq!(package.raid6_layout, Some("left_symmetric"));
+        assert_eq!(final_progress.0, final_progress.1);
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(package.directory.join("manifest.json")).unwrap())
+                .unwrap();
+        assert_eq!(manifest["raid6_layout"], "left_symmetric");
+        let verification = crate::recovery_verify::verify_package(&package.directory).unwrap();
+        assert_eq!(verification.package_type, "raid_reconstruction");
+        assert_eq!(verification.state, "complete");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rejects_raid6_p_or_q_mismatch_and_retains_marked_staging() {
+        let root = root();
+        for corrupted_member in [0, 3] {
+            let case_root = root.join(format!("corrupt-{corrupted_member}"));
+            fs::create_dir(&case_root).unwrap();
+            let member_count = 4;
+            let mut member_bytes = vec![vec![0; 512]; member_count];
+            // Row zero of Linux MD RAID 6 left-symmetric: P=3, Q=0, data=1,2.
+            for index in 0..512 {
+                let left = (index * 3 + 1) as u8;
+                let right = (index * 7 + 2) as u8;
+                member_bytes[1][index] = left;
+                member_bytes[2][index] = right;
+                member_bytes[3][index] = left ^ right;
+                member_bytes[0][index] = reference_gf_multiply(left, 2) ^ right;
+            }
+            member_bytes[corrupted_member][0] ^= 1;
+            let paths: Vec<PathBuf> = (0..member_count)
+                .map(|member| case_root.join(format!("member{member}.raw")))
+                .collect();
+            for (path, bytes) in paths.iter().zip(&member_bytes) {
+                write_member(path, bytes);
+            }
+            let outcome = reconstruct_package(
+                ReconstructionRequest {
+                    level_name: "raid6",
+                    member_paths: &paths,
+                    data_offset_bytes: 0,
+                    stripe_size_bytes: 512,
+                    raid5_layout: Raid5Layout::LeftSymmetric,
+                    bytes_per_sector: 512,
+                    case_id: 7,
+                    destination: &case_root,
+                },
+                &AtomicBool::new(false),
+                |_, _| {},
+            );
+            let error = match outcome {
+                Err(error) => error,
+                Ok(_) => panic!("corrupt P or Q parity must fail reconstruction"),
+            };
+            assert!(error.contains("P/Q parity mismatch"));
+            let staging = fs::read_dir(&case_root)
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .find(|path| path.extension().is_some_and(|ext| ext == "partial"))
+                .unwrap();
+            assert!(verify_incomplete_marker(&staging).is_ok());
+        }
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -1338,6 +1620,55 @@ mod tests {
         let package = reconstruct_package(
             ReconstructionRequest {
                 level_name: "raid5",
+                member_paths: &member_paths,
+                data_offset_bytes: 0,
+                stripe_size_bytes: 64 * 1024,
+                raid5_layout: Raid5Layout::LeftSymmetric,
+                bytes_per_sector: 512,
+                case_id: 7,
+                destination: &root,
+            },
+            &AtomicBool::new(false),
+            |_, _| {},
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(fs::read(&package.image_path).unwrap(), expected);
+        assert_eq!(package.size_bytes, expected.len() as u64);
+        let verification = crate::recovery_verify::verify_package(&package.directory).unwrap();
+        assert_eq!(verification.package_type, "raid_reconstruction");
+        assert_eq!(verification.state, "complete");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires the independently generated Linux MD RAID 6 reference array"]
+    fn reconstructs_independent_linux_md_raid6_reference_array() {
+        let fixture = std::env::var_os("DAEMONCORE_RAID6_REFERENCE_DIR")
+            .map(PathBuf::from)
+            .expect("reference fixture directory is required");
+        let member_paths: Vec<PathBuf> = (0..4)
+            .map(|index| fixture.join(format!("member{index}.raw")))
+            .collect();
+        let expected = fs::read(fixture.join("logical-image.raw")).unwrap();
+        assert_eq!(expected.len(), 16 * 1024 * 1024);
+        assert_eq!(
+            format!("{:x}", Sha256::digest(&expected)),
+            "ae6018b38e30a433a0505035cf4df582da77c7ef92c269245232686e541e97c8"
+        );
+        assert_eq!(
+            member_paths
+                .iter()
+                .map(|path| fs::metadata(path).unwrap().len())
+                .collect::<Vec<_>>(),
+            vec![8 * 1024 * 1024; 4]
+        );
+
+        let root = root();
+        let package = reconstruct_package(
+            ReconstructionRequest {
+                level_name: "raid6",
                 member_paths: &member_paths,
                 data_offset_bytes: 0,
                 stripe_size_bytes: 64 * 1024,

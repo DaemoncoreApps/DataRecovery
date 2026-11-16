@@ -13,7 +13,7 @@ interface Props {
 
 export function RaidPanel({ job, busy, canReconstruct, run, onJob, onSource }: Props) {
   const [members, setMembers] = useState<string[]>([]);
-  const [level, setLevel] = useState<"raid0" | "raid1" | "raid5">("raid0");
+  const [level, setLevel] = useState<"raid0" | "raid1" | "raid5" | "raid6">("raid0");
   const [raid5Layout, setRaid5Layout] = useState("left_symmetric");
   const [dataOffset, setDataOffset] = useState("0");
   const [stripeSize, setStripeSize] = useState("65536");
@@ -21,7 +21,7 @@ export function RaidPanel({ job, busy, canReconstruct, run, onJob, onSource }: P
   const [verification, setVerification] = useState<RecoveryExportVerification | null>(null);
   const [verifying, setVerifying] = useState(false);
   const operationRunning = busy || job.state === "running";
-  const minimumMembers = level === "raid5" ? 3 : 2;
+  const minimumMembers = level === "raid6" ? 4 : level === "raid5" ? 3 : 2;
   const memberCountReady = members.length >= minimumMembers;
 
   const chooseMembers = () => run(async () => {
@@ -65,14 +65,15 @@ export function RaidPanel({ job, busy, canReconstruct, run, onJob, onSource }: P
       <section className="panel raidPanel">
         <div className="panelTitle">
           <div className="panelHeading"><span className="panelIcon"><Database size={16} /></span><h2>Operator-configured array</h2></div>
-          <span className="tag">RAID 0 + RAID 1 + RAID 5 layouts</span>
+          <span className="tag">RAID 0 + RAID 1 + RAID 5/6</span>
         </div>
         <div className="warning" role="note">
           <ShieldCheck size={16} />
           <p>
             This does not identify RAID metadata automatically. Supply the correct member order, member data offset,
-            sector size, stripe size, and RAID 5 layout from validated array metadata. RAID 5 requires every
-            member and checks XOR parity, but parity agreement does not prove the selected layout or logical data
+            sector size, stripe size, and parity layout from validated array metadata. RAID 5 requires every
+            member and checks XOR parity. RAID 6 supports full-member Linux MD left-symmetric P/Q only and checks
+            both parity syndromes. Parity agreement does not prove the selected layout or logical data
             order is correct. Confirm layout and member order from metadata and compare recovered files with
             independent references before forensic use. Missing-member reconstruction is not supported. The
             output is a derived image; keep every original member unchanged. RAID 1 reconstructs only when all
@@ -85,10 +86,11 @@ export function RaidPanel({ job, busy, canReconstruct, run, onJob, onSource }: P
           <>
             <div className="raidControls">
               <label>Array level
-                <select value={level} disabled={operationRunning} onChange={(event) => setLevel(event.target.value as "raid0" | "raid1" | "raid5")}>
+                <select value={level} disabled={operationRunning} onChange={(event) => setLevel(event.target.value as "raid0" | "raid1" | "raid5" | "raid6")}>
                   <option value="raid0">RAID 0 · striped</option>
                   <option value="raid1">RAID 1 · mirrored</option>
                   <option value="raid5">RAID 5 · rotating parity</option>
+                  <option value="raid6">RAID 6 · dual rotating parity (Linux MD left-symmetric)</option>
                 </select>
               </label>
               {level === "raid5" && (
@@ -139,7 +141,7 @@ export function RaidPanel({ job, busy, canReconstruct, run, onJob, onSource }: P
             )}
             <div className="actions">
               <button className="primary" disabled={operationRunning || !canReconstruct || !memberCountReady} onClick={reconstruct}>
-                Reconstruct {level === "raid0" ? "RAID 0" : level === "raid1" ? "RAID 1" : "RAID 5"}
+                Reconstruct {level === "raid0" ? "RAID 0" : level === "raid1" ? "RAID 1" : level === "raid5" ? "RAID 5" : "RAID 6"}
               </button>
               {!memberCountReady && members.length > 0 && <span className="muted">{level.toUpperCase()} requires at least {minimumMembers} member images; {members.length} selected.</span>}
               {!canReconstruct && <span className="muted">Select or reconfirm an audit-matched case first.</span>}
