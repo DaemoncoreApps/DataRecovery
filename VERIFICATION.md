@@ -122,6 +122,20 @@ SHA-256 `0cef087bbb1cb67fc3b88d11ceac3495fd0897c3544a560bbb5be6ba05df95f7`,
 version 0.1.0, Authenticode `NotSigned`). It has not been launched; desktop
 runtime validation is still pending.
 
+## Stale package-verification state — 2026-11-15
+
+Disk Imaging and RAID Reconstruction now clear the displayed package result
+when a new acquisition or reconstruction starts, and disable package
+verification while the native job is running. Recovery Workspace also clears
+its previous verification result when the evidence source changes or another
+operation starts. This prevents a prior package's success result from appearing
+beside a different or incomplete output. The full local `npm run validate` gate
+passed after these changes: production frontend build, formatting checks, 63
+core tests (3 ignored), 163 desktop tests (10 ignored), and Clippy with
+warnings denied for both Rust crates. The gate has no dedicated React
+component-interaction tests, so these state transitions still need packaged
+runtime verification.
+
 ## Current optimized Windows build — 2026-11-15
 
 The newest source-only validation on 2026-11-15 passed `npm run validate`:

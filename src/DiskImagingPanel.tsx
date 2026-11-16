@@ -70,6 +70,7 @@ export function DiskImagingPanel({ job, busy, canAcquire, run, onSource, onJob }
   const acquire = (device: PhysicalDevice) =>
     run(async () => {
       setMessage("");
+      setVerification(null);
       await command<boolean>("acquire_physical_device", {
         expectedDevice: device,
         hardwareWriteBlockerAttested: attested,
@@ -171,7 +172,7 @@ export function DiskImagingPanel({ job, busy, canAcquire, run, onSource, onJob }
           {job.discovered > 0 && <p className="muted">This partial image was not activated for filesystem analysis. Review read-errors.jsonl before any further use.</p>}
           <div className="actions">
             <button
-              disabled={busy}
+              disabled={operationRunning || verifying}
               onClick={() => run(async () => {
                 setVerification(null);
                 setVerifying(true);

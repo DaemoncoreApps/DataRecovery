@@ -44,6 +44,7 @@ export function RaidPanel({ job, busy, canReconstruct, run, onJob, onSource }: P
     if (!Number.isSafeInteger(offset) || offset < 0) {
       throw new Error("Enter a valid member data offset in bytes.");
     }
+    setVerification(null);
     const started = await command<boolean>("reconstruct_raid", {
       memberPaths: members,
       level,
@@ -156,7 +157,7 @@ export function RaidPanel({ job, busy, canReconstruct, run, onJob, onSource }: P
           <p className="muted">The image is registered as hashed evidence and is now the active source. Review manifest.json for member order, offsets, hashes, and reconstruction limitations.</p>
           {job.sha256 && <code>Reconstructed image SHA-256 · {job.sha256}</code>}
           <div className="actions">
-            <button disabled={busy} onClick={() => run(async () => {
+            <button disabled={operationRunning || verifying} onClick={() => run(async () => {
               setVerification(null);
               setVerifying(true);
               try {

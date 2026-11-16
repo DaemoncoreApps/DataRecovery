@@ -79,7 +79,11 @@ export function RecoveryPanel({ source, job, busy, run, onJob }: Props) {
     setFat32Page({ total: 0, rows: [] });
     setFat32PageIndex(0);
     setFat32Selected(new Set());
+    setExportVerification(null);
   }, [source?.id]);
+  useEffect(() => {
+    if (job.state === "running") setExportVerification(null);
+  }, [job.kind, job.state]);
   useEffect(() => {
     if (
       !native ||
