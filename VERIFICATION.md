@@ -1879,3 +1879,16 @@ and `git diff --check` pass. The preflight change is committed and pushed as
 `ca8efc0`; aggregate-limit coverage is in `fa0d054`. End-to-end report
 generation from the packaged UI remains unverified because the prior smoke had
 no active case.
+
+## Case-scoped audit index — 2026-11-16
+
+The case database now indexes audit rows by event, validated JSON `case_id`,
+and record ID. The JSON expression is guarded so malformed historical payloads
+remain indexable as NULL instead of aborting schema migration. An
+`EXPLAIN QUERY PLAN` regression confirms case-scoped audit lookups use the new
+index; the legacy database migration test passes with existing case and audit
+records intact. Full local `npm run validate` passes: frontend production
+build, formatting, 63 core tests, 166 desktop tests, and Clippy with warnings
+denied (3 core and 10 desktop tests are ignored). This improves indexed lookup
+behavior, but large forensic case databases still need representative
+performance benchmarks.
