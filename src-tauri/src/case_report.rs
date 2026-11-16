@@ -1124,6 +1124,22 @@ mod tests {
     }
 
     #[test]
+    fn report_scan_preflight_counts_all_scan_families_together() {
+        let db = populated_case();
+        let source_sha256 = "b".repeat(64);
+        let snapshot_sha256 = "c".repeat(64);
+        for id in 1..=MAX_REPORT_SCANS as i64 {
+            db.execute(
+                "INSERT INTO carve_scan_sessions(id,evidence_id,case_id,source_sha256,completed_at,scanned_bytes,candidates_json,snapshot_sha256,candidates_limited) VALUES (?1,2,1,?2,'12',4096,'[]',?3,0)",
+                rusqlite::params![id, source_sha256, snapshot_sha256],
+            )
+            .unwrap();
+        }
+        let error = check_report_scan_budget(&db, 1, MAX_REPORT_BYTES as u64).unwrap_err();
+        assert!(error.contains("200-scan report limit"));
+    }
+
+    #[test]
     fn report_staging_is_no_replace_and_cleans_up() {
         let root = std::env::current_dir()
             .unwrap()
