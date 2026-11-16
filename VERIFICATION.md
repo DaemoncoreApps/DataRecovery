@@ -637,7 +637,10 @@ virtual-source stress regression scans 100,000 complete MFT records without
 allocating the corresponding 100 MiB image; all records parse, no invalid records
 or candidates are reported, and the scan is not marked limited. It completed in
 2.79 seconds on the current development host. This is regression coverage, not a
-formal performance benchmark or a million-record qualification.
+formal performance benchmark. A second virtual source exposes 1,000,001 complete
+records; the scanner examines exactly its one-million-record cap, reports no
+invalid records, and marks the result limited. This validates cap behavior but
+does not replace representative disk benchmarks or UI responsiveness testing.
 The prior optimized executable included this parser change and passed the native
 startup/navigation smoke check above.
 The configured NSIS installer was also attempted with `npm exec -- tauri build

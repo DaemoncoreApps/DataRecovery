@@ -275,6 +275,7 @@ struct VirtualMftSource {
     record_count: u64,
     boot: [u8; 512],
     bootstrap: Vec<u8>,
+    blank_record: Vec<u8>,
 }
 
 impl BlockSource for VirtualMftSource {
@@ -306,9 +307,21 @@ impl BlockSource for VirtualMftSource {
                     buffer[(cursor - offset) as usize..(cursor - offset) as usize + count]
                         .copy_from_slice(&self.bootstrap[within as usize..within as usize + count]);
                 } else {
-                    let raw = record(index as u32, 1, &[]);
                     buffer[(cursor - offset) as usize..(cursor - offset) as usize + count]
-                        .copy_from_slice(&raw[within as usize..within as usize + count]);
+                        .copy_from_slice(
+                            &self.blank_record[within as usize..within as usize + count],
+                        );
+                    let number_start = within.max(44);
+                    let number_end = (within + count as u64).min(48);
+                    if number_start < number_end {
+                        let number_bytes = (index as u32).to_le_bytes();
+                        let from = (number_start - 44) as usize;
+                        let to = (number_end - 44) as usize;
+                        let output_start =
+                            (cursor - offset) as usize + (number_start - within) as usize;
+                        buffer[output_start..output_start + to - from]
+                            .copy_from_slice(&number_bytes[from..to]);
+                    }
                 }
                 cursor += count as u64;
                 continue;
@@ -358,6 +371,7 @@ fn virtual_mft_source(record_count: u64) -> VirtualMftSource {
         record_count,
         boot,
         bootstrap,
+        blank_record: record(0, 1, &[]),
     }
 }
 
@@ -630,6 +644,17 @@ fn synthetic_ntfs_scan_traverses_large_virtual_mft_without_materializing_image()
     assert_eq!(result.invalid_records, 0);
     assert!(result.candidates.is_empty());
     assert!(!result.limited);
+}
+
+#[test]
+fn synthetic_ntfs_scan_marks_truncation_at_the_mft_record_cap() {
+    let source = virtual_mft_source(1_000_001);
+    let result = ntfs::scan(&source, 0, &AtomicBool::new(false), |_, _, _| {}).unwrap();
+
+    assert_eq!(result.records, 1_000_000);
+    assert_eq!(result.invalid_records, 0);
+    assert!(result.candidates.is_empty());
+    assert!(result.limited);
 }
 
 #[test]
