@@ -1918,8 +1918,10 @@ performance benchmarks.
 ## Report case setup and refreshed Windows package — 2026-11-16
 
 The Reports screen now offers a direct route to Case Management when no case is
-active or the current case needs audit reconfirmation. The frontend TypeScript
-check and production build passed. `npm exec -- tauri build --no-bundle`
+active or the current case needs audit reconfirmation. Full `npm run validate`
+passed after the change: TypeScript/frontend build, Rust formatting, 63 core
+tests (3 ignored), 166 desktop tests (10 ignored), and Clippy with warnings
+denied. `npm exec -- tauri build --no-bundle`
 completed for the updated frontend, and the NSIS bundle completed outside the
 restricted process sandbox. The latest unsigned standalone executable is
 15,450,112 bytes (SHA-256
