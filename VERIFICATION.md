@@ -84,10 +84,23 @@ Tauri 2.12.4 was then used as a Cargo patch with an isolated target directory.
 That native release build succeeded, and the original `src-tauri/Cargo.lock`
 was restored afterward. It produced
 `src-tauri/target/release-case-entry/release/daemoncore.exe` (15,467,520 bytes,
-SHA-256 `d78292c34a4e7267c51d6fc14045c0d2d218713a23149a6fcd98182ab2753270`,
-version 0.1.0, Authenticode `NotSigned`). This exact executable has not been
-launched; case-entry guidance still needs a native runtime check. Build success
-is not evidence that the changed UI works in the packaged app.
+version 0.1.0, Authenticode `NotSigned`). After the RAID 6 streaming change
+below, that isolated target was rebuilt from the updated source and now contains
+a 15,492,608-byte executable with SHA-256
+`15c859bc65f6de3615f1724bfb4eeb9debdc2cc4ae5a5885737326e065d0bcd4`. It
+remains unsigned and has not been launched; the
+case-entry path and RAID change have build evidence but no native runtime check.
+
+## RAID 6 stripe allocation reduction — 2026-11-15
+
+The reconstruction loop now streams ordered data-member indexes directly from
+the layout iterator instead of allocating a `Vec` for every stripe row. This
+removes per-row allocation churn while retaining the same data ordering and P/Q
+checks. `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check` passed. The
+focused native RAID suite passed: 12 passed, 2 ignored, 158 filtered out; the
+ignored cases require independently generated Linux MD RAID 5/6 reference
+arrays. No representative large-array benchmark has been run, so the expected
+throughput improvement has not yet been measured.
 
 ## Current optimized Windows build — 2026-11-15
 

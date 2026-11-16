@@ -659,8 +659,6 @@ fn reconstruct_package_into(
                 }
                 let (p_member, q_member) =
                     raid6_left_symmetric_parity_members(stripe, members.len())?;
-                let ordered_data: Vec<usize> =
-                    raid6_left_symmetric_data_members(p_member, q_member, members.len()).collect();
                 let member_offset = data_offset_bytes + stripe * stripe_size_bytes;
                 for within in (0..stripe_size_bytes).step_by(buffer.len()) {
                     if cancel.load(Ordering::SeqCst) {
@@ -671,7 +669,10 @@ fn reconstruct_package_into(
                     let count = (stripe_size_bytes - within).min(buffer.len() as u64) as usize;
                     p_parity[..count].fill(0);
                     q_parity[..count].fill(0);
-                    for (data_position, member_index) in ordered_data.iter().copied().enumerate() {
+                    for (data_position, member_index) in
+                        raid6_left_symmetric_data_members(p_member, q_member, members.len())
+                            .enumerate()
+                    {
                         members[member_index]
                             .read_exact_at(member_offset + within, &mut buffer[..count])
                             .map_err(crate::err)?;
