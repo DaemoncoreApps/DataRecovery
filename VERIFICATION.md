@@ -73,8 +73,10 @@ verified in the desktop runtime.
 On 2026-11-15, a fresh `npm run tauri -- build --no-bundle` from commit
 `2838ef3` compiled the frontend, then failed replacing
 `src-tauri/target/release/daemoncore.exe` with Windows `Access is denied`.
-There was no `daemoncore` process visible in the process check. Retrying with an
-isolated Cargo target avoided the locked output, but Tauri's build script failed
+The process-name check did not find `daemoncore`; a later Windows app inventory
+did show the older `src-tauri/target/release/daemoncore.exe` running, which is
+consistent with the replacement lock. Retrying with an isolated Cargo target
+avoided that output, but Tauri's build script failed
 while generating its permission documentation with another Windows `Access is
 denied`. The build script writes generated permission docs into its cached crate
 source, which this environment does not allow. A writable temporary copy of

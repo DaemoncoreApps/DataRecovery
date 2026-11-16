@@ -97,3 +97,19 @@ Linux fixture job verifies the known logical-image SHA-256
 `ae6018b38e30a433a0505035cf4df582da77c7ef92c269245232686e541e97c8`. Windows CI
 reconstructs from the transferred, checksummed member images and compares all
 output bytes to the array-device reference.
+
+## Linux MD RAID 6 reference array
+
+`make-raid6-reference-fixture.sh` independently creates four loop-backed
+members with Linux MD `mdadm`, metadata 1.0, left-symmetric RAID 6, and 64 KiB
+chunks. It writes a deterministic 16 MiB logical image through the active array,
+reads the bytes back from the array device, stops the array, then saves each
+member's first 8 MiB as a raw image. The logical image uses the same fixed
+byte pattern and expected SHA-256 as the RAID 5 fixture; the four member hashes
+are recorded in the generated `SHA256SUMS` file. The native test
+`reconstructs_independent_linux_md_raid6_reference_array` consumes that folder
+through `DAEMONCORE_RAID6_REFERENCE_DIR`, reconstructs it using the production
+path, and compares every output byte with the independently read array image.
+This checks full-member RAID 6 member order, left-symmetric P/Q rotation, and
+logical ordering. It does not qualify missing-member recovery, metadata
+discovery, or other RAID 6 layouts.
