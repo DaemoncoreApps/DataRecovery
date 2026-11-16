@@ -63,6 +63,18 @@ attempted but could not replace the tested binary because the still-open app
 held the file (`Access is denied`). The fix therefore has source/test evidence,
 not native packaged-runtime confirmation yet.
 
+### Approved smoke confirmation — 2026-11-16
+
+The user-approved `src-tauri/target/release-case-entry/release/daemoncore.exe`
+(SHA-256
+`94b75417d1dc8822e979b3ca6ad19bb7dcb53796c29d3c22a0cfef1437d3ea3e`,
+Authenticode `NotSigned`) launched successfully. The Dashboard rendered and
+Reports opened. Export remained disabled with the expected prompt to select a
+case. No evidence image was opened and no physical device was accessed. This
+confirms startup and route rendering for this isolated build only; it does not
+verify report generation, the newer current-source executable, or installer
+behavior.
+
 Image-open entry points now route to Case Management when no active,
 audit-matched case is available. The prompt distinguishes creating a first case,
 selecting a stored case, and reconfirming an audit-mismatched case. The case
