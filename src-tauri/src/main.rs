@@ -1682,6 +1682,8 @@ fn database(path: PathBuf) -> rusqlite::Result<Connection> {
         )));
     }
     db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; CREATE TABLE IF NOT EXISTS cases(id INTEGER PRIMARY KEY,title TEXT NOT NULL,examiner TEXT NOT NULL); CREATE TABLE IF NOT EXISTS app_settings(key TEXT PRIMARY KEY,value TEXT NOT NULL); CREATE TABLE IF NOT EXISTS evidence_sources(id INTEGER PRIMARY KEY,case_id INTEGER NOT NULL REFERENCES cases(id),original_path TEXT NOT NULL,name TEXT NOT NULL,size_bytes INTEGER NOT NULL CHECK(size_bytes>=0),filesystem TEXT NOT NULL,opened_at TEXT NOT NULL,sha256 TEXT,status TEXT NOT NULL CHECK(status IN ('open','hashed','compromised')),UNIQUE(id,case_id)); CREATE INDEX IF NOT EXISTS evidence_sources_by_case ON evidence_sources(case_id,id); CREATE TABLE IF NOT EXISTS scan_sessions(id INTEGER PRIMARY KEY,evidence_id INTEGER NOT NULL,case_id INTEGER NOT NULL REFERENCES cases(id),volume_offset TEXT NOT NULL,source_sha256 TEXT NOT NULL,completed_at TEXT NOT NULL,boot_json TEXT NOT NULL,records INTEGER NOT NULL,skipped INTEGER NOT NULL,found INTEGER NOT NULL,limited INTEGER NOT NULL,candidates_json TEXT NOT NULL,snapshot_sha256 TEXT NOT NULL,FOREIGN KEY(evidence_id,case_id) REFERENCES evidence_sources(id,case_id)); CREATE INDEX IF NOT EXISTS scan_sessions_by_case ON scan_sessions(case_id,id); CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY,timestamp TEXT NOT NULL,event TEXT NOT NULL,payload TEXT NOT NULL,previous TEXT NOT NULL,hash TEXT NOT NULL);")?;
+    // Case-scoped report and archive queries must stay bounded as the audit log grows.
+    db.execute_batch("CREATE INDEX IF NOT EXISTS audit_by_event_case_id ON audit(event,CASE WHEN json_valid(payload) THEN json_extract(payload,'$.case_id') ELSE NULL END,id);")?;
     db.execute_batch("CREATE TABLE IF NOT EXISTS fat32_scan_sessions(id INTEGER PRIMARY KEY,evidence_id INTEGER NOT NULL,case_id INTEGER NOT NULL REFERENCES cases(id),volume_offset TEXT NOT NULL,source_sha256 TEXT NOT NULL,completed_at TEXT NOT NULL,boot_json TEXT NOT NULL,records INTEGER NOT NULL,found INTEGER NOT NULL,deleted INTEGER NOT NULL,entries_json TEXT NOT NULL,snapshot_sha256 TEXT NOT NULL,FOREIGN KEY(evidence_id,case_id) REFERENCES evidence_sources(id,case_id)); CREATE INDEX IF NOT EXISTS fat32_scan_sessions_by_case ON fat32_scan_sessions(case_id,id);")?;
     db.execute_batch("CREATE TABLE IF NOT EXISTS exfat_scan_sessions(id INTEGER PRIMARY KEY,evidence_id INTEGER NOT NULL,case_id INTEGER NOT NULL REFERENCES cases(id),volume_offset TEXT NOT NULL,source_sha256 TEXT NOT NULL,completed_at TEXT NOT NULL,boot_json TEXT NOT NULL,entries_json TEXT NOT NULL,snapshot_sha256 TEXT NOT NULL,FOREIGN KEY(evidence_id,case_id) REFERENCES evidence_sources(id,case_id)); CREATE INDEX IF NOT EXISTS exfat_scan_sessions_by_case ON exfat_scan_sessions(case_id,id);")?;
     db.execute_batch("CREATE TABLE IF NOT EXISTS carve_scan_sessions(id INTEGER PRIMARY KEY,evidence_id INTEGER NOT NULL,case_id INTEGER NOT NULL REFERENCES cases(id),source_sha256 TEXT NOT NULL,completed_at TEXT NOT NULL,scanned_bytes INTEGER NOT NULL,candidates_json TEXT NOT NULL,snapshot_sha256 TEXT NOT NULL,candidates_limited INTEGER NOT NULL CHECK(candidates_limited IN (0,1)),FOREIGN KEY(evidence_id,case_id) REFERENCES evidence_sources(id,case_id)); CREATE INDEX IF NOT EXISTS carve_scan_sessions_by_case ON carve_scan_sessions(case_id,id);")?;
@@ -1882,6 +1884,25 @@ mod tests {
             .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
             .unwrap();
         assert_eq!(busy_timeout, 5_000);
+    }
+
+    #[test]
+    fn case_scoped_audit_queries_use_the_event_and_case_index() {
+        let db = database(PathBuf::from(":memory:")).unwrap();
+        let plan = db
+            .prepare(
+                "EXPLAIN QUERY PLAN SELECT payload FROM audit WHERE event='exfat_scan_persisted' AND CASE WHEN json_valid(payload) THEN json_extract(payload, '$.case_id') ELSE NULL END=?1 ORDER BY id",
+            )
+            .unwrap()
+            .query_map([1], |row| row.get::<_, String>(3))
+            .unwrap()
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .unwrap()
+            .join(" ");
+        assert!(
+            plan.contains("audit_by_event_case_id"),
+            "case-scoped lookup should use its index; query plan: {plan}"
+        );
     }
 
     #[test]
