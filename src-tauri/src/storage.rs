@@ -1,11 +1,43 @@
 pub use daemoncore_ntfs_core::storage::BlockSource;
 use std::os::windows::fs::OpenOptionsExt;
+use std::os::windows::io::AsRawHandle;
 use std::{
+    ffi::c_void,
     fs::{File, OpenOptions},
     io::{self, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     sync::Mutex,
 };
+
+#[repr(C)]
+#[derive(Default)]
+struct FileTime {
+    low: u32,
+    high: u32,
+}
+
+#[repr(C)]
+#[derive(Default)]
+struct ByHandleFileInformation {
+    attributes: u32,
+    creation_time: FileTime,
+    last_access_time: FileTime,
+    last_write_time: FileTime,
+    volume_serial_number: u32,
+    size_high: u32,
+    size_low: u32,
+    number_of_links: u32,
+    file_index_high: u32,
+    file_index_low: u32,
+}
+
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn GetFileInformationByHandle(
+        file: *mut c_void,
+        information: *mut ByHandleFileInformation,
+    ) -> i32;
+}
 
 pub struct Image {
     file: Mutex<File>,
@@ -45,6 +77,22 @@ impl Image {
             ));
         }
         Ok(())
+    }
+
+    // Canonical paths miss hard links; Windows identifies the opened target by
+    // its volume serial and file index.
+    pub fn file_identity(&self) -> io::Result<(u32, u64)> {
+        let file = self
+            .file
+            .lock()
+            .map_err(|_| io::Error::other("Evidence handle lock failed"))?;
+        let mut information = ByHandleFileInformation::default();
+        if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut information) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let file_index =
+            (u64::from(information.file_index_high) << 32) | u64::from(information.file_index_low);
+        Ok((information.volume_serial_number, file_index))
     }
 }
 

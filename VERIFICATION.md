@@ -100,12 +100,27 @@ checks. `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check` passed. The
 focused native RAID suite passed: 12 passed, 2 ignored, 158 filtered out; the
 ignored cases require independently generated Linux MD RAID 5/6 reference
 arrays. No representative large-array benchmark has been run, so the expected
-throughput improvement has not yet been measured. The full local
-`npm run validate` gate also completed on this updated worktree: production
-frontend build, formatting checks, 63 core tests (3 ignored), 162 desktop tests
-(10 ignored), and Clippy with warnings denied for both Rust crates. The ignored
-cases require external fixtures or Windows volume behavior not available to
-this run.
+throughput improvement has not yet been measured.
+
+## Distinct RAID member identity — 2026-11-15
+
+RAID member paths are now checked by the identity of their opened Windows file
+handles (volume serial number and file index), in addition to canonical path
+comparison. This rejects hard links to the same underlying image before staging
+any output. The regression created two names for one file, confirmed rejection,
+and verified that no output folder was made. `npm run validate` passed after
+this change: production frontend build, formatting checks, 63 core tests (3
+ignored), 163 desktop tests (10 ignored), and Clippy with warnings denied for
+both Rust crates. The hard-link detection uses Windows' documented volume
+serial/file-index identity fields described by
+[GetFileInformationByHandle](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getfileinformationbyhandle).
+
+The isolated native release target was rebuilt after these RAID changes. Its
+current executable is
+`src-tauri/target/release-case-entry/release/daemoncore.exe` (15,481,856 bytes,
+SHA-256 `0cef087bbb1cb67fc3b88d11ceac3495fd0897c3544a560bbb5be6ba05df95f7`,
+version 0.1.0, Authenticode `NotSigned`). It has not been launched; desktop
+runtime validation is still pending.
 
 ## Current optimized Windows build — 2026-11-15
 

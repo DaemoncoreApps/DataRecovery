@@ -460,13 +460,19 @@ fn reconstruct_package_into(
         ));
     }
     let mut canonical_paths = std::collections::BTreeSet::new();
+    let mut file_identities = std::collections::BTreeSet::new();
     let mut members = Vec::with_capacity(member_paths.len());
     for path in member_paths {
         let canonical = path.canonicalize().map_err(crate::err)?;
         if !canonical_paths.insert(canonical.clone()) {
             return Err("The same RAID member image cannot be selected more than once.".into());
         }
-        members.push(Image::open(&canonical).map_err(crate::err)?);
+        let member = Image::open(&canonical).map_err(crate::err)?;
+        let identity = member.file_identity().map_err(crate::err)?;
+        if !file_identities.insert(identity) {
+            return Err("Two RAID member paths resolve to the same underlying file. Select each distinct member image exactly once.".into());
+        }
+        members.push(member);
     }
     let (member_data_size, output_size) = validate_geometry(
         level,
@@ -1172,6 +1178,42 @@ mod tests {
 
     fn write_member(path: &Path, bytes: &[u8]) {
         fs::write(path, bytes).unwrap();
+    }
+
+    #[test]
+    fn rejects_hard_linked_raid_members_before_creating_output() {
+        let id = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "daemoncore-raid-hardlink-{}-{id}",
+            std::process::id()
+        ));
+        fs::create_dir(&root).unwrap();
+        let first = root.join("member0.raw");
+        let alias = root.join("member1.raw");
+        write_member(&first, &vec![0x5a; 512]);
+        fs::hard_link(&first, &alias).unwrap();
+
+        let error = match reconstruct_package(
+            ReconstructionRequest {
+                level_name: "raid1",
+                member_paths: &[first, alias],
+                data_offset_bytes: 0,
+                stripe_size_bytes: 512,
+                raid5_layout: Raid5Layout::LeftSymmetric,
+                bytes_per_sector: 512,
+                case_id: 7,
+                destination: &root,
+            },
+            &AtomicBool::new(false),
+            |_, _| {},
+        ) {
+            Err(error) => error,
+            Ok(_) => panic!("hard links to one file must not count as distinct RAID members"),
+        };
+
+        assert!(error.contains("same underlying file"));
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 2);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
