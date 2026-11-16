@@ -86,14 +86,18 @@ impl Raid5Layout {
         })
     }
 
-    fn data_members(self, parity_member: usize, member_count: usize) -> Vec<usize> {
+    fn data_member(self, parity_member: usize, data_position: usize, member_count: usize) -> usize {
         match self {
-            Self::LeftAsymmetric | Self::RightAsymmetric => (0..member_count)
-                .filter(|member| *member != parity_member)
-                .collect(),
-            Self::LeftSymmetric | Self::RightSymmetric => (1..member_count)
-                .map(|position| (parity_member + position) % member_count)
-                .collect(),
+            Self::LeftAsymmetric | Self::RightAsymmetric => {
+                if data_position < parity_member {
+                    data_position
+                } else {
+                    data_position + 1
+                }
+            }
+            Self::LeftSymmetric | Self::RightSymmetric => {
+                (parity_member + 1 + data_position) % member_count
+            }
         }
     }
 }
@@ -538,7 +542,6 @@ fn reconstruct_package_into(
                     return Ok(None);
                 }
                 let parity_member = raid5_layout.parity_member(stripe, members.len())?;
-                let data_members = raid5_layout.data_members(parity_member, members.len());
                 let member_offset = data_offset_bytes + stripe * stripe_size_bytes;
                 for within in (0..stripe_size_bytes).step_by(buffer.len()) {
                     if cancel.load(Ordering::SeqCst) {
@@ -548,8 +551,10 @@ fn reconstruct_package_into(
                     }
                     let count = (stripe_size_bytes - within).min(buffer.len() as u64) as usize;
                     parity[..count].fill(0);
-                    for member_index in &data_members {
-                        members[*member_index]
+                    for data_position in 0..members.len() - 1 {
+                        let member_index =
+                            raid5_layout.data_member(parity_member, data_position, members.len());
+                        members[member_index]
                             .read_exact_at(member_offset + within, &mut buffer[..count])
                             .map_err(crate::err)?;
                         for (parity_byte, data_byte) in

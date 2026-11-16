@@ -1627,3 +1627,20 @@ reconstruction, and all three bounded parser fuzz campaigns. This establishes
 one independent NTFS deleted-file pattern; additional NTFS versions, fragmented
 files, reallocated records, damaged volumes, overwrite/TRIM behavior, and
 large-volume performance remain unqualified.
+
+## RAID 5 stripe mapping hot path — 2026-11-15
+
+Replaced the per-stripe allocated member-index vector with an allocation-free
+mapper. Each logical data position now maps directly to its member slot during
+reconstruction, avoiding one heap allocation for every stripe row while
+preserving the four layout mappings. The existing four-layout known-byte
+regression and complete local `npm run validate` gate passed after this change
+(61 core tests and 155 desktop tests passed; 3 core and 9 desktop tests are
+ignored). A fresh optimized Windows build and offline NSIS setup were staged;
+the executable is 15,497,216 bytes (SHA-256
+`792a9e8a766dd25888f865e3de6b0676524cd13b06b0f4cea2a6363a933f93db`) and the
+setup is 222,906,631 bytes (SHA-256
+`1b3ccf4e5a2ea9605e8fa1a2fc93b14bca8cbae89c5e241078a1b491595884e3`). The
+package remains unsigned; NSIS warning 6040 remains unresolved. It was not
+installed or launched. The tests use synthetic known-byte arrays and do not
+replace the missing independent Linux MD references for all four layouts.
