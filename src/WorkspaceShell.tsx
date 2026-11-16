@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import {
   Activity,
+  CircleAlert,
   Boxes,
   ChevronRight,
   Database,
@@ -19,6 +20,7 @@ import {
 } from "lucide-react";
 import { native, type Job, type Source } from "./bridge";
 import { bytes } from "./format";
+import { formatDuration, useProgressMetrics } from "./useProgressMetrics";
 
 const groups = [
   {
@@ -56,14 +58,17 @@ export function WorkspaceShell({
   setPage,
   source,
   job,
+  warning,
   children,
 }: {
   page: string;
   setPage: (page: string) => void;
   source: Source | null;
   job: Job;
+  warning?: string | null;
   children: ReactNode;
 }) {
+  const metrics = useProgressMetrics(job);
   return (
     <div className="shell">
       <a href="#workspace-content" className="skipLink">
@@ -152,6 +157,16 @@ export function WorkspaceShell({
             <HardDrive size={11} />
             {source?.name || "No evidence source"}
           </span>
+          {warning && (
+            <span
+              className="statusWarning"
+              role="status"
+              aria-label={`Warning: ${warning}`}
+              title={warning}
+            >
+              <CircleAlert size={11} /> Warning
+            </span>
+          )}
           <span className="statusRight">
             <span className={job.state === "running" ? "dot active" : "dot"} />
             {job.state === "running"
@@ -161,6 +176,26 @@ export function WorkspaceShell({
                 : "Preview mode"}
             <span className="statusDivider" />
             {bytes(job.processed)} processed
+            {job.state === "running" && (
+              <>
+                <span className="statusDivider" />
+                <span className="statusProgressMetric" title="Elapsed since the operation was observed running">
+                  {formatDuration(metrics.elapsedSeconds)} elapsed
+                </span>
+                <span className="statusDivider" />
+                <span className="statusProgressMetric" title="Observed from native processed-byte updates">
+                  {metrics.throughputBytesPerSecond === null
+                    ? "Rate pending"
+                    : `${bytes(metrics.throughputBytesPerSecond)}/s`}
+                </span>
+                <span className="statusDivider" />
+                <span className="statusProgressMetric" title="Estimated from recent processed-byte throughput">
+                  {metrics.etaSeconds === null
+                    ? "ETA —"
+                    : `${formatDuration(metrics.etaSeconds)} ETA`}
+                </span>
+              </>
+            )}
             <span className="statusDivider" />
             {native ? "Native engine" : "Browser preview"}
           </span>

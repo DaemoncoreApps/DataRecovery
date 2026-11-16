@@ -27,6 +27,22 @@ frontend production build, 63 core tests (3 ignored), 160 desktop tests
 functional testing; it does not provide large-array throughput benchmarks or
 physical RAID qualification.
 
+## Live operation progress — 2026-11-15
+
+The global status bar and operation monitor now present elapsed time,
+throughput observed from native processed-byte counter updates, and an estimated
+time remaining when a finite total and recent positive throughput are
+available. The estimate disappears after three seconds without byte progress
+and is never shown for an unknown or completed total. The footer also surfaces
+the current job error and background/status warnings. This is client-side
+telemetry derived from polled native job counters; it does not add scan phases,
+hardware telemetry, or accuracy guarantees. `npm run build` and the full local
+`npm run validate` gate passed after the change: 63 core tests, 162 desktop
+tests, formatting checks, and both Clippy checks. The frontend build verifies
+the TypeScript and production bundle; there is not yet a dedicated component
+test suite for the timing estimate behavior. The Disk Imaging page also no
+longer renders the operation monitor twice.
+
 ## Current optimized Windows build — 2026-11-15
 
 The newest source-only validation on 2026-11-15 passed `npm run validate`:

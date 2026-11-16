@@ -1,12 +1,14 @@
 import { Activity, Check, Fingerprint, Square } from "lucide-react";
 import type { Job } from "./bridge";
 import { bytes } from "./format";
+import { formatDuration, useProgressMetrics } from "./useProgressMetrics";
 
 interface Props {
   job: Job;
   cancel: () => void;
 }
 export function JobPanel({ job, cancel }: Props) {
+  const metrics = useProgressMetrics(job);
   const operation =
     job.kind === "ntfs_scan"
       ? "NTFS metadata scan"
@@ -119,6 +121,22 @@ export function JobPanel({ job, cancel }: Props) {
         <div>
           <span>PROGRESS</span>
           <strong>{job.total ? `${percent.toFixed(1)}%` : "—"}</strong>
+        </div>
+        <div>
+          <span>ELAPSED</span>
+          <strong>{formatDuration(metrics.elapsedSeconds)}</strong>
+        </div>
+        <div title="Observed from native processed-byte updates">
+          <span>THROUGHPUT</span>
+          <strong>
+            {metrics.throughputBytesPerSecond === null
+              ? "—"
+              : `${bytes(metrics.throughputBytesPerSecond)}/s`}
+          </strong>
+        </div>
+        <div title="Estimated from recent processed-byte throughput">
+          <span>ETA · EST.</span>
+          <strong>{formatDuration(metrics.etaSeconds)}</strong>
         </div>
       </div>
       <progress

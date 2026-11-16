@@ -848,11 +848,13 @@ h3 {
 }
 .jobMetrics {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  row-gap: 18px;
   padding: 0 22px 20px;
 }
-.jobMetrics > div + div {
-  padding-left: 23px;
+.jobMetrics > div:nth-child(3n + 2),
+.jobMetrics > div:nth-child(3n + 3) {
+  padding-left: 18px;
   border-left: 1px solid var(--border);
 }
 .jobMetrics span {
@@ -1529,6 +1531,16 @@ td code {
 .statusRight {
   margin-left: auto;
 }
+.statusRight .statusProgressMetric {
+  color: #8b9ab0;
+}
+.statusWarning {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: #e8ad61;
+  cursor: help;
+}
 .statusDivider {
   width: 1px;
   height: 9px;
@@ -1631,6 +1643,12 @@ td code {
   }
   .statusRight {
     gap: 3px;
+  }
+  .statusProgressMetric {
+    display: none;
+  }
+  .statusDivider {
+    display: none;
   }
   .overviewMain .jobPanel {
     margin-bottom: 18px;

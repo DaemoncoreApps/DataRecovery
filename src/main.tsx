@@ -573,7 +573,13 @@ function App() {
   );
 
   return (
-    <WorkspaceShell page={page} setPage={setPage} source={source} job={job}>
+    <WorkspaceShell
+      page={page}
+      setPage={setPage}
+      source={source}
+      job={job}
+      warning={error || job.error || statusError || Object.values(backgroundErrors).join("; ") || null}
+    >
       {heading}
       {statusError && (
         <div className="warning" role="status">
@@ -1355,7 +1361,6 @@ function App() {
           </div>
         </section>
       )}
-      {page === "Disk Imaging" && jobPanel}
     </WorkspaceShell>
   );
 }
