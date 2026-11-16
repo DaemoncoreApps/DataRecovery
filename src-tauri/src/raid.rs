@@ -1227,6 +1227,92 @@ mod tests {
     }
 
     #[test]
+    fn reconstructs_raid5_across_supported_member_widths_and_parity_cycles() {
+        let root = root();
+        let layouts = [
+            Raid5Layout::LeftAsymmetric,
+            Raid5Layout::RightAsymmetric,
+            Raid5Layout::LeftSymmetric,
+            Raid5Layout::RightSymmetric,
+        ];
+
+        for member_count in [3, 4, 5, 8, MAX_MEMBERS] {
+            for layout in layouts {
+                let case_root = root.join(format!("{}-{member_count}", layout.id()));
+                fs::create_dir(&case_root).unwrap();
+                let stripe_rows = member_count * 2 + 1;
+                let mut member_bytes = vec![Vec::new(); member_count];
+                let mut expected = Vec::new();
+
+                for row in 0..stripe_rows {
+                    let parity_member = match layout {
+                        Raid5Layout::LeftAsymmetric | Raid5Layout::LeftSymmetric => {
+                            member_count - 1 - row % member_count
+                        }
+                        Raid5Layout::RightAsymmetric | Raid5Layout::RightSymmetric => {
+                            row % member_count
+                        }
+                    };
+                    let data_members: Vec<usize> = match layout {
+                        Raid5Layout::LeftAsymmetric | Raid5Layout::RightAsymmetric => (0
+                            ..member_count)
+                            .filter(|member| *member != parity_member)
+                            .collect(),
+                        Raid5Layout::LeftSymmetric | Raid5Layout::RightSymmetric => (1
+                            ..member_count)
+                            .map(|position| (parity_member + position) % member_count)
+                            .collect(),
+                    };
+                    let mut parity = vec![0u8; 512];
+
+                    for (data_position, member_index) in data_members.iter().copied().enumerate() {
+                        let block: Vec<u8> = (0..512)
+                            .map(|offset| {
+                                (member_count * 71 + row * 37 + data_position * 19 + offset * 11)
+                                    as u8
+                            })
+                            .collect();
+                        for (parity_byte, data_byte) in parity.iter_mut().zip(&block) {
+                            *parity_byte ^= *data_byte;
+                        }
+                        expected.extend_from_slice(&block);
+                        member_bytes[member_index].extend_from_slice(&block);
+                    }
+                    member_bytes[parity_member].extend_from_slice(&parity);
+                }
+
+                let paths: Vec<PathBuf> = (0..member_count)
+                    .map(|member| case_root.join(format!("member{member}.raw")))
+                    .collect();
+                for (path, bytes) in paths.iter().zip(&member_bytes) {
+                    write_member(path, bytes);
+                }
+                let package = reconstruct_package(
+                    ReconstructionRequest {
+                        level_name: "raid5",
+                        member_paths: &paths,
+                        data_offset_bytes: 0,
+                        stripe_size_bytes: 512,
+                        raid5_layout: layout,
+                        bytes_per_sector: 512,
+                        case_id: 7,
+                        destination: &case_root,
+                    },
+                    &AtomicBool::new(false),
+                    |_, _| {},
+                )
+                .unwrap()
+                .unwrap();
+
+                assert_eq!(fs::read(&package.image_path).unwrap(), expected);
+                crate::recovery_verify::verify_package(&package.directory).unwrap();
+            }
+        }
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     #[ignore = "requires the independently generated Linux MD RAID 5 reference array"]
     fn reconstructs_independent_linux_md_raid5_reference_array() {
         let fixture = std::env::var_os("DAEMONCORE_RAID5_REFERENCE_DIR")
