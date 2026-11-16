@@ -10,6 +10,7 @@ const MAX_RUNS: usize = 4096;
 const MAX_RECORDS: u64 = 1_000_000;
 const MAX_RESULTS: usize = 10_000;
 const MAX_DIRECTORY_REFERENCES: usize = 100_000;
+const SCAN_BATCH_BYTES: usize = 1024 * 1024;
 type Result<T> = std::result::Result<T, String>;
 fn bytes(b: &[u8], offset: usize, length: usize) -> Result<&[u8]> {
     b.get(offset..offset.checked_add(length).ok_or("Field overflow")?)
@@ -1261,7 +1262,20 @@ pub fn read_record(
     mft: &Stream,
     index: u64,
 ) -> Result<Record> {
-    let mut record = read_record_raw(source, boot, mft, index)?;
+    finish_record(
+        source,
+        boot,
+        mft,
+        read_record_raw(source, boot, mft, index)?,
+    )
+}
+
+fn finish_record(
+    source: &dyn BlockSource,
+    boot: &Boot,
+    mft: &Stream,
+    mut record: Record,
+) -> Result<Record> {
     if record.base_reference.is_none() && !record.directory {
         if let Some(attribute_list) = record.attribute_list.clone() {
             let assembled = match attribute_list {
@@ -1411,103 +1425,134 @@ pub fn scan(
         cancelled: false,
     };
     let mut directories = BTreeMap::new();
-    for index in 0..limit {
+    let records_per_batch = (SCAN_BATCH_BYTES / result.boot.record_size as usize).max(1);
+    let mut batch_start = 0u64;
+    'scan: while batch_start < limit {
         if cancel.load(Ordering::Relaxed) {
             result.cancelled = true;
             break;
         }
-        match read_record(source, &result.boot, &result.mft, index) {
-            Ok(record) => {
-                if record.base_reference.is_none()
-                    && record.directory
-                    && directories.len() < MAX_DIRECTORY_REFERENCES
-                {
-                    directories.insert(
-                        record.number,
-                        DirectoryReference {
-                            sequence: record.sequence,
-                            name: record.name.clone(),
-                            parent: record.parent,
-                            parent_sequence: record.parent_sequence,
-                            ambiguous: record.parent_ambiguous,
-                        },
-                    );
-                } else if record.base_reference.is_none() && record.directory {
-                    result.limited = true;
-                }
-                if index >= 16
-                    && record.base_reference.is_none()
-                    && record.deleted
-                    && !record.directory
-                {
-                    if let Some(stream) = record.stream {
-                        let alloc = match allocation(
-                            source,
-                            &result.boot,
-                            bitmap.as_ref(),
-                            &stream,
-                            cancel,
-                        ) {
-                            Ok(v) => v,
-                            Err(_) => {
-                                result.cancelled = true;
-                                break;
+        let batch_records = (limit - batch_start).min(records_per_batch as u64) as usize;
+        let batch_bytes = batch_records * result.boot.record_size as usize;
+        let mut batch = vec![0; batch_bytes];
+        let batch_offset = batch_start
+            .checked_mul(result.boot.record_size)
+            .ok_or("MFT batch offset overflow")?;
+        let batch_read = result
+            .mft
+            .read_at(source, &result.boot, batch_offset, &mut batch)
+            .is_ok();
+        for batch_index in 0..batch_records {
+            if cancel.load(Ordering::Relaxed) {
+                result.cancelled = true;
+                break 'scan;
+            }
+            let index = batch_start + batch_index as u64;
+            let record = if batch_read {
+                let start = batch_index * result.boot.record_size as usize;
+                parse_record(
+                    &batch[start..start + result.boot.record_size as usize],
+                    index,
+                    &result.boot,
+                )
+                .and_then(|record| finish_record(source, &result.boot, &result.mft, record))
+            } else {
+                read_record(source, &result.boot, &result.mft, index)
+            };
+            match record {
+                Ok(record) => {
+                    if record.base_reference.is_none()
+                        && record.directory
+                        && directories.len() < MAX_DIRECTORY_REFERENCES
+                    {
+                        directories.insert(
+                            record.number,
+                            DirectoryReference {
+                                sequence: record.sequence,
+                                name: record.name.clone(),
+                                parent: record.parent,
+                                parent_sequence: record.parent_sequence,
+                                ambiguous: record.parent_ambiguous,
+                            },
+                        );
+                    } else if record.base_reference.is_none() && record.directory {
+                        result.limited = true;
+                    }
+                    if index >= 16
+                        && record.base_reference.is_none()
+                        && record.deleted
+                        && !record.directory
+                    {
+                        if let Some(stream) = record.stream {
+                            let alloc = match allocation(
+                                source,
+                                &result.boot,
+                                bitmap.as_ref(),
+                                &stream,
+                                cancel,
+                            ) {
+                                Ok(v) => v,
+                                Err(_) => {
+                                    result.cancelled = true;
+                                    break 'scan;
+                                }
+                            };
+                            let exportable = stream.blocked.is_none() && alloc != "reused";
+                            let mut notes = record.notes;
+                            if let Some(reason) = &stream.blocked {
+                                notes.push(reason.clone());
                             }
-                        };
-                        let exportable = stream.blocked.is_none() && alloc != "reused";
-                        let mut notes = record.notes;
-                        if let Some(reason) = &stream.blocked {
-                            notes.push(reason.clone());
-                        }
-                        if alloc == "reused" {
-                            notes.push("At least one referenced cluster is currently allocated; extraction is blocked.".into());
-                        }
-                        if alloc == "unknown" {
-                            notes.push("Allocation state could not be established. Extracted content would be unverified.".into());
-                        }
-                        if alloc == "unallocated" {
-                            notes.push("Extents are currently unallocated; prior overwrites and file content integrity remain unverified.".into());
-                        }
-                        result.candidates.push(Candidate {
-                            id: record.number,
-                            name: record.name,
-                            parent_record: record.parent,
-                            parent_sequence: record.parent_sequence,
-                            parent_ambiguous: record.parent_ambiguous,
-                            parent_path: None,
-                            filename_references: record.filename_references,
-                            size: stream.size,
-                            deleted: record.deleted,
-                            storage: match &stream.content {
-                                Content::Resident(_) => "resident",
-                                Content::Runs(_) => "nonresident",
+                            if alloc == "reused" {
+                                notes.push("At least one referenced cluster is currently allocated; extraction is blocked.".into());
                             }
-                            .into(),
-                            allocation: alloc,
-                            exportable,
-                            notes,
-                            fingerprint: record.fingerprint,
-                            created_filetime: record.created,
-                            modified_filetime: record.modified,
-                        });
-                        if result.candidates.len() >= MAX_RESULTS {
-                            result.limited = true;
-                            result.records = index + 1;
-                            break;
+                            if alloc == "unknown" {
+                                notes.push("Allocation state could not be established. Extracted content would be unverified.".into());
+                            }
+                            if alloc == "unallocated" {
+                                notes.push("Extents are currently unallocated; prior overwrites and file content integrity remain unverified.".into());
+                            }
+                            result.candidates.push(Candidate {
+                                id: record.number,
+                                name: record.name,
+                                parent_record: record.parent,
+                                parent_sequence: record.parent_sequence,
+                                parent_ambiguous: record.parent_ambiguous,
+                                parent_path: None,
+                                filename_references: record.filename_references,
+                                size: stream.size,
+                                deleted: record.deleted,
+                                storage: match &stream.content {
+                                    Content::Resident(_) => "resident",
+                                    Content::Runs(_) => "nonresident",
+                                }
+                                .into(),
+                                allocation: alloc,
+                                exportable,
+                                notes,
+                                fingerprint: record.fingerprint,
+                                created_filetime: record.created,
+                                modified_filetime: record.modified,
+                            });
+                            if result.candidates.len() >= MAX_RESULTS {
+                                result.limited = true;
+                                result.records = index + 1;
+                                break 'scan;
+                            }
                         }
                     }
                 }
+                Err(_) => result.invalid_records += 1,
             }
-            Err(_) => result.invalid_records += 1,
+            result.records = index + 1;
+            if index.is_multiple_of(64) {
+                progress(
+                    result.records * result.boot.record_size,
+                    result.mft.size,
+                    result.candidates.len(),
+                );
+            }
         }
-        result.records = index + 1;
-        if index % 64 == 0 {
-            progress(
-                result.records * result.boot.record_size,
-                result.mft.size,
-                result.candidates.len(),
-            );
-        }
+        batch_start += batch_records as u64;
     }
     for candidate in &mut result.candidates {
         candidate.parent_path = if !candidate.parent_ambiguous {

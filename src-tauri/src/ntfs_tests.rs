@@ -3,7 +3,7 @@ use crate::{
     storage::{BlockSource, MemorySource},
 };
 use sha2::{Digest, Sha256};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 fn resident(kind: u32, value: &[u8]) -> Vec<u8> {
     let len = (24 + value.len() + 7) & !7;
@@ -276,6 +276,8 @@ struct VirtualMftSource {
     boot: [u8; 512],
     bootstrap: Vec<u8>,
     blank_record: Vec<u8>,
+    candidate_record: Option<Vec<u8>>,
+    reads: AtomicUsize,
 }
 
 impl BlockSource for VirtualMftSource {
@@ -284,6 +286,7 @@ impl BlockSource for VirtualMftSource {
     }
 
     fn read_exact_at(&self, offset: u64, buffer: &mut [u8]) -> std::io::Result<()> {
+        self.reads.fetch_add(1, Ordering::Relaxed);
         let end = offset
             .checked_add(buffer.len() as u64)
             .filter(|end| *end <= self.length)
@@ -307,10 +310,12 @@ impl BlockSource for VirtualMftSource {
                     buffer[(cursor - offset) as usize..(cursor - offset) as usize + count]
                         .copy_from_slice(&self.bootstrap[within as usize..within as usize + count]);
                 } else {
+                    let template = self
+                        .candidate_record
+                        .as_deref()
+                        .unwrap_or(&self.blank_record);
                     buffer[(cursor - offset) as usize..(cursor - offset) as usize + count]
-                        .copy_from_slice(
-                            &self.blank_record[within as usize..within as usize + count],
-                        );
+                        .copy_from_slice(&template[within as usize..within as usize + count]);
                     let number_start = within.max(44);
                     let number_end = (within + count as u64).min(48);
                     if number_start < number_end {
@@ -338,6 +343,13 @@ impl BlockSource for VirtualMftSource {
 }
 
 fn virtual_mft_source(record_count: u64) -> VirtualMftSource {
+    virtual_mft_source_with_candidates(record_count, false)
+}
+
+fn virtual_mft_source_with_candidates(
+    record_count: u64,
+    deleted_candidates: bool,
+) -> VirtualMftSource {
     let mft_clusters = record_count * 2;
     let mft_bytes = record_count * 1024;
     let volume_sectors = 4 + mft_clusters + 8;
@@ -372,6 +384,29 @@ fn virtual_mft_source(record_count: u64) -> VirtualMftSource {
         boot,
         bootstrap,
         blank_record: record(0, 1, &[]),
+        candidate_record: deleted_candidates
+            .then(|| record(0, 0, &[filename("candidate.bin"), resident(0x80, b"x")])),
+        reads: AtomicUsize::new(0),
+    }
+}
+
+struct FailingRecordSource<'a> {
+    source: &'a dyn BlockSource,
+    failed_start: u64,
+    failed_end: u64,
+}
+
+impl BlockSource for FailingRecordSource<'_> {
+    fn len(&self) -> u64 {
+        self.source.len()
+    }
+
+    fn read_exact_at(&self, offset: u64, buffer: &mut [u8]) -> std::io::Result<()> {
+        let end = offset.saturating_add(buffer.len() as u64);
+        if offset < self.failed_end && end > self.failed_start {
+            return Err(std::io::Error::from(std::io::ErrorKind::InvalidData));
+        }
+        self.source.read_exact_at(offset, buffer)
     }
 }
 
@@ -644,6 +679,7 @@ fn synthetic_ntfs_scan_traverses_large_virtual_mft_without_materializing_image()
     assert_eq!(result.invalid_records, 0);
     assert!(result.candidates.is_empty());
     assert!(!result.limited);
+    assert!(source.reads.load(Ordering::Relaxed) < 200);
 }
 
 #[test]
@@ -654,6 +690,36 @@ fn synthetic_ntfs_scan_marks_truncation_at_the_mft_record_cap() {
     assert_eq!(result.records, 1_000_000);
     assert_eq!(result.invalid_records, 0);
     assert!(result.candidates.is_empty());
+    assert!(result.limited);
+}
+
+#[test]
+fn failed_mft_batch_falls_back_to_individual_records() {
+    let source = image();
+    let failed_index = 25u64;
+    let failed_start = 4 * 512 + failed_index * 1024;
+    let source = FailingRecordSource {
+        source: &source,
+        failed_start,
+        failed_end: failed_start + 1024,
+    };
+
+    let result = ntfs::scan(&source, 0, &AtomicBool::new(false), |_, _, _| {}).unwrap();
+
+    assert_eq!(result.records, 48);
+    assert_eq!(result.invalid_records, 1);
+    assert_eq!(result.candidates.len(), 7);
+    assert!(!result.limited);
+}
+
+#[test]
+fn ntfs_scan_stops_when_candidate_retention_limit_is_reached() {
+    let source = virtual_mft_source_with_candidates(10_020, true);
+    let result = ntfs::scan(&source, 0, &AtomicBool::new(false), |_, _, _| {}).unwrap();
+
+    assert_eq!(result.candidates.len(), 10_000);
+    assert_eq!(result.records, 10_016);
+    assert_eq!(result.candidates.last().unwrap().id, 10_015);
     assert!(result.limited);
 }
 
