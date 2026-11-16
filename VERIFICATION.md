@@ -13,11 +13,23 @@ in the account's Billing & Licensing settings to block overage across the
 account.
 
 The local `npm run validate` gate passed against the current worktree: frontend
-build, 61 core tests passed with 3 ignored, 155 desktop tests passed with 9
+build, 63 core tests passed with 3 ignored, 160 desktop tests passed with 9
 ignored, formatting checks, and both Clippy checks. The ignored tests require
 external fixtures or Windows volume behavior unavailable in this local run.
 The desktop suite now verifies RAID 5 output and XOR parity for all four Linux
 MD rotating layouts against explicitly ordered known-byte fixtures.
+
+## RAID 1 mirror comparison memory reuse — 2026-11-15
+
+The mirror-agreement pass now allocates one bounded comparison buffer per
+operation and reuses it for every read chunk, instead of allocating and freeing
+a buffer for each chunk on each mirror. This removes repeated allocator work
+from large-array verification without changing read bounds or comparison
+behavior. The full local `npm run validate` gate passed after the change:
+frontend production build, 63 core tests (3 ignored), 160 desktop tests
+(9 ignored), formatting checks, and Clippy with warnings denied. This remains
+functional testing; it does not provide large-array throughput benchmarks or
+physical RAID qualification.
 
 ## Current optimized Windows build — 2026-11-15
 

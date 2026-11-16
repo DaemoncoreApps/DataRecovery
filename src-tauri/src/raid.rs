@@ -449,6 +449,7 @@ fn reconstruct_package_into(
 
     if level == RaidLevel::Raid1 {
         let mut buffer = vec![0; READ_CHUNK];
+        let mut comparison = vec![0; READ_CHUNK];
         let mut position = 0u64;
         while position < member_data_size {
             if cancel.load(Ordering::SeqCst) {
@@ -459,12 +460,11 @@ fn reconstruct_package_into(
             members[0]
                 .read_exact_at(data_offset_bytes + position, &mut buffer[..count])
                 .map_err(crate::err)?;
-            let mut comparison = vec![0; count];
             for mirror in members.iter().skip(1) {
                 mirror
-                    .read_exact_at(data_offset_bytes + position, &mut comparison)
+                    .read_exact_at(data_offset_bytes + position, &mut comparison[..count])
                     .map_err(crate::err)?;
-                if comparison != buffer[..count] {
+                if comparison[..count] != buffer[..count] {
                     return Err("RAID 1 member data differs. No mirror was chosen or reconstructed; inspect member offsets and identify the authoritative mirror.".into());
                 }
             }
