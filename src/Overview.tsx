@@ -221,9 +221,10 @@ export function Overview({
         <div>
           <h3>Built around evidence integrity.</h3>
           <p>
-            NTFS metadata recovery, image inspection, partition analysis,
-            hashing, and audit verification are available for supported image
-            layouts. Carving and physical acquisition remain in development.
+            Validated PNG, BMP, JPEG, and GIF carving is available for hashed
+            images. Physical acquisition requires a supported Windows device
+            and a validated hardware write blocker; partial reads are recorded
+            and disclosed.
           </p>
         </div>
         <span className="subtleBadge">LOCAL PROCESSING</span>
