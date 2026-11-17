@@ -2081,3 +2081,20 @@ mismatch rejection, format recording in audit events, and failed-attempt
 logging. Full `npm run validate` passed: frontend build, formatting, 63 core
 tests (3 ignored), 169 desktop tests (10 ignored), and Clippy with warnings
 denied. Native packaged UI export with an active case remains unverified.
+
+## Offline installer from the Reports fix — 2026-11-16
+
+The current source was built in an isolated Cargo target tree because the
+standalone smoke-test process still held the default release executable open.
+The NSIS package was generated with binary patching skipped; this app does not
+include an updater plugin. The staged standalone executable remains
+15,561,728 bytes with SHA-256
+`03617982a9b74d2a5f754575b4a8cfa986f1d2926def12cccf76aca92b9e1725`; its
+Dashboard rendered in the approved smoke check, but Reports remains
+unverified. The package contains the same-source executable at 15,561,728
+bytes with SHA-256
+`d4788e148d93cb645646a9b4ffcabaa5f3b7c9a88e31f12b620c2676a159710d`.
+The offline NSIS setup is 222,936,585 bytes with SHA-256
+`3db710933e1c6ac650fa11602134d82682557a8f38a3c5159656b6cba3a7646a`.
+Authenticode reports `NotSigned` for both executables and the setup. The
+installer remains staged and uninstalled.
