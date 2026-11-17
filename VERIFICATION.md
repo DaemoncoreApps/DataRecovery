@@ -2098,3 +2098,19 @@ The offline NSIS setup is 222,936,585 bytes with SHA-256
 `3db710933e1c6ac650fa11602134d82682557a8f38a3c5159656b6cba3a7646a`.
 Authenticode reports `NotSigned` for both executables and the setup. The
 installer remains staged and uninstalled.
+
+## Repeatable isolated Windows packaging — 2026-11-16
+
+Added `npm run package:windows` to run the full validation gate and build the
+standalone executable plus offline NSIS installer under
+`src-tauri/target/package-stage`, avoiding collisions with a running default
+build. The command verifies current-user NSIS and offline WebView2 settings,
+and writes `SHA256SUMS.txt`; `-SkipValidation` is available only when the same
+source revision has already passed validation. The full command passed:
+format/offset checks, frontend build, formatting, 63 core tests (3 ignored),
+169 desktop tests (10 ignored), both Clippy gates, optimized release build, and
+NSIS packaging. The staged executable is 15,561,728 bytes (SHA-256
+`4fd684665100df383930499e3389ece77cc732ca47da5ed7bf2422cef0dbc2d5`) and the
+offline setup is 222,939,848 bytes (SHA-256
+`f918313b7985cadd9286c3840e23ceb02c7ef5aef018083c4e58736c60ea6a84`). Both
+report Authenticode `NotSigned`; the package was not installed or launched.
