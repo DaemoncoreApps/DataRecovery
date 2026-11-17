@@ -2142,6 +2142,23 @@ setup is 222,935,167 bytes (SHA-256
 `47f449ce36efd8955a1dd83ad2913f8e1c721d16414c833a41fc61482a9cd058`). The
 generated checksum manifest matches direct SHA-256 reads. Both artifacts report
 Authenticode `NotSigned`; the installer remains uninstalled and neither binary
-was launched. The local RAID 6 Linux MD reference remains unavailable: WSL
-returns `E_ACCESSDENIED` and Docker has no running Linux engine. No GitHub
-Actions workflow was started.
+was launched. No GitHub Actions workflow was started.
+
+## Independent Linux MD RAID 6 reference — 2026-11-16
+
+Generated a four-member Linux MD RAID 6 array in Ubuntu under WSL using the
+checked-in fixture script and loop-backed files only; no physical evidence
+devices or GitHub Actions were used. The fixture's `logical-image.raw` SHA-256
+is `ae6018b38e30a433a0505035cf4df582da77c7ef92c269245232686e541e97c8`, and
+the ignored reference test compared reconstruction byte for byte against it.
+The fixture manifest was independently checked with `sha256sum -c`.
+
+The reference test first failed, exposing a production defect: Q coefficients
+had been assigned in reverse logical slot order. Corrected the coefficient
+mapping and synthetic expectations to use successive alpha powers by logical
+data slot. The exact ignored reference test now passes on Windows
+(`raid::tests::reconstructs_independent_linux_md_raid6_reference_array`). The
+generated member and expected-image hashes are recorded in the fixture's
+`SHA256SUMS`. This establishes one four-member left-symmetric reference only.
+Additional member counts/layouts and physical-array qualification remain open,
+so RAID reconstruction remains not production-qualified.

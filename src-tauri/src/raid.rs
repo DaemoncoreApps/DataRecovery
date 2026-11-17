@@ -147,11 +147,9 @@ fn raid6_q_tables(data_members: usize) -> Vec<[u8; 256]> {
         coefficients.push(coefficient);
         coefficient = raid6_gf_multiply(coefficient, 2);
     }
-    // The Linux MD syndrome generator walks data from the final slot backward;
-    // therefore the first logical slot carries the highest alpha coefficient.
+    // Linux MD assigns successive alpha powers in logical data-slot order.
     coefficients
         .into_iter()
-        .rev()
         .map(|coefficient| std::array::from_fn(|value| raid6_gf_multiply(value as u8, coefficient)))
         .collect()
 }
@@ -1273,8 +1271,8 @@ mod tests {
     fn reconstructs_linux_md_raid6_left_symmetric_and_checks_both_syndromes() {
         let root = root();
         let q_tables = raid6_q_tables(2);
-        assert_eq!(q_tables[0][1], 2);
-        assert_eq!(q_tables[1][1], 1);
+        assert_eq!(q_tables[0][1], 1);
+        assert_eq!(q_tables[1][1], 2);
         let member_count = 5;
         let stripe_rows = 11;
         let mut member_bytes = vec![Vec::new(); member_count];
@@ -1301,7 +1299,7 @@ mod tests {
             let mut p_block = vec![0; 512];
             let mut q_block = vec![0; 512];
             for (slot, block) in blocks.iter().enumerate() {
-                let exponent = data_members.len() - 1 - slot;
+                let exponent = slot;
                 let coefficient = (0..exponent).fold(1, |value, _| reference_gf_multiply(value, 2));
                 for index in 0..512 {
                     p_block[index] ^= block[index];
@@ -1368,7 +1366,7 @@ mod tests {
                 member_bytes[1][index] = left;
                 member_bytes[2][index] = right;
                 member_bytes[3][index] = left ^ right;
-                member_bytes[0][index] = reference_gf_multiply(left, 2) ^ right;
+                member_bytes[0][index] = left ^ reference_gf_multiply(right, 2);
             }
             member_bytes[corrupted_member][0] ^= 1;
             let paths: Vec<PathBuf> = (0..member_count)
