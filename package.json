@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "tsc --noEmit && vite build",
+    "audit:dependencies": "npm audit --omit=dev && cargo audit --file src-tauri/Cargo.lock && cargo audit --file ntfs-core/Cargo.lock",
     "validate": "node scripts/test-format.mjs && npm run build && cargo fmt --manifest-path ntfs-core/Cargo.toml -- --check && cargo fmt --manifest-path src-tauri/Cargo.toml -- --check && cargo fmt --manifest-path src-tauri/fuzz/Cargo.toml -- --check && cargo test --manifest-path ntfs-core/Cargo.toml --offline && cargo test --manifest-path src-tauri/Cargo.toml --offline && cargo clippy --manifest-path ntfs-core/Cargo.toml --offline -- -D warnings && cargo clippy --manifest-path src-tauri/Cargo.toml --offline -- -D warnings",
     "tauri": "tauri",
     "desktop": "tauri dev"

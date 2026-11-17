@@ -2037,6 +2037,9 @@ across 495 dependencies. It reports seven allowed maintenance, unsoundness, or
 yanked-package warnings; reverse dependency checks for the Windows MSVC target
 found none of those flagged crates in that target graph. `npm audit --omit=dev`
 reports zero vulnerabilities.
+The same checks are available as `npm run audit:dependencies`, which scans the
+production npm dependency tree and both Rust lockfiles; it requires network
+access to refresh the npm and RustSec advisory databases.
 
 Full `npm run validate` passed after the update: 5 accepted and 8 rejected
 strict-offset cases, production frontend build, formatting, 63 core tests (3
