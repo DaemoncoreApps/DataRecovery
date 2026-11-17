@@ -1656,6 +1656,16 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![8 * 1024 * 1024; 3]
         );
+        let raid5_layout = match fs::read_to_string(fixture.join("layout.txt"))
+            .unwrap()
+            .trim()
+        {
+            "left-asymmetric" => Raid5Layout::LeftAsymmetric,
+            "right-asymmetric" => Raid5Layout::RightAsymmetric,
+            "left-symmetric" => Raid5Layout::LeftSymmetric,
+            "right-symmetric" => Raid5Layout::RightSymmetric,
+            layout => panic!("unsupported Linux MD RAID 5 fixture layout: {layout}"),
+        };
 
         let root = root();
         let package = reconstruct_package(
@@ -1664,7 +1674,7 @@ mod tests {
                 member_paths: &member_paths,
                 data_offset_bytes: 0,
                 stripe_size_bytes: 64 * 1024,
-                raid5_layout: Raid5Layout::LeftSymmetric,
+                raid5_layout,
                 bytes_per_sector: 512,
                 case_id: 7,
                 destination: &root,

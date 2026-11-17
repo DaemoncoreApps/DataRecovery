@@ -2175,3 +2175,18 @@ members, 4 data slots). Together with the 16 MiB four-member reference, this
 checks the Q coefficient sequence across 2, 3, and 4 data slots. It still
 covers only left-symmetric arrays and does not establish broad device or
 physical-array qualification.
+
+## Independent Linux MD RAID 5 layouts — 2026-11-16
+
+Extended the Linux MD fixture generator to create three-member arrays for all
+four supported rotating RAID 5 layouts. Each independent array was written and
+read through its Linux MD device, its member and expected-image SHA-256
+manifest was checked, and the Windows ignored production-path test rebuilt
+and package-verified the logical image byte for byte. The left-asymmetric,
+right-asymmetric, left-symmetric, and right-symmetric references all passed;
+each 16 MiB logical image had SHA-256
+`ae6018b38e30a433a0505035cf4df582da77c7ef92c269245232686e541e97c8`.
+
+This is one three-member reference per supported RAID 5 layout. Additional
+member widths, metadata discovery, degraded arrays, and physical-array
+qualification remain open; RAID reconstruction is not production-qualified.

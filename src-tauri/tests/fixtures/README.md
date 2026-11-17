@@ -86,17 +86,23 @@ This is a controlled known-content fixture, not a broad external GIF corpus.
 
 ## Linux MD RAID 5 reference array
 
-`make-raid5-reference-fixture.sh` creates three loop-backed member devices and
-uses Linux MD `mdadm` with 64 KiB chunks and the left-symmetric RAID 5 layout.
-It writes a deterministic 16 MiB byte sequence through the active array, reads
-it back from the array device, stops the array, then saves the first 8 MiB of
-each component as a raw member image. The array metadata is outside those
-captured data extents; this validates member ordering, rotating parity, and
-logical byte ordering, not metadata discovery or offset inference. The
-Linux fixture job verifies the known logical-image SHA-256
-`ae6018b38e30a433a0505035cf4df582da77c7ef92c269245232686e541e97c8`. Windows CI
-reconstructs from the transferred, checksummed member images and compares all
-output bytes to the array-device reference.
+`make-raid5-reference-fixture.sh OUTPUT_DIR [LAYOUT]` creates three
+loop-backed member devices and uses Linux MD `mdadm` with 64 KiB chunks. The
+layout may be left-asymmetric, right-asymmetric, left-symmetric, or
+right-symmetric (default: left-symmetric). It writes a deterministic 16 MiB
+byte sequence through the active array, reads it back from the array device,
+stops the array, saves the first 8 MiB of each component as a raw member image,
+and records the layout and SHA-256 manifest. The array metadata is outside
+those captured data extents; this validates member ordering, rotating parity,
+and logical byte ordering, not metadata discovery or offset inference. The
+native ignored test reads the fixture layout, reconstructs it through the
+production path, and compares all output bytes to the array-device reference.
+Run the generator with each layout and set `DAEMONCORE_RAID5_REFERENCE_DIR` to
+the resulting absolute fixture path before running:
+
+```powershell
+cargo test --manifest-path src-tauri/Cargo.toml --offline raid::tests::reconstructs_independent_linux_md_raid5_reference_array -- --ignored --exact
+```
 
 ## Linux MD RAID 6 reference array
 
