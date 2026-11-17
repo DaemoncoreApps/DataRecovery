@@ -2020,3 +2020,34 @@ unsigned NSIS setup is
 `488e71e11956e02c186ea331fd22fa43f4af02757cf3895aa3d20ccc1a6b7d61`). Both
 are staged and neither was launched or installed. The exact current-source UI
 smoke remains unverified; the earlier approved smoke used a different hash.
+
+## SQLite advisory remediation and dependency audit — 2026-11-16
+
+RustSec found `RUSTSEC-2026-0459` in the old `libsqlite3-sys 0.30.1`, which
+bundled a vulnerable SQLite release. The advisory describes disclosure of
+uninitialized page-cache bytes when an attacker supplies a database and
+write-ahead log with inconsistent page sizes. The app upgrades `rusqlite` to
+0.41.1, which locks `libsqlite3-sys 0.39.1` and bundled SQLite 3.54.1. The
+`fallible_uint` feature is enabled so unsigned SQLite conversions are checked;
+a regression verifies that `u64::MAX` cannot be written and a negative stored
+integer cannot be read as `u64`.
+
+`cargo audit --file src-tauri/Cargo.lock` now reports zero vulnerabilities
+across 495 dependencies. It reports seven allowed maintenance, unsoundness, or
+yanked-package warnings; reverse dependency checks for the Windows MSVC target
+found none of those flagged crates in that target graph. `npm audit --omit=dev`
+reports zero vulnerabilities.
+
+Full `npm run validate` passed after the update: 5 accepted and 8 rejected
+strict-offset cases, production frontend build, formatting, 63 core tests (3
+ignored), 168 desktop tests (10 ignored), and Clippy with warnings denied for
+both Rust crates.
+
+The rebuilt standalone executable is
+`src-tauri/target/release/daemoncore.exe` (15,561,728 bytes, SHA-256
+`6864d5b029d474bbddb25d954363b44627c1fecc3178d8fbd9a3e3e211b85711`). The
+offline NSIS setup is
+`src-tauri/target/release/bundle/nsis/DaemonCore Data Recovery_0.1.0_x64-setup.exe`
+(222,934,852 bytes, SHA-256
+`2ab8826536d666d47e1ac05afae95aa41395f44315bdf5bb30cc4c63ff104e57`). Both
+are unsigned, staged only, and have not been launched or installed.

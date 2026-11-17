@@ -1902,6 +1902,22 @@ mod tests {
     }
 
     #[test]
+    fn sqlite_unsigned_counters_reject_overflow_and_negative_values() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute("CREATE TABLE counters(value INTEGER NOT NULL)", [])
+            .unwrap();
+        assert!(db
+            .execute("INSERT INTO counters(value) VALUES (?1)", params![u64::MAX])
+            .is_err());
+
+        db.execute("INSERT INTO counters(value) VALUES (-1)", [])
+            .unwrap();
+        assert!(db
+            .query_row("SELECT value FROM counters", [], |row| row.get::<_, u64>(0))
+            .is_err());
+    }
+
+    #[test]
     fn case_scoped_audit_queries_use_the_event_and_case_index() {
         let db = database(PathBuf::from(":memory:")).unwrap();
         let plan = db
