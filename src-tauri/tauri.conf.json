@@ -51,6 +51,9 @@
     "shortDescription": "Read-only evidence image analysis",
     "windows": {
       "allowDowngrades": false,
+      "nsis": {
+        "installMode": "currentUser"
+      },
       "webviewInstallMode": {
         "type": "offlineInstaller",
         "silent": true

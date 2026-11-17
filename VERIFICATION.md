@@ -2054,3 +2054,15 @@ offline NSIS setup is
 (222,934,852 bytes, SHA-256
 `2ab8826536d666d47e1ac05afae95aa41395f44315bdf5bb30cc4c63ff104e57`). Both
 are unsigned, staged only, and have not been launched or installed.
+
+## Explicit per-user Windows installer mode — 2026-11-16
+
+The Tauri NSIS configuration now explicitly sets `installMode` to
+`currentUser`; the offline WebView2 installer remains enabled. Tauri accepted
+the configuration and rebuilt the optimized executable and NSIS package. The
+executable is 15,561,728 bytes (SHA-256
+`9e2ed03ccf104b3b66f0604d9365b501b2eae3ed3e260323ee560b6acdc3007f`). The
+unsigned setup is 222,939,514 bytes (SHA-256
+`3c853babd35cf4226fe3f243837c7fd50c404c0ef4accc2c07d3c2ffb4ebf6fa`). Neither
+artifact has been launched or installed. A prior UI approval named the
+previous executable hash and does not cover this rebuilt binary.
