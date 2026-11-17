@@ -150,8 +150,12 @@ export function WorkspaceShell({
         </header>
         <main id="workspace-content">{children}</main>
         <footer className="statusBar">
-          <span className="statusMode">
-            <LockKeyhole size={11} /> Read-only mode
+          <span
+            className="statusMode"
+            title="Evidence sources are opened read only. Exports and reports write to the destination you select."
+            aria-label="Evidence source access is read only; exports and reports write to selected destinations"
+          >
+            <LockKeyhole size={11} /> Source access · read only
           </span>
           <span className="statusSource">
             <HardDrive size={11} />
