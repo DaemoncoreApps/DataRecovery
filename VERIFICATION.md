@@ -2066,3 +2066,18 @@ unsigned setup is 222,939,514 bytes (SHA-256
 `3c853babd35cf4226fe3f243837c7fd50c404c0ef4accc2c07d3c2ffb4ebf6fa`). Neither
 artifact has been launched or installed. A prior UI approval named the
 previous executable hash and does not cover this rebuilt binary.
+
+## Explicit report-format selection — 2026-11-16
+
+The Reports page now offers separate JSON and printable HTML export buttons.
+Each Windows save dialog exposes one matching file filter and starts with the
+corresponding extension. The native command receives the selected format,
+rejects conflicting filename extensions, and encodes the selected format
+directly. Prepared and completed report-export audit events record that format.
+Cancelled and failed report exports record the selected format; failed attempts
+include a bounded reason, and an audit-write failure is surfaced to the
+operator. Focused report tests cover format decoding, extension addition and
+mismatch rejection, format recording in audit events, and failed-attempt
+logging. Full `npm run validate` passed: frontend build, formatting, 63 core
+tests (3 ignored), 169 desktop tests (10 ignored), and Clippy with warnings
+denied. Native packaged UI export with an active case remains unverified.

@@ -484,7 +484,7 @@ function App() {
       setArchivedPage(null);
       setPage("Image Workspace");
     });
-  const exportCaseReport = () =>
+  const exportCaseReport = (format: "json" | "html") =>
     run(async () => {
       setCaseReport(null);
       if (activeCaseId === null) throw new Error("Select a case first.");
@@ -492,7 +492,7 @@ function App() {
         throw new Error("Reconfirm the active case before exporting a report.");
       const exported = await command<CaseReportExport | null>(
         "export_case_report",
-        { caseId: activeCaseId },
+        { caseId: activeCaseId, format },
       );
       if (exported) {
         setCaseReport(exported);
@@ -1260,9 +1260,23 @@ function App() {
                 activeCaseId === null ||
                 !activeCaseAuditMatched
               }
-              onClick={exportCaseReport}
+              onClick={() => exportCaseReport("json")}
             >
-              Export active case report
+              Export JSON report
+            </button>
+            <button
+              className="secondary"
+              type="button"
+              disabled={
+                !native ||
+                busy ||
+                job.state === "running" ||
+                activeCaseId === null ||
+                !activeCaseAuditMatched
+              }
+              onClick={() => exportCaseReport("html")}
+            >
+              Export printable HTML
             </button>
             {!native && (
               <span className="muted">

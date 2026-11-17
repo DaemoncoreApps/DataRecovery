@@ -3,7 +3,7 @@ use crate::{
     require_audited_active_case, verify_audit_chain, verify_evidence_record_integrity, AppState,
     Case, EvidenceRecord, Job, Result,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     fs::{self, File, OpenOptions},
@@ -20,6 +20,29 @@ const MAX_REPORT_OPERATIONS: usize = 2_000;
 const MAX_OPERATION_PAYLOAD_BYTES: usize = 1024 * 1024;
 const MAX_REPORT_OPERATION_BYTES: usize = 16 * 1024 * 1024;
 const ANCHOR_NOTE: &str = "This report includes an internally verified local audit-chain head. It is not digitally signed or externally anchored; preserve the head hash independently.";
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReportFormat {
+    Json,
+    Html,
+}
+
+impl ReportFormat {
+    fn extension(self) -> &'static str {
+        match self {
+            Self::Json => "json",
+            Self::Html => "html",
+        }
+    }
+
+    fn filter_name(self) -> &'static str {
+        match self {
+            Self::Json => "JSON case report",
+            Self::Html => "Printable HTML case report",
+        }
+    }
+}
 
 #[derive(Serialize)]
 struct ReportAudit {
@@ -720,15 +743,25 @@ fn encode_html_report(report: &CaseReport) -> Result<Vec<u8>> {
     Ok(html.into_bytes())
 }
 
-fn encode_report_for_path(report: &CaseReport, path: &Path) -> Result<Vec<u8>> {
+fn report_path_for_format(path: &Path, format: ReportFormat) -> Result<PathBuf> {
+    let expected = format.extension();
     match path.extension().and_then(|extension| extension.to_str()) {
-        Some(extension)
-            if extension.eq_ignore_ascii_case("html") || extension.eq_ignore_ascii_case("htm") =>
-        {
-            encode_html_report(report)
+        Some(actual) if actual.eq_ignore_ascii_case(expected) => Ok(path.to_path_buf()),
+        Some(_) => Err(format!(
+            "Choose a .{expected} filename for this report format."
+        )),
+        None => {
+            let mut path = path.to_path_buf();
+            path.set_extension(expected);
+            Ok(path)
         }
-        Some(extension) if extension.eq_ignore_ascii_case("json") => encode_report(report),
-        _ => Err("Choose a .json or .html report filename.".into()),
+    }
+}
+
+fn encode_report_for_format(report: &CaseReport, format: ReportFormat) -> Result<Vec<u8>> {
+    match format {
+        ReportFormat::Json => encode_report(report),
+        ReportFormat::Html => encode_html_report(report),
     }
 }
 
@@ -797,6 +830,24 @@ fn verify_published_report(path: &Path, expected_bytes: u64, expected_sha256: &s
     Ok(())
 }
 
+fn audit_report_export_failure(
+    db: &rusqlite::Connection,
+    case_id: i64,
+    format: ReportFormat,
+    reason: &str,
+) -> Result<()> {
+    audit(
+        db,
+        "case_report_export_failed",
+        &serde_json::json!({
+            "case_id": case_id,
+            "export_format": format.extension(),
+            "reason": reason,
+        })
+        .to_string(),
+    )
+}
+
 fn publish_case_report(
     db: &rusqlite::Connection,
     case_id: i64,
@@ -805,6 +856,13 @@ fn publish_case_report(
     path: &Path,
     cancel: &std::sync::atomic::AtomicBool,
 ) -> Result<CaseReportExport> {
+    let export_format = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .filter(|extension| {
+            extension.eq_ignore_ascii_case("json") || extension.eq_ignore_ascii_case("html")
+        })
+        .ok_or("Case report destination must use a .json or .html extension.")?;
     if cancel.load(Ordering::SeqCst) {
         return Err("Case report export cancelled before staging.".into());
     }
@@ -820,6 +878,7 @@ fn publish_case_report(
         "case_report_export_prepared",
         &serde_json::json!({
             "case_id": case_id,
+            "export_format": export_format,
             "destination": path.to_string_lossy(),
             "sha256": digest,
             "bytes": bytes.len(),
@@ -852,6 +911,7 @@ fn publish_case_report(
             "case_report_export_verification_failed",
             &serde_json::json!({
                 "case_id": case_id,
+                "export_format": export_format,
                 "destination": path.to_string_lossy(),
                 "expected_sha256": digest,
                 "bytes": bytes.len(),
@@ -904,6 +964,7 @@ fn publish_case_report(
         "case_report_exported",
         &serde_json::json!({
             "case_id": case_id,
+            "export_format": export_format,
             "destination": published.path,
             "sha256": published.sha256,
             "bytes": published.bytes,
@@ -933,6 +994,7 @@ fn publish_case_report(
 #[tauri::command]
 pub async fn export_case_report(
     case_id: i64,
+    format: ReportFormat,
     app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<Option<CaseReportExport>> {
@@ -950,12 +1012,12 @@ pub async fn export_case_report(
         };
     }
     let mut result: Result<Option<CaseReportExport>> = async {
-        let destination = tauri::async_runtime::spawn_blocking(|| {
+        let destination = tauri::async_runtime::spawn_blocking(move || {
+            let extension = format.extension();
             rfd::FileDialog::new()
                 .set_title("Export forensic case report")
-                .add_filter("JSON case report", &["json"])
-                .add_filter("Printable HTML case report", &["html"])
-                .set_file_name("DaemonCore-Case-Report")
+                .add_filter(format.filter_name(), &[extension])
+                .set_file_name(format!("DaemonCore-Case-Report.{extension}"))
                 .save_file()
         })
         .await
@@ -963,6 +1025,7 @@ pub async fn export_case_report(
         let Some(destination) = destination else {
             return Ok(None);
         };
+        let destination = report_path_for_format(&destination, format)?;
         if state.cancel.load(Ordering::SeqCst) {
             return Err("Case report export was cancelled before report generation.".into());
         }
@@ -978,7 +1041,7 @@ pub async fn export_case_report(
             if state.cancel.load(Ordering::SeqCst) {
                 return Err("Case report export cancelled during report generation.".into());
             }
-            let bytes = encode_report_for_path(&report, &destination)?;
+            let bytes = encode_report_for_format(&report, format)?;
             if state.cancel.load(Ordering::SeqCst) {
                 return Err("Case report export cancelled before staging.".into());
             }
@@ -1005,12 +1068,28 @@ pub async fn export_case_report(
             audit(
                 &db,
                 "case_report_export_cancelled",
-                &serde_json::json!({"case_id":case_id,"reason":reason}).to_string(),
+                &serde_json::json!({
+                    "case_id": case_id,
+                    "export_format": format.extension(),
+                    "reason": reason,
+                })
+                .to_string(),
             )
         })();
         if let Err(error) = audit_result {
             result = Err(format!(
                 "Case report export was cancelled, but the cancellation could not be recorded in the audit log: {error}"
+            ));
+        }
+    } else if let Err(error) = &result {
+        let reason = error.chars().take(2048).collect::<String>();
+        let audit_result = (|| -> Result<()> {
+            let db = state.db.lock().map_err(err)?;
+            audit_report_export_failure(&db, case_id, format, &reason)
+        })();
+        if let Err(audit_error) = audit_result {
+            result = Err(format!(
+                "{reason} The failed report export could not be recorded in the audit log: {audit_error}"
             ));
         }
     }
@@ -1305,8 +1384,21 @@ mod tests {
         assert!(html.contains("default-src 'none'; style-src 'unsafe-inline'"));
         assert!(html.contains("Complete machine-readable report data (JSON)"));
         assert!(html.contains("&quot;title&quot;: &quot;&lt;img src=x onerror=alert(1)&gt;"));
-        assert!(encode_report_for_path(&report, Path::new("case.HTML")).is_ok());
-        assert!(encode_report_for_path(&report, Path::new("case.pdf")).is_err());
+        assert!(encode_report_for_format(&report, ReportFormat::Html).is_ok());
+        assert!(encode_report_for_format(&report, ReportFormat::Json).is_ok());
+        assert_eq!(
+            report_path_for_format(Path::new("case"), ReportFormat::Json).unwrap(),
+            PathBuf::from("case.json")
+        );
+        assert_eq!(
+            report_path_for_format(Path::new("case.HTML"), ReportFormat::Html).unwrap(),
+            PathBuf::from("case.HTML")
+        );
+        assert!(report_path_for_format(Path::new("case.pdf"), ReportFormat::Json).is_err());
+        assert!(matches!(
+            serde_json::from_str::<ReportFormat>("\"html\""),
+            Ok(ReportFormat::Html)
+        ));
     }
 
     #[test]
@@ -1402,6 +1494,8 @@ mod tests {
         let completed: serde_json::Value = serde_json::from_str(&completed).unwrap();
         assert_eq!(prepared["sha256"], expected_sha256);
         assert_eq!(completed["sha256"], expected_sha256);
+        assert_eq!(prepared["export_format"], "json");
+        assert_eq!(completed["export_format"], "json");
         assert_eq!(completed["scans"], 1);
         assert_eq!(completed["candidates"], 1);
         assert_eq!(completed["fat32_scans"], 0);
@@ -1431,6 +1525,24 @@ mod tests {
         assert_eq!(completed_count, 1);
         assert!(crate::verify_audit_chain(&db).unwrap().valid);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn failed_report_export_records_the_selected_format_and_reason() {
+        let db = populated_case();
+        audit_report_export_failure(&db, 1, ReportFormat::Html, "extension mismatch").unwrap();
+
+        let payload: String = db
+            .query_row(
+                "SELECT payload FROM audit WHERE event='case_report_export_failed'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(payload["case_id"], 1);
+        assert_eq!(payload["export_format"], "html");
+        assert_eq!(payload["reason"], "extension mismatch");
     }
 
     #[test]
