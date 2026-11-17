@@ -2159,6 +2159,19 @@ mapping and synthetic expectations to use successive alpha powers by logical
 data slot. The exact ignored reference test now passes on Windows
 (`raid::tests::reconstructs_independent_linux_md_raid6_reference_array`). The
 generated member and expected-image hashes are recorded in the fixture's
-`SHA256SUMS`. This establishes one four-member left-symmetric reference only.
-Additional member counts/layouts and physical-array qualification remain open,
-so RAID reconstruction remains not production-qualified.
+`SHA256SUMS`. At this stage the evidence covered only one four-member
+left-symmetric reference; wider member counts were qualified in the follow-up
+below. RAID reconstruction remains not production-qualified.
+
+Expanded the fixture generator and the ignored production-path test to support
+different member counts. Independently generated 5-member and 6-member arrays
+with the same Linux MD metadata/layout and verified every raw-member and
+logical-image hash using each fixture's `SHA256SUMS`. The exact-byte Windows
+reconstruction test passed for both: 24 MiB logical image SHA-256
+`dbd6b6d70680deb0a904c4c755d31c134668f86f15c1e02edf574fc8670cd7c4` (5
+members, 3 data slots), and 32 MiB SHA-256
+`5e054289bc380f11a436d7325818423d7a8e136392c81f6172f120f0641b9da5` (6
+members, 4 data slots). Together with the 16 MiB four-member reference, this
+checks the Q coefficient sequence across 2, 3, and 4 data slots. It still
+covers only left-symmetric arrays and does not establish broad device or
+physical-array qualification.

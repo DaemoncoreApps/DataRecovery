@@ -1689,21 +1689,19 @@ mod tests {
         let fixture = std::env::var_os("DAEMONCORE_RAID6_REFERENCE_DIR")
             .map(PathBuf::from)
             .expect("reference fixture directory is required");
-        let member_paths: Vec<PathBuf> = (0..4)
+        let member_paths: Vec<PathBuf> = (0..16)
             .map(|index| fixture.join(format!("member{index}.raw")))
+            .take_while(|path| path.is_file())
             .collect();
+        assert!((4..=16).contains(&member_paths.len()));
         let expected = fs::read(fixture.join("logical-image.raw")).unwrap();
-        assert_eq!(expected.len(), 16 * 1024 * 1024);
-        assert_eq!(
-            format!("{:x}", Sha256::digest(&expected)),
-            "ae6018b38e30a433a0505035cf4df582da77c7ef92c269245232686e541e97c8"
-        );
+        assert_eq!(expected.len(), (member_paths.len() - 2) * 8 * 1024 * 1024);
         assert_eq!(
             member_paths
                 .iter()
                 .map(|path| fs::metadata(path).unwrap().len())
                 .collect::<Vec<_>>(),
-            vec![8 * 1024 * 1024; 4]
+            vec![8 * 1024 * 1024; member_paths.len()]
         );
 
         let root = root();

@@ -100,16 +100,25 @@ output bytes to the array-device reference.
 
 ## Linux MD RAID 6 reference array
 
-`make-raid6-reference-fixture.sh` independently creates four loop-backed
-members with Linux MD `mdadm`, metadata 1.0, left-symmetric RAID 6, and 64 KiB
-chunks. It writes a deterministic 16 MiB logical image through the active array,
-reads the bytes back from the array device, stops the array, then saves each
-member's first 8 MiB as a raw image. The logical image uses the same fixed
-byte pattern and expected SHA-256 as the RAID 5 fixture; the four member hashes
-are recorded in the generated `SHA256SUMS` file. The native test
+`make-raid6-reference-fixture.sh OUTPUT_DIR [MEMBER_COUNT]` independently
+creates loop-backed Linux MD RAID 6 arrays with 4–16 members, metadata 1.0,
+left-symmetric layout, and 64 KiB chunks. It defaults to four members. Each
+member contributes 8 MiB and the deterministic logical image fills all
+`(member_count - 2) * 8 MiB` available bytes. The script reads the bytes back
+from the active array, stops it, saves each member's first 8 MiB as a raw
+image, and verifies a generated SHA-256 manifest. The native test
 `reconstructs_independent_linux_md_raid6_reference_array` consumes that folder
 through `DAEMONCORE_RAID6_REFERENCE_DIR`, reconstructs it using the production
 path, and compares every output byte with the independently read array image.
-This checks full-member RAID 6 member order, left-symmetric P/Q rotation, and
-logical ordering. It does not qualify missing-member recovery, metadata
-discovery, or other RAID 6 layouts.
+Run the generator with different member counts and the test against each
+resulting folder to check additional Q coefficient counts as well as
+left-symmetric P/Q rotation and logical ordering. This does not qualify
+missing-member recovery, metadata discovery, or other RAID 6 layouts.
+
+The generator must run as root in Ubuntu/WSL because it creates loop devices
+and Linux MD arrays. For each fixture, set
+`DAEMONCORE_RAID6_REFERENCE_DIR` to its absolute path and run:
+
+```powershell
+cargo test --manifest-path src-tauri/Cargo.toml --offline raid::tests::reconstructs_independent_linux_md_raid6_reference_array -- --ignored --exact
+```
