@@ -72,12 +72,18 @@ export function RecoveryPanel({ source, job, busy, run, onJob }: Props) {
     setSummary(null);
     setSelected(new Set());
     setPage({ total: 0, rows: [] });
+    setPageIndex(0);
+    setQuery("");
+    setOnlyExportable(false);
     setPartitions(null);
     setOffset("0");
     setInspected(null);
+    setLoadError("");
     setFat32Summary(null);
     setFat32Page({ total: 0, rows: [] });
     setFat32PageIndex(0);
+    setFat32Query("");
+    setFat32DeletedOnly(true);
     setFat32Selected(new Set());
     setExportVerification(null);
   }, [source?.id]);

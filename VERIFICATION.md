@@ -2115,7 +2115,7 @@ offline setup is 222,939,848 bytes (SHA-256
 `f918313b7985cadd9286c3840e23ceb02c7ef5aef018083c4e58736c60ea6a84`). Both
 report Authenticode `NotSigned`; the package was not installed or launched.
 
-## Clarify source write boundary — 2026-11-16
+## Clarify source and recovery state boundaries — 2026-11-16
 
 The shared workspace footer now says “Source access · read only” and its
 accessible description clarifies that exports and reports write to the selected
@@ -2123,3 +2123,9 @@ destination. This replaces the ambiguous app-wide “Read-only mode” label.
 `npm run validate` passed after the change: strict byte-offset checks, frontend
 production build, formatting, 63 core tests (3 ignored), 169 desktop tests (10
 ignored), and both Clippy gates. No native UI smoke was run.
+
+The Recovery Workspace now clears NTFS and FAT32 result pages, pagination,
+search/filter state, and stale load errors when a different evidence source is
+opened. This prevents a new source's scan from inheriting an out-of-range page
+or stale view state from the previous source. The same full validation command
+passed after this change.
