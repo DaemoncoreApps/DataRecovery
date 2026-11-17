@@ -2129,3 +2129,19 @@ search/filter state, and stale load errors when a different evidence source is
 opened. This prevents a new source's scan from inheriting an out-of-range page
 or stale view state from the previous source. The same full validation command
 passed after this change.
+
+## Package current source revision — 2026-11-16
+
+For the current `main` revision, `npm run validate` passed (63 core tests, 3
+ignored; 169 desktop tests, 10 ignored; frontend build, formatting, and both
+Clippy gates). `npm run package:windows -- -SkipValidation` then built the
+optimized executable and offline NSIS setup in the isolated target tree. The
+staged executable is 15,561,728 bytes (SHA-256
+`5dc5c67cab10073c2de3eba5e40a0fba9ae13f61525f596f23e7fe1e5aa5c031`); the
+setup is 222,935,167 bytes (SHA-256
+`47f449ce36efd8955a1dd83ad2913f8e1c721d16414c833a41fc61482a9cd058`). The
+generated checksum manifest matches direct SHA-256 reads. Both artifacts report
+Authenticode `NotSigned`; the installer remains uninstalled and neither binary
+was launched. The local RAID 6 Linux MD reference remains unavailable: WSL
+returns `E_ACCESSDENIED` and Docker has no running Linux engine. No GitHub
+Actions workflow was started.
