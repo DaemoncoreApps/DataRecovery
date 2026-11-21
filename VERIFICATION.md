@@ -1987,17 +1987,31 @@ current NSIS setup was regenerated at
 are unsigned and staged only. The installer has not been installed; current-
 source UI smoke is pending fresh hash-specific approval.
 
-## Fragmented NTFS reference fixture check — 2026-11-16
+## Fragmented NTFS reference fixture check — 2026-11-21
 
-The independent fixture generator now preallocates the second half of a deleted
-file after a 1 MiB interleaved file, then requires Sleuth Kit to report at least
-two physically non-adjacent `$DATA` runs before recovering and comparing the
-original bytes. The script passes a Git Bash syntax check. This is syntax-only
-evidence: the generator could not run on this host because `mkntfs`, `ntfs-3g`,
-`ntfsfallocate`, and Sleuth Kit are unavailable; WSL returns
-`Wsl/E_ACCESSDENIED`; Docker's Linux engine is not running; hosted Actions are
-disabled by the account's $0 spending cap. Independent fragmented NTFS recovery
-remains unqualified until that fixture and the Windows native export test pass.
+The earlier generated fixture did not establish fragmentation: allocation
+inspection showed the supposed fragmented file had one contiguous data run.
+The generator now covers only a contiguous deleted file. Fragmented-deletion
+qualification uses NIST CFTT's DFR-02 NTFS reference image instead. Its
+compressed archive SHA-256 is
+`18ff23026ad7ed8fe6d93eca00200b0ede031c6ee4e760f52e62aee397d87844`; the
+decompressed 1,073,742,336-byte image SHA-256 is
+`57e6f37d3312ee4a113a6534a1ffcbd45ad3e0325a509442ac54ae632762d1ef`.
+Sleuth Kit extracts deleted `Bunda.txt` (8,192 bytes; SHA-256
+`c6c07acfb00ad4e8567f583c2aadec51d212f13eb3482e3514e89986df6c9503`), whose
+MFT stream uses non-adjacent clusters in this image. The new ignored native
+test checks both pinned inputs, requires non-adjacent runs, exports the file,
+verifies the recovery package, and compares output bytes exactly. On Windows,
+the ignored native regression passed against the local hash-pinned image in
+112.49 seconds. The fixture preparation script and regression are included in
+this change. This validates one known fragmented deletion pattern through the
+native export and package-verification path; broader NTFS versions, damaged
+volumes, and arbitrary real-world deletion patterns remain open.
+
+After the changes, `npm run validate` passed on Windows: production frontend
+build, formatting, 63 NTFS core tests, 169 desktop tests (11 ignored), and
+Clippy with warnings denied for both Rust crates. The focused NIST native test
+is ignored by the default suite and was run separately as recorded above.
 
 ## Evidence filesystem labels and refreshed Windows build — 2026-11-16
 

@@ -7,7 +7,6 @@ mkdir -p "$output_dir"
 image="$output_dir/deleted-ntfs.img"
 expected="$output_dir/RECOVER.BIN.expected"
 independent_recovery="$output_dir/RECOVER.BIN.sleuthkit"
-fragmented_recovery="$output_dir/RECOVER_FRAGMENTED.BIN.sleuthkit"
 mount_dir="$(mktemp -d)"
 cleanup() {
   if mountpoint -q "$mount_dir"; then
@@ -27,23 +26,13 @@ truncate -s 256M "$image"
 mkntfs --force --quick --label DCRTEST "$image"
 sudo mount -t ntfs-3g -o loop,rw "$image" "$mount_dir"
 sudo cp "$expected" "$mount_dir/RECOVER.BIN"
-head -c 32768 "$expected" | sudo tee "$mount_dir/RECOVER_FRAGMENTED.BIN" >/dev/null
-sudo dd if=/dev/zero of="$mount_dir/INTERLEAVE.BIN" bs=1048576 count=1 status=none
 sync
 sudo umount "$mount_dir"
-# Reserve the second target extent after an allocated blocker so NTFS cannot
-# satisfy the append by extending the first extent contiguously.
-sudo ntfsfallocate --no-size-change --offset 32768 --length 32768 \
-  "$image" /RECOVER_FRAGMENTED.BIN
 sudo mount -t ntfs-3g -o loop,rw "$image" "$mount_dir"
-tail -c +32769 "$expected" | sudo tee -a "$mount_dir/RECOVER_FRAGMENTED.BIN" >/dev/null
 sync
 test -f "$mount_dir/RECOVER.BIN"
 cmp "$expected" "$mount_dir/RECOVER.BIN"
-cmp "$expected" "$mount_dir/RECOVER_FRAGMENTED.BIN"
 sudo rm "$mount_dir/RECOVER.BIN"
-sudo rm "$mount_dir/INTERLEAVE.BIN"
-sudo rm "$mount_dir/RECOVER_FRAGMENTED.BIN"
 sync
 sudo umount "$mount_dir"
 
@@ -66,45 +55,12 @@ deleted_inode() {
 }
 
 inode="$(deleted_inode RECOVER.BIN)"
-fragmented_inode="$(deleted_inode RECOVER_FRAGMENTED.BIN)"
-fragmented_istat="$(istat -r -f ntfs "$image" "$fragmented_inode")"
-printf '%s\n' "$fragmented_istat"
-printf '%s\n' "$fragmented_istat" | python3 -c '
-import re
-import sys
-
-text = sys.stdin.read()
-match = re.search(
-    r"^\s*Type: \$DATA \(128-\d+\).*?\n(.*?)(?=^\s*Type: |\Z)",
-    text,
-    re.MULTILINE | re.DOTALL,
-)
-if match is None:
-    raise SystemExit("Sleuth Kit did not report a nonresident $DATA attribute")
-runs = [
-    (int(start), int(length))
-    for start, length in re.findall(
-        r"^\s*Starting address: (\d+), length: (\d+)", match.group(1), re.MULTILINE
-    )
-]
-if len(runs) < 2:
-    raise SystemExit(f"fragmented fixture must have at least two $DATA runs; found {runs}")
-if not any(
-    start + length != next_start
-    for (start, length), (next_start, _) in zip(runs, runs[1:])
-):
-    raise SystemExit(f"$DATA runs are physically adjacent, not fragmented: {runs}")
-print(f"verified_nonadjacent_data_runs={runs}")
-'
 icat -r -f ntfs "$image" "$inode" > "$independent_recovery"
-icat -r -f ntfs "$image" "$fragmented_inode" > "$fragmented_recovery"
 cmp "$expected" "$independent_recovery"
-cmp "$expected" "$fragmented_recovery"
 
 printf 'expected_sha256='
 sha256sum "$expected"
 printf 'image_sha256='
 sha256sum "$image"
 printf 'sleuthkit_deleted_mft_record=%s\n' "$inode"
-printf 'sleuthkit_fragmented_deleted_mft_record=%s\n' "$fragmented_inode"
 sha256sum "$image" | awk '{print $1}' > "$image.sha256"

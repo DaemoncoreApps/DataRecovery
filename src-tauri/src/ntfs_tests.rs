@@ -1451,8 +1451,8 @@ fn independently_formatted_ntfs_fixture_matches_upstream_known_contents() {
 }
 
 #[test]
-#[ignore = "requires an independently formatted and deleted NTFS image cross-checked with Sleuth Kit"]
-fn exports_contiguous_and_fragmented_deleted_ntfs_files_against_sleuthkit_bytes() {
+#[ignore = "requires an independently formatted contiguous NTFS image cross-checked with Sleuth Kit"]
+fn exports_deleted_ntfs_file_against_sleuthkit_bytes() {
     let image_path = std::env::var_os("DAEMONCORE_NTFS_DELETED_IMAGE")
         .expect("set DAEMONCORE_NTFS_DELETED_IMAGE to the independent NTFS image");
     let expected_path = std::env::var_os("DAEMONCORE_NTFS_DELETED_EXPECTED")
@@ -1468,7 +1468,7 @@ fn exports_contiguous_and_fragmented_deleted_ntfs_files_against_sleuthkit_bytes(
     let source = crate::storage::Image::open(&image_path).expect("open independent NTFS image");
     let scan = ntfs::scan(&source, 0, &AtomicBool::new(false), |_, _, _| {})
         .expect("scan independently formatted NTFS volume");
-    let selected_names = ["RECOVER.BIN", "RECOVER_FRAGMENTED.BIN"];
+    let selected_names = ["RECOVER.BIN"];
     let selected = scan
         .candidates
         .iter()
@@ -1489,31 +1489,6 @@ fn exports_contiguous_and_fragmented_deleted_ntfs_files_against_sleuthkit_bytes(
         );
         assert_eq!(candidate.size as usize, expected.len());
     }
-
-    let fragmented = selected
-        .iter()
-        .find(|candidate| {
-            candidate
-                .name
-                .eq_ignore_ascii_case("RECOVER_FRAGMENTED.BIN")
-        })
-        .expect("find fragmented deleted candidate");
-    let record = ntfs::read_record(&source, &scan.boot, &scan.mft, fragmented.id)
-        .expect("read fragmented deleted MFT record");
-    let stream = record.stream.expect("fragmented file has a data stream");
-    let ntfs::Content::Runs(runs) = stream.content else {
-        panic!("fragmented file should use a nonresident stream");
-    };
-    assert!(
-        runs.windows(2)
-            .any(|pair| match (pair[0].lcn, pair[1].lcn) {
-                (Some(previous), Some(next)) => {
-                    previous.checked_add(pair[0].clusters) != Some(next)
-                }
-                _ => false,
-            }),
-        "fixture file must contain non-adjacent NTFS data runs: {runs:?}"
-    );
 
     let digest = crate::hash_source(&source, &AtomicBool::new(false), |_| {})
         .expect("hash independent NTFS image")
@@ -1538,13 +1513,13 @@ fn exports_contiguous_and_fragmented_deleted_ntfs_files_against_sleuthkit_bytes(
     )
     .expect("export independently verified deleted NTFS files");
 
-    assert_eq!(summary.exported, 2);
+    assert_eq!(summary.exported, 1);
     assert_eq!(summary.failed, 0);
     let package = std::path::PathBuf::from(&summary.directory);
     let verification = crate::recovery_verify::verify_package(&package)
         .expect("native package verifier accepts the recovery output");
     assert_eq!(verification.state, "complete");
-    assert_eq!(verification.exported, 2);
+    assert_eq!(verification.exported, 1);
     let manifest: serde_json::Value = serde_json::from_slice(
         &std::fs::read(package.join("manifest.json")).expect("read package manifest"),
     )
@@ -1554,7 +1529,7 @@ fn exports_contiguous_and_fragmented_deleted_ntfs_files_against_sleuthkit_bytes(
             .as_array()
             .expect("manifest lists selected records")
             .iter()
-            .find(|record| record["original_name"].as_str() == Some(name))
+            .find(|record| record["name"].as_str() == Some(name))
             .expect("manifest contains selected deleted file");
         let output_name = selected_record["output_name"]
             .as_str()
@@ -1565,6 +1540,113 @@ fn exports_contiguous_and_fragmented_deleted_ntfs_files_against_sleuthkit_bytes(
             "exported bytes for {name}"
         );
     }
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+#[ignore = "requires the hash-pinned NIST CFTT DFR-02 NTFS image and Sleuth Kit expected bytes"]
+fn exports_fragmented_deleted_ntfs_file_from_nist_dfr02_reference() {
+    let image_path = std::env::var_os("DAEMONCORE_NIST_NTFS_DFR02_IMAGE")
+        .expect("set DAEMONCORE_NIST_NTFS_DFR02_IMAGE to the NIST DFR-02 disk image");
+    let expected_path = std::env::var_os("DAEMONCORE_NIST_NTFS_DFR02_EXPECTED")
+        .expect("set DAEMONCORE_NIST_NTFS_DFR02_EXPECTED to Sleuth Kit's Bunda.txt output");
+    let image_path = std::path::PathBuf::from(image_path);
+    let expected = std::fs::read(expected_path).expect("read NIST DFR-02 expected bytes");
+    assert_eq!(expected.len(), 8_192);
+    assert_eq!(
+        format!("{:x}", Sha256::digest(&expected)),
+        "c6c07acfb00ad4e8567f583c2aadec51d212f13eb3482e3514e89986df6c9503"
+    );
+
+    let source = crate::storage::Image::open(&image_path).expect("open NIST DFR-02 image");
+    let partition_offset_bytes = 61 * 512;
+    let scan = ntfs::scan(
+        &source,
+        partition_offset_bytes,
+        &AtomicBool::new(false),
+        |_, _, _| {},
+    )
+    .expect("scan NIST independently formatted NTFS volume");
+    let candidate = scan
+        .candidates
+        .iter()
+        .find(|candidate| candidate.deleted && candidate.name.eq_ignore_ascii_case("Bunda.txt"))
+        .expect("find deleted fragmented NIST Bunda.txt candidate");
+    assert!(
+        candidate.exportable,
+        "Bunda.txt blocked: {:?}",
+        candidate.notes
+    );
+    assert_eq!(candidate.size, expected.len() as u64);
+
+    let record = ntfs::read_record(&source, &scan.boot, &scan.mft, candidate.id)
+        .expect("read deleted Bunda.txt MFT record");
+    let stream = record.stream.expect("Bunda.txt has a data stream");
+    let ntfs::Content::Runs(runs) = stream.content else {
+        panic!("NIST Bunda.txt should use a nonresident stream");
+    };
+    assert!(
+        runs.windows(2)
+            .any(|pair| match (pair[0].lcn, pair[1].lcn) {
+                (Some(previous), Some(next)) => {
+                    previous.checked_add(pair[0].clusters) != Some(next)
+                }
+                _ => false,
+            }),
+        "NIST DFR-02 Bunda.txt must contain non-adjacent NTFS runs: {runs:?}"
+    );
+
+    let digest = crate::hash_source(&source, &AtomicBool::new(false), |_| {})
+        .expect("hash NIST NTFS image")
+        .expect("image hashing completes");
+    assert_eq!(
+        digest,
+        "57e6f37d3312ee4a113a6534a1ffcbd45ad3e0325a509442ac54ae632762d1ef"
+    );
+    let source_path = image_path.to_string_lossy().into_owned();
+    let root = temp_dir("ntfs-nist-dfr02-export");
+    let summary = recovery::export_to(
+        &source,
+        &scan,
+        std::slice::from_ref(candidate),
+        &root,
+        recovery::SourceIdentity {
+            case_id: 1,
+            evidence_record_id: 1,
+            scan_session_id: 1,
+            id: 1,
+            path: &source_path,
+            sha256: &digest,
+        },
+        &AtomicBool::new(false),
+        |_, _| {},
+    )
+    .expect("export independently generated fragmented NTFS file");
+
+    assert_eq!(summary.exported, 1);
+    assert_eq!(summary.failed, 0);
+    let package = std::path::PathBuf::from(&summary.directory);
+    let verification = crate::recovery_verify::verify_package(&package)
+        .expect("native verifier accepts NIST recovery package");
+    assert_eq!(verification.state, "complete");
+    assert_eq!(verification.exported, 1);
+    let manifest: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(package.join("manifest.json")).expect("read package manifest"),
+    )
+    .expect("parse package manifest");
+    let record = manifest["selected_records"]
+        .as_array()
+        .expect("manifest lists selected records")
+        .iter()
+        .find(|record| record["name"].as_str() == Some("Bunda.txt"))
+        .expect("manifest includes recovered Bunda.txt");
+    let output_name = record["output_name"]
+        .as_str()
+        .expect("manifest records output path");
+    assert_eq!(
+        std::fs::read(package.join(output_name)).expect("read exported NTFS bytes"),
+        expected
+    );
     std::fs::remove_dir_all(root).unwrap();
 }
 

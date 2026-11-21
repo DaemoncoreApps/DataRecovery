@@ -14,16 +14,37 @@ It does not establish deleted-file recovery accuracy on arbitrary real disks.
 
 The Linux NTFS validation job creates a separate image with `mkntfs`, copies
 and deletes a deterministic 65,536-byte `RECOVER.BIN` through `ntfs-3g`, then
-creates `RECOVER_FRAGMENTED.BIN` around an interleaved allocation and deletes
-both files. Sleuth Kit must list both deleted MFT entries and recover exact
-original bytes. The Windows job checks the transferred image hash, then runs
-the native NTFS scanner, exporter, and package verifier against both entries.
-The fixture generator checks Sleuth Kit's `$DATA` run list for at least two
-physically non-adjacent runs, and the native test independently requires
-non-adjacent data runs before comparing exported bytes. This validates two
-independently formatted deleted-file patterns; it does not qualify reused
-records, alternate NTFS versions, damaged volumes, or arbitrary real-world
-deletion patterns.
+uses Sleuth Kit (`icat`) to recover and compare its exact bytes. This is a
+contiguous deleted-file fixture only. An earlier fixture attempt claimed to
+create a fragmented file, but allocation inspection showed its extents were
+contiguous; it must not be counted as fragmentation coverage.
+
+`prepare-nist-ntfs-dfr02.sh OUTPUT_DIR` prepares a separate fragmented-deletion
+reference from NIST CFTT's DFR-02 NTFS disk image. It downloads the image from
+the [NIST CFTT test-image archive](https://cfreds-archive.nist.gov/dfr-test-images.html),
+pins the compressed and decompressed image hashes, and uses Sleuth Kit to
+extract deleted `Bunda.txt` as the independently derived expected bytes. The
+[DFR-02 setup document](https://cfreds-archive.nist.gov/dfr-images/setup-july-10-2012.pdf)
+describes this as a two-fragment recovery test; the
+native regression independently checks the image and expected-byte hashes,
+requires non-adjacent `$DATA` runs, exports through the production recovery
+path, verifies the package, and compares exact output bytes. The 1 GiB disk
+image is a local test artifact and is not checked into the repository. These
+references qualify one known fragmented deletion pattern; they do not qualify
+reused records, alternate NTFS versions, damaged volumes, or arbitrary
+real-world deletion patterns.
+
+To prepare the reference in Ubuntu/WSL with `curl`, `bzip2`, and Sleuth Kit
+installed:
+
+```bash
+bash src-tauri/tests/fixtures/prepare-nist-ntfs-dfr02.sh /path/to/fixture-dir
+```
+
+Set `DAEMONCORE_NIST_NTFS_DFR02_IMAGE` to the resulting `.dd` image and
+`DAEMONCORE_NIST_NTFS_DFR02_EXPECTED` to `Bunda.txt.sleuthkit`, then run the
+ignored test `ntfs_tests::exports_fragmented_deleted_ntfs_file_from_nist_dfr02_reference`
+with `--ignored --exact`. The script refuses to overwrite existing artifacts.
 # External reference fixtures
 
 The exFAT validation workflow downloads a separately generated filesystem image
