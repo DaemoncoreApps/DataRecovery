@@ -2204,3 +2204,23 @@ each 16 MiB logical image had SHA-256
 This is one three-member reference per supported RAID 5 layout. Additional
 member widths, metadata discovery, degraded arrays, and physical-array
 qualification remain open; RAID reconstruction is not production-qualified.
+
+## Dependency advisory refresh — 2026-11-24
+
+The production dependency audit found patched releases for RustSec findings in
+`cookie` and `url`, plus an unsound `rustix` release. The application lockfile
+now resolves `cookie 0.18.3`, `url 2.5.9`, and `rustix 1.1.6`; the updates were
+limited to those packages and required compatible lockfile changes. `npm audit
+--omit=dev` reports zero vulnerabilities. `cargo audit` reports zero
+vulnerabilities across the application and NTFS-core lockfiles. Its seven
+remaining allowed warnings include unmaintained crates and the GTK `glib 0.18`
+iterator unsoundness advisory; reverse dependency inspection found those
+warning crates are absent from the Windows MSVC target graph. The Linux GTK
+dependency warning remains visible and is not suppressed.
+
+`npm run validate` passed with the refreshed lockfile: strict byte-offset
+checks, production frontend build, formatting, 63 NTFS-core tests, 169 desktop
+tests (11 ignored), and Clippy with warnings denied for both Rust crates. This
+validates the source dependency graph only; no Windows package was rebuilt or
+launched in this turn, and installer signing/lifecycle and forensic release
+qualification remain open.
