@@ -2221,6 +2221,23 @@ dependency warning remains visible and is not suppressed.
 `npm run validate` passed with the refreshed lockfile: strict byte-offset
 checks, production frontend build, formatting, 63 NTFS-core tests, 169 desktop
 tests (11 ignored), and Clippy with warnings denied for both Rust crates. This
-validates the source dependency graph only; no Windows package was rebuilt or
-launched in this turn, and installer signing/lifecycle and forensic release
+validates the source dependency graph. Current Windows package evidence and
+signing status are recorded below; installer lifecycle and forensic release
 qualification remain open.
+
+## Windows package rebuild from patched dependencies — 2026-11-24
+
+`pwsh -NoProfile -File scripts/package-windows.ps1 -SkipValidation` completed
+after the sandboxed network lookup failed and the same package command was
+retried with network access. The isolated output is
+`src-tauri/target/package-stage/release`. The standalone Windows x64 executable
+is 15,619,072 bytes, SHA-256
+`1ad7ae8a48489ec533be8d7fadc8f45519ffd7a1700f1efc757303cee8266c9f`; the NSIS
+setup is 303,007,055 bytes (288.97 MiB), SHA-256
+`0aeda8744aaf36c2a651a09aa2fe2534a31e46f2af4823153c71f31da132ca6e`. Both
+report Authenticode `NotSigned`. The embedded 215,116,512-byte WebView2 offline
+runtime reports a valid Microsoft Corporation Authenticode signature. The
+generated `SHA256SUMS.txt` was independently checked against both staged
+artifacts. Neither app nor installer was launched or installed. The app's
+current-source UI behavior, installer lifecycle, trusted publisher signing,
+Store readiness, and the forensic release gates remain open.
