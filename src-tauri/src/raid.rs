@@ -1694,6 +1694,95 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires independently generated Linux MD RAID 0 and RAID 1 reference arrays"]
+    fn reconstructs_independent_linux_md_raid0_and_raid1_reference_arrays() {
+        let fixture_root = std::env::var_os("DAEMONCORE_RAID01_REFERENCE_DIR")
+            .map(PathBuf::from)
+            .expect("RAID 0/1 reference fixture directory is required");
+        for (level, member_count, expected_bytes, stripe_bytes) in [
+            ("raid0", 3usize, 24 * 1024 * 1024usize, 64 * 1024u64),
+            ("raid1", 2usize, 8 * 1024 * 1024usize, 0),
+        ] {
+            let fixture = fixture_root.join(level);
+            assert_eq!(
+                fs::read_to_string(fixture.join("level.txt"))
+                    .unwrap()
+                    .trim(),
+                level
+            );
+            let expected = fs::read(fixture.join("logical-image.raw")).unwrap();
+            assert_eq!(expected.len(), expected_bytes);
+            let (expected_image_sha256, expected_member_sha256): (&str, &[&str]) = match level {
+                "raid0" => (
+                    "dbd6b6d70680deb0a904c4c755d31c134668f86f15c1e02edf574fc8670cd7c4",
+                    &[
+                        "22c17168747a05ab1a029214c7781240d10475fcfd13e2913db00db56fd67320",
+                        "b166b526b9a3afcd1c2306025f5ee0e1c49fd740c935b9307fac4ead1ea65f17",
+                        "088dd269dbc129c3766307c90ddc0769fcc87a9f82171f34dabd941b3864c3f2",
+                    ],
+                ),
+                "raid1" => (
+                    "aef8ed3732fd1c8e0fc67a1ddf4972a5f0e7d3e769c4bdf1e15b8843818b5f48",
+                    &[
+                        "aef8ed3732fd1c8e0fc67a1ddf4972a5f0e7d3e769c4bdf1e15b8843818b5f48",
+                        "aef8ed3732fd1c8e0fc67a1ddf4972a5f0e7d3e769c4bdf1e15b8843818b5f48",
+                    ],
+                ),
+                _ => unreachable!(),
+            };
+            assert_eq!(
+                format!("{:x}", Sha256::digest(&expected)),
+                expected_image_sha256
+            );
+            let member_paths: Vec<PathBuf> = (0..member_count)
+                .map(|index| fixture.join(format!("member{index}.raw")))
+                .collect();
+            assert_eq!(
+                member_paths
+                    .iter()
+                    .map(|path| fs::metadata(path).unwrap().len())
+                    .collect::<Vec<_>>(),
+                vec![8 * 1024 * 1024; member_count]
+            );
+            for (path, expected_member_hash) in
+                member_paths.iter().zip(expected_member_sha256.iter())
+            {
+                let member = fs::read(path).unwrap();
+                assert_eq!(
+                    format!("{:x}", Sha256::digest(&member)),
+                    *expected_member_hash,
+                    "independent {level} member hash for {}",
+                    path.display()
+                );
+            }
+            let root = root();
+            let package = reconstruct_package(
+                ReconstructionRequest {
+                    level_name: level,
+                    member_paths: &member_paths,
+                    data_offset_bytes: 0,
+                    stripe_size_bytes: stripe_bytes,
+                    raid5_layout: Raid5Layout::LeftSymmetric,
+                    bytes_per_sector: 512,
+                    case_id: 7,
+                    destination: &root,
+                },
+                &AtomicBool::new(false),
+                |_, _| {},
+            )
+            .unwrap()
+            .unwrap();
+
+            assert_eq!(fs::read(&package.image_path).unwrap(), expected);
+            assert_eq!(package.size_bytes, expected_bytes as u64);
+            let verification = crate::recovery_verify::verify_package(&package.directory).unwrap();
+            assert_eq!(verification.package_type, "raid_reconstruction");
+            assert_eq!(verification.state, "complete");
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
     #[ignore = "requires the independently generated Linux MD RAID 6 reference array"]
     fn reconstructs_independent_linux_md_raid6_reference_array() {
         let fixture = std::env::var_os("DAEMONCORE_RAID6_REFERENCE_DIR")

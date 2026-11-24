@@ -107,6 +107,27 @@ This is a controlled known-content fixture, not a broad external GIF corpus.
 
 ## Linux MD RAID 5 reference array
 
+`make-raid01-reference-fixture.sh OUTPUT_DIR raid0|raid1` creates an
+independent loop-backed Linux MD reference. RAID 0 uses three members and 64
+KiB chunks; RAID 1 uses two mirrors. Both use metadata 1.0 and 8 MiB data
+regions. The script writes a deterministic pattern through the active array,
+reads it back through the array device, stops the array, captures each raw
+member, and writes a SHA-256 manifest. The ignored Windows regression pins the
+image and member hashes, then runs the production reconstruction and package
+verifier against the captured members. This qualifies data order and exact
+mirror agreement for these configurations, not metadata discovery, degraded
+arrays, or other RAID 0/1 layouts.
+
+Run the generator as root in Ubuntu/WSL once for each level, then set
+`DAEMONCORE_RAID01_REFERENCE_DIR` to the parent directory containing `raid0`
+and `raid1` before running:
+
+```powershell
+cargo test --manifest-path src-tauri/Cargo.toml --offline raid::tests::reconstructs_independent_linux_md_raid0_and_raid1_reference_arrays -- --ignored --exact
+```
+
+## Linux MD RAID 5 reference array
+
 `make-raid5-reference-fixture.sh OUTPUT_DIR [LAYOUT]` creates three
 loop-backed member devices and uses Linux MD `mdadm` with 64 KiB chunks. The
 layout may be left-asymmetric, right-asymmetric, left-symmetric, or

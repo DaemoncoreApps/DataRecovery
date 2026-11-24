@@ -2241,3 +2241,26 @@ generated `SHA256SUMS.txt` was independently checked against both staged
 artifacts. Neither app nor installer was launched or installed. The app's
 current-source UI behavior, installer lifecycle, trusted publisher signing,
 Store readiness, and the forensic release gates remain open.
+
+## Independent Linux MD RAID 0 and RAID 1 references — 2026-11-24
+
+Generated loop-backed Linux MD arrays in Ubuntu/WSL using files under the
+ignored target directory only. The three-member RAID 0 array used 64 KiB
+chunks and 8 MiB per member; its independently written/read 24 MiB logical
+image SHA-256 is
+`dbd6b6d70680deb0a904c4c755d31c134668f86f15c1e02edf574fc8670cd7c4`. Member
+hashes are `22c17168747a05ab1a029214c7781240d10475fcfd13e2913db00db56fd67320`,
+`b166b526b9a3afcd1c2306025f5ee0e1c49fd740c935b9307fac4ead1ea65f17`, and
+`088dd269dbc129c3766307c90ddc0769fcc87a9f82171f34dabd941b3864c3f2`.
+
+The two-member RAID 1 array's logical image and both identical mirror hashes
+are `aef8ed3732fd1c8e0fc67a1ddf4972a5f0e7d3e769c4bdf1e15b8843818b5f48`.
+Both fixtures' `SHA256SUMS` validated inside the generator. The Windows
+ignored regression then verified all pinned member hashes, reconstructed each
+array through the production package path, compared every output byte with
+Linux MD's logical-image reference, and verified each package. It passed in
+6.62 seconds. `npm run validate` passed afterward: 63 NTFS-core tests, 169
+desktop tests (12 ignored), frontend build, formatting, and Clippy with
+warnings denied. These references cover one member count/layout per level;
+they do not qualify RAID metadata discovery, degraded arrays, or physical
+arrays.
