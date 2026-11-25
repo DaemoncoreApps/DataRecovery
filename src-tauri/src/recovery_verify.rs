@@ -35,6 +35,7 @@ pub struct RecoveryExportVerification {
     pub cancelled: bool,
     pub state: String,
     pub checksums_sha256: String,
+    pub operator_confirmation_recorded: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -231,6 +232,8 @@ struct RaidManifest {
     created_unix_ns: String,
     level: String,
     member_order_is_operator_supplied: bool,
+    #[serde(default)]
+    operator_confirmed_layout_from_validated_metadata: bool,
     members: Vec<RaidMemberManifest>,
     data_offset_bytes: u64,
     bytes_per_sector: u32,
@@ -757,6 +760,7 @@ fn verify_carve_package(
         cancelled: summary.cancelled,
         state: completion.state,
         checksums_sha256: format!("{:x}", Sha256::digest(&checksums_bytes)),
+        operator_confirmation_recorded: None,
     })
 }
 
@@ -868,6 +872,7 @@ fn verify_acquisition_package(
         cancelled: false,
         state: completion.state,
         checksums_sha256: format!("{:x}", Sha256::digest(&checksums_bytes)),
+        operator_confirmation_recorded: None,
     })
 }
 
@@ -1130,6 +1135,9 @@ fn verify_raid_package(
         cancelled: false,
         state: completion.state,
         checksums_sha256: format!("{:x}", Sha256::digest(&checksums_bytes)),
+        operator_confirmation_recorded: Some(
+            manifest.operator_confirmed_layout_from_validated_metadata,
+        ),
     })
 }
 
@@ -1550,6 +1558,7 @@ pub(crate) fn verify_package(directory: &Path) -> Result<RecoveryExportVerificat
         cancelled: summary.cancelled,
         state: completion.state,
         checksums_sha256: format!("{:x}", Sha256::digest(&checksums_bytes)),
+        operator_confirmation_recorded: None,
     })
 }
 

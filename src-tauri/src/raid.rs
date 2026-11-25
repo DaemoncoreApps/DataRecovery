@@ -180,6 +180,7 @@ struct RaidManifest {
     created_unix_ns: String,
     level: &'static str,
     member_order_is_operator_supplied: bool,
+    operator_confirmed_layout_from_validated_metadata: bool,
     members: Vec<MemberManifest>,
     data_offset_bytes: u64,
     bytes_per_sector: u32,
@@ -218,6 +219,7 @@ pub struct ReconstructionRequest<'a> {
     pub stripe_size_bytes: u64,
     pub raid5_layout: Raid5Layout,
     pub bytes_per_sector: u32,
+    pub layout_metadata_attested: bool,
     pub case_id: i64,
     pub destination: &'a Path,
 }
@@ -456,9 +458,11 @@ fn reconstruct_package_into(
         stripe_size_bytes,
         raid5_layout,
         bytes_per_sector,
+        layout_metadata_attested,
         case_id,
         destination: _,
     } = request;
+    require_layout_metadata_attestation(layout_metadata_attested)?;
     let level = RaidLevel::parse(level_name)?;
     if !(MIN_MEMBERS..=MAX_MEMBERS).contains(&member_paths.len()) {
         return Err(format!(
@@ -770,6 +774,7 @@ fn reconstruct_package_into(
         created_unix_ns: now.to_string(),
         level: level.label(),
         member_order_is_operator_supplied: true,
+        operator_confirmed_layout_from_validated_metadata: layout_metadata_attested,
         members: member_manifest,
         data_offset_bytes,
         bytes_per_sector,
@@ -1060,6 +1065,7 @@ pub async fn reconstruct_raid(
                 stripe_size_bytes,
                 raid5_layout,
                 bytes_per_sector,
+                layout_metadata_attested,
                 case_id,
                 destination: &destination,
             },
@@ -1217,6 +1223,7 @@ mod tests {
                 stripe_size_bytes: 512,
                 raid5_layout: Raid5Layout::LeftSymmetric,
                 bytes_per_sector: 512,
+                layout_metadata_attested: true,
                 case_id: 7,
                 destination: &root,
             },
@@ -1345,6 +1352,7 @@ mod tests {
                 stripe_size_bytes: 512,
                 raid5_layout: Raid5Layout::LeftSymmetric,
                 bytes_per_sector: 512,
+                layout_metadata_attested: true,
                 case_id: 7,
                 destination: &root,
             },
@@ -1363,9 +1371,14 @@ mod tests {
             serde_json::from_slice(&fs::read(package.directory.join("manifest.json")).unwrap())
                 .unwrap();
         assert_eq!(manifest["raid6_layout"], "left_symmetric");
+        assert_eq!(
+            manifest["operator_confirmed_layout_from_validated_metadata"],
+            true
+        );
         let verification = crate::recovery_verify::verify_package(&package.directory).unwrap();
         assert_eq!(verification.package_type, "raid_reconstruction");
         assert_eq!(verification.state, "complete");
+        assert_eq!(verification.operator_confirmation_recorded, Some(true));
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1401,6 +1414,7 @@ mod tests {
                     stripe_size_bytes: 512,
                     raid5_layout: Raid5Layout::LeftSymmetric,
                     bytes_per_sector: 512,
+                    layout_metadata_attested: true,
                     case_id: 7,
                     destination: &case_root,
                 },
@@ -1452,6 +1466,7 @@ mod tests {
                 stripe_size_bytes: 512,
                 raid5_layout: Raid5Layout::LeftSymmetric,
                 bytes_per_sector: 512,
+                layout_metadata_attested: true,
                 case_id: 7,
                 destination: &root,
             },
@@ -1535,6 +1550,7 @@ mod tests {
                     stripe_size_bytes: 512,
                     raid5_layout: layout,
                     bytes_per_sector: 512,
+                    layout_metadata_attested: true,
                     case_id: 7,
                     destination: &case_root,
                 },
@@ -1636,6 +1652,7 @@ mod tests {
                         stripe_size_bytes: 512,
                         raid5_layout: layout,
                         bytes_per_sector: 512,
+                        layout_metadata_attested: true,
                         case_id: 7,
                         destination: &case_root,
                     },
@@ -1699,6 +1716,7 @@ mod tests {
                 stripe_size_bytes: 64 * 1024,
                 raid5_layout,
                 bytes_per_sector: 512,
+                layout_metadata_attested: true,
                 case_id: 7,
                 destination: &root,
             },
@@ -1787,6 +1805,7 @@ mod tests {
                     stripe_size_bytes: stripe_bytes,
                     raid5_layout: Raid5Layout::LeftSymmetric,
                     bytes_per_sector: 512,
+                    layout_metadata_attested: true,
                     case_id: 7,
                     destination: &root,
                 },
@@ -1835,6 +1854,7 @@ mod tests {
                 stripe_size_bytes: 64 * 1024,
                 raid5_layout: Raid5Layout::LeftSymmetric,
                 bytes_per_sector: 512,
+                layout_metadata_attested: true,
                 case_id: 7,
                 destination: &root,
             },
@@ -1873,6 +1893,7 @@ mod tests {
                 stripe_size_bytes: 512,
                 raid5_layout: Raid5Layout::LeftSymmetric,
                 bytes_per_sector: 512,
+                layout_metadata_attested: true,
                 case_id: 7,
                 destination: &root,
             },
@@ -1915,6 +1936,7 @@ mod tests {
                 stripe_size_bytes: 512,
                 raid5_layout: Raid5Layout::LeftSymmetric,
                 bytes_per_sector: 512,
+                layout_metadata_attested: true,
                 case_id: 7,
                 destination: &root,
             },
@@ -1954,6 +1976,7 @@ mod tests {
                 stripe_size_bytes: 0,
                 raid5_layout: Raid5Layout::LeftSymmetric,
                 bytes_per_sector: 512,
+                layout_metadata_attested: true,
                 case_id: 7,
                 destination: &root,
             },
@@ -1987,6 +2010,7 @@ mod tests {
                 stripe_size_bytes: 0,
                 raid5_layout: Raid5Layout::LeftSymmetric,
                 bytes_per_sector: 512,
+                layout_metadata_attested: true,
                 case_id: 7,
                 destination: &root,
             },
@@ -2013,6 +2037,7 @@ mod tests {
                 stripe_size_bytes: 0,
                 raid5_layout: Raid5Layout::LeftSymmetric,
                 bytes_per_sector: 512,
+                layout_metadata_attested: true,
                 case_id: 7,
                 destination: &root,
             },
@@ -2042,6 +2067,7 @@ mod tests {
                 stripe_size_bytes: 0,
                 raid5_layout: Raid5Layout::LeftSymmetric,
                 bytes_per_sector: 512,
+                layout_metadata_attested: true,
                 case_id: 7,
                 destination: &root,
             },

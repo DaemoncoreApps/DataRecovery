@@ -194,7 +194,7 @@ export function RaidPanel({ job, busy, canReconstruct, run, onJob, onSource }: P
               }
             })}>{verifying ? "Verifying reconstructed image…" : "Verify reconstruction package"}</button>
           </div>
-          {verification && <div className="recoveryVerification success" role="status"><strong>Reconstruction package verified</strong><span>{verification.records} member records · output image SHA-256 and package checksums match</span><code>Checksum list SHA-256 · {verification.checksums_sha256}</code></div>}
+          {verification && <div className="recoveryVerification success" role="status"><strong>Reconstruction package verified</strong><span>{verification.records} member records · output image SHA-256 and package checksums match</span><span>{verification.operator_confirmation_recorded ? "Operator layout confirmation is recorded; independent layout validation is still required." : "No operator layout confirmation is recorded in this package."}</span><code>Checksum list SHA-256 · {verification.checksums_sha256}</code></div>}
         </section>
       )}
     </>

@@ -8,7 +8,10 @@ selected member list, RAID level, data offset, sector size, stripe size, and
 parity layout; edits to those values, selecting different members, or changing
 cases clears the confirmation. The native command rejects a missing
 confirmation and records the operator assertion in the hash-chained start
-event. A core regression verifies rejection without confirmation. The gate
+event. The RAID package manifest now carries the same operator assertion, and
+package verification returns it to the UI so the verification result can show
+whether the assertion was recorded. A native regression verifies rejection
+without confirmation and confirms it survives package verification. The gate
 prevents accidental use of stale/default settings; it does not authenticate the
 metadata source or enforce the promised comparison against independent known
 files. Those checks and physical array qualification remain open. `npm run

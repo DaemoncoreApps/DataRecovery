@@ -217,6 +217,7 @@ export interface RecoveryExportVerification {
   cancelled: boolean;
   state: "complete" | "partial";
   checksums_sha256: string;
+  operator_confirmation_recorded: boolean | null;
 }
 export interface Case {
   id: number;
