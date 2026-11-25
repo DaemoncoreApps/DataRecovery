@@ -674,7 +674,7 @@ fn capture(
                 ),
             };
             Err(format!(
-                "{error} Unpublished acquisition data may remain at {}. Treat it as unverified; the normal package verifier must pass before use.{marker_warning}",
+                "{error} Unpublished acquisition data may remain at {}. Preserve it for examination; this folder cannot be resumed or used as a completed image, and the package verifier will reject it. To retry, start a new acquisition and keep this folder.{marker_warning}",
                 staging_path.display()
             ))
         }
@@ -1648,6 +1648,10 @@ mod tests {
         assert!(partial.join("INCOMPLETE.txt").is_file());
         assert!(partial.join("image.raw").is_file());
         assert!(error.contains(&partial.to_string_lossy().to_string()));
+        assert!(error.contains("Preserve it for examination"));
+        assert!(error.contains("cannot be resumed or used as a completed image"));
+        assert!(error.contains("package verifier will reject it"));
+        assert!(error.contains("start a new acquisition and keep this folder"));
         assert!(fs::read_to_string(partial.join("INCOMPLETE.txt"))
             .unwrap()
             .contains("UNPUBLISHED ACQUISITION"));

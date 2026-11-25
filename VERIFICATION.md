@@ -2346,6 +2346,11 @@ does not retain the marker. This improves detection of abandoned staging but
 does not resume acquisition or qualify power-loss behavior. All 16 acquisition
 tests passed. `npm run validate` passed: 63 NTFS-core tests, 171 desktop tests
 (12 ignored), frontend build, formatting, and Clippy with warnings denied.
+Acquisition failure guidance now explicitly says to preserve the staged folder,
+that it cannot be resumed or used as a completed image, that verification will
+reject it, and to start a new acquisition while retaining the incomplete
+folder. The disconnected-source regression checks each instruction; the
+focused acquisition suite still passes all 16 tests.
 
 ## FAT32/exFAT scan cancellation — 2026-11-24
 
