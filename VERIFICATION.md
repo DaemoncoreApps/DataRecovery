@@ -11,11 +11,17 @@ unreadable ranges must be readable and match zero-filled staging bytes, so a
 source that no longer matches is rejected without truncating or modifying the
 staged image. The command truncates only bytes beyond the last validated
 checkpoint, continues acquisition, and runs the normal package verification
-before publication. The focused acquisition suite passes 17 tests, including
-disconnect, source mismatch without mutation, successful resume, and package
-verification; the frontend production build passes. This does not yet qualify
-power-loss behavior, resume across changed hardware identity, or physical
-media handling in an accredited lab. Full project validation is pending.
+before publication. Resume parsing bounds the error map to 100,000 ranges, 16 KiB
+per serialized record, and 4 KiB per error message. Tests cover disconnect, source
+mismatch without mutation, successful resume, package verification, and rejection
+of oversized error maps. `npm run validate` passes: 67 core tests (3 ignored),
+175 desktop tests (12 ignored), strict byte-offset checks, frontend production
+build, Rust formatting, and Clippy with warnings denied. During validation, the
+large-carving cancellation test exposed shared-directory cleanup that raced with
+parallel tests; it now creates and removes only its own unique directory. Passing
+software tests do not qualify abrupt power-loss behavior, process-kill recovery,
+physical device handling, or the complete six-workflow product in an accredited
+lab.
 
 ## GitHub Actions spend safeguard — 2026-11-15
 

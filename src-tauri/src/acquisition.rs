@@ -23,6 +23,8 @@ const READ_CHUNK: usize = 1024 * 1024;
 const MAX_RETRIES: u8 = 3;
 const MAX_ERROR_RANGES: usize = 100_000;
 const MAX_ERROR_MAP_BYTES: u64 = 128 * 1024 * 1024;
+const MAX_ERROR_RECORD_BYTES: usize = 16 * 1024;
+const MAX_ERROR_TEXT_BYTES: usize = 4 * 1024;
 const ACQUISITION_CHECKPOINT_INTERVAL: u64 = 16 * 1024 * 1024;
 const MAX_CHECKPOINT_LOG_BYTES: u64 = 64 * 1024 * 1024;
 const INCOMPLETE_MARKER: &str = "UNPUBLISHED ACQUISITION: this staged image was not published as a completed, verified package. Do not treat it as verified evidence or use the recovery package verifier as proof of completeness.\n";
@@ -676,8 +678,17 @@ fn read_error_prefix(
         .split(|byte| *byte == b'\n')
         .filter(|line| !line.is_empty())
     {
+        if ranges.len() >= MAX_ERROR_RANGES || line.len() > MAX_ERROR_RECORD_BYTES {
+            return Err(
+                "The interrupted acquisition error map exceeds its range-count or record-size limit."
+                    .into(),
+            );
+        }
         let range: ReadErrorRange = serde_json::from_slice(line).map_err(err)?;
-        if range.length == 0 || range.attempts != MAX_RETRIES {
+        if range.length == 0
+            || range.attempts != MAX_RETRIES
+            || range.error.len() > MAX_ERROR_TEXT_BYTES
+        {
             return Err("The interrupted acquisition error map contains an invalid range.".into());
         }
         let end = range
@@ -2376,6 +2387,43 @@ mod tests {
             .contains("UNPUBLISHED ACQUISITION"));
         assert!(crate::recovery_verify::verify_package(&partial).is_err());
         fs::remove_dir_all(destination).unwrap();
+    }
+
+    #[test]
+    fn resume_error_map_enforces_record_and_range_limits() {
+        let directory = test_directory();
+        let path = directory.join("read-errors.jsonl");
+        let oversized_text = ReadErrorRange {
+            offset: 0,
+            length: 512,
+            attempts: MAX_RETRIES,
+            error: "x".repeat(MAX_ERROR_TEXT_BYTES + 1),
+        };
+        let mut bytes = serde_json::to_vec(&oversized_text).unwrap();
+        bytes.push(b'\n');
+        fs::write(&path, &bytes).unwrap();
+        let digest = format!("{:x}", Sha256::digest(&bytes));
+        assert!(read_error_prefix(&path, bytes.len() as u64, &digest).is_err());
+
+        let mut file = File::create(&path).unwrap();
+        let mut digest = Sha256::new();
+        for index in 0..=MAX_ERROR_RANGES {
+            let range = ReadErrorRange {
+                offset: (index as u64) * 512,
+                length: 512,
+                attempts: MAX_RETRIES,
+                error: "read failed".into(),
+            };
+            let mut line = serde_json::to_vec(&range).unwrap();
+            line.push(b'\n');
+            file.write_all(&line).unwrap();
+            digest.update(&line);
+        }
+        file.sync_all().unwrap();
+        let length = file.metadata().unwrap().len();
+        drop(file);
+        assert!(read_error_prefix(&path, length, &format!("{:x}", digest.finalize())).is_err());
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

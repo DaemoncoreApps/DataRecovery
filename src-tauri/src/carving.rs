@@ -2416,7 +2416,16 @@ mod tests {
         assert_eq!(scan.candidates.len(), 1);
         assert!(scan.candidates[0].length > READ_CHUNK as u64);
 
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/t");
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target/t")
+            .join(format!(
+                "cancel-{}-{}",
+                std::process::id(),
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
         fs::create_dir_all(&root).unwrap();
         let cancel = AtomicBool::new(false);
         let package = export_selected(

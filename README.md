@@ -124,7 +124,7 @@ export is not digitally signed or externally anchored.
 ## Current limits
 
 Compressed/encrypted streams, named-stream export, automatic content validation and
-scan resume are not implemented. Attribute-list resolution is limited to unnamed
+scan resume are not implemented. Physical-device imaging can resume from a marked staging folder after validating its checkpoint and matching every committed byte against the selected source. Abrupt power-loss and forced-process termination are not yet qualified. Attribute-list resolution is limited to unnamed
 `$DATA` extents with verified extension-record identity and contiguous VCN coverage.
 Resident lists and bounded nonresident lists are supported, including list
 continuations in referenced extension records, up to 256 extension records and 16
