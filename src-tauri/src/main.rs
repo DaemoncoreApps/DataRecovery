@@ -124,9 +124,9 @@ fn mark_job_audit_failure(job: &mut Job, audit_result: Result<()>) {
         job.error = Some(include_audit_failure(operation_message, Err(audit_error)));
     }
 }
-fn read_job_status(job: &Mutex<Job>) -> Job {
+fn snapshot_job_status(job: &Mutex<Job>) -> (Job, bool) {
     match job.lock() {
-        Ok(job) => job.clone(),
+        Ok(job) => (job.clone(), false),
         Err(poisoned) => {
             let mut recovered = poisoned.into_inner();
             recovered.state = "failed".into();
@@ -135,9 +135,39 @@ fn read_job_status(job: &Mutex<Job>) -> Job {
                 "The job status became inconsistent after an unexpected failure. Treat any retained output as unverified and verify it before use.".into(),
             );
             job.clear_poison();
-            recovered.clone()
+            (recovered.clone(), true)
         }
     }
+}
+fn read_job_status(job: &Mutex<Job>) -> Job {
+    snapshot_job_status(job).0
+}
+fn finalize_hash_job(job: &Mutex<Job>, result: Result<Option<String>>) -> Job {
+    let (mut finished, status_poisoned) = snapshot_job_status(job);
+    if status_poisoned {
+        let operation_error = result
+            .err()
+            .map(|error| format!(" Native hash error: {error}"));
+        finished.state = "failed".into();
+        finished.sha256 = None;
+        finished.error = Some(format!(
+            "The hash result was discarded because job status became inconsistent; no successful hash is recorded.{}",
+            operation_error.unwrap_or_default()
+        ));
+    } else {
+        match result {
+            Ok(Some(hash)) => {
+                finished.state = "completed".into();
+                finished.sha256 = Some(hash);
+            }
+            Ok(None) => finished.state = "cancelled".into(),
+            Err(error) => {
+                finished.state = "failed".into();
+                finished.error = Some(error);
+            }
+        }
+    }
+    finished
 }
 fn detect(bytes: &[u8]) -> String {
     match bytes.get(3..11) {
@@ -1010,18 +1040,7 @@ fn start_hash(app: tauri::AppHandle, state: State<AppState>) -> Result<()> {
             }
             Ok(hash)
         });
-        let mut finished = state.job.lock().map(|job| job.clone()).unwrap_or_default();
-        match result {
-            Ok(Some(hash)) => {
-                finished.state = "completed".into();
-                finished.sha256 = Some(hash);
-            }
-            Ok(None) => finished.state = "cancelled".into(),
-            Err(error) => {
-                finished.state = "failed".into();
-                finished.error = Some(error);
-            }
-        }
+        let mut finished = finalize_hash_job(&state.job, result);
         let compromised = state
             .source
             .lock()
@@ -1787,6 +1806,29 @@ mod tests {
             .is_some_and(|error| { error.contains("Treat any retained output as unverified") }));
         assert!(!job.is_poisoned());
         assert_eq!(job.lock().unwrap().state, "failed");
+    }
+
+    #[test]
+    fn hash_worker_discards_success_when_job_status_was_poisoned() {
+        let job = Mutex::new(Job {
+            state: "running".into(),
+            sha256: Some("stale-digest-must-not-survive".into()),
+            ..Job::default()
+        });
+        let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = job.lock().unwrap();
+            panic!("simulate status corruption during hashing");
+        }));
+        assert!(panic_result.is_err());
+
+        let finished = finalize_hash_job(&job, Ok(Some("computed-digest".into())));
+        assert_eq!(finished.state, "failed");
+        assert_eq!(finished.sha256, None);
+        assert!(finished
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("no successful hash is recorded")));
+        assert!(!job.is_poisoned());
     }
 
     #[test]
