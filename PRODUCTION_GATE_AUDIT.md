@@ -26,73 +26,20 @@ to be independently verified for the shipped package.
 
 ## Newly connected, limited workflows
 
-The RAID Reconstruction route produces read-only-derived packages for operator-configured RAID 0, byte-identical RAID 1, full-member RAID 5, and full-member Linux MD left-symmetric RAID 6. RAID 0 three-member/64 KiB ordering and RAID 1 two-member byte identity pass independent Linux MD references through native reconstruction and package verification. RAID 5 supports Linux MD left-asymmetric, right-asymmetric, left-symmetric, and right-symmetric rotating layouts; each now passes independent byte-for-byte references at three and four members. RAID 6 supports only left-symmetric rotating P/Q; its Q syndrome uses increasing GF(2^8) powers in logical data-slot order, confirmed against independent Linux MD arrays with 4, 5, and 6 members. Start and publish audit events and manifests record the selected parity mapping, and parity mismatches fail closed. Matching parity alone does not prove the selected data order or array layout; operators must validate against array metadata and independent file references. If image data has been written, failed output is retained and the job flushes and verifies its incomplete marker alongside the staging path. Degraded or missing-member reconstruction is not supported. The workflow requires an audited active case and explicit member order/data offset/sector geometry/stripe size, hashes members before and after reconstruction, rereads and hashes the output, publishes without replacing an existing package, registers the image as evidence, and records outcomes in the audit chain. Duplicate member paths are rejected by canonical path and opened-file identity, including Windows hard links; the regression verifies rejection before output staging. RAID 6 streams member ordering to avoid a per-stripe allocation. Synthetic tests cover RAID 5 rotating mappings, RAID 6 P/Q ordering over rotating parity rows, parity mismatch rejection with marked unverified staging, hard-link duplicate rejection, progress accounting, and cancellation cleanup. RAID 0/1 references cover one member count and layout each; RAID 5 references now cover 3- and 4-member widths per layout; RAID 6 references cover only left-symmetric layout. Metadata autodetection, degraded arrays, additional member widths, other RAID 6 layouts, and physical-array qualification remain open. RAID reconstruction is not production-qualified.
+The RAID Reconstruction route produces read-only-derived packages for operator-configured RAID 0, byte-identical RAID 1, full-member RAID 5, and full-member Linux MD left-symmetric RAID 6. On 2026-11-24, independent Linux MD references passed exact logical-byte comparison through reconstruction and package verification for RAID 0 (three members), RAID 1 (two matching members), all four RAID 5 rotating parity layouts at three members plus a four-member left-symmetric array, and RAID 6 left-symmetric arrays with four, five, and six members. Start and publish audit events and manifests record the selected parity mapping, and parity mismatches fail closed. Matching parity alone does not prove the selected data order or array layout; operators must validate against array metadata and independent file references. If image data has been written, failed output is retained and the job flushes and verifies its incomplete marker alongside the staging path. Degraded or missing-member reconstruction is not supported. The workflow requires an audited active case and explicit member order/data offset/sector geometry/stripe size, hashes members before and after reconstruction, rereads and hashes the output, publishes without replacing an existing package, registers the image as evidence, and records outcomes in the audit chain. Duplicate member paths are rejected by canonical path and opened-file identity, including Windows hard links; RAID 6 streams member ordering to avoid a per-stripe allocation. Metadata autodetection, degraded arrays, additional RAID 0/1 layouts, other RAID 6 layouts, and physical-array qualification remain open. RAID reconstruction is not production-qualified.
 
 ## Current package evidence
 
-The current source at commit `b18f2b5` passed `npm run validate` on 2026-11-15:
-production frontend build, formatting checks, 63 core tests (3 ignored), 163
-desktop tests (10 ignored), and Clippy with warnings denied for both Rust crates.
-The ignored cases require external fixtures or Windows volume behavior
-unavailable locally. The current isolated native release binary and its
-SHA-256 are recorded in `VERIFICATION.md`. It was not launched, and no installer
-was created. This is compile evidence only, not runtime or distribution
-qualification.
-
-The earlier packaged unsigned Windows x64 executable is
-`DaemonCore-Data-Recovery-Windows-0.1.0-filename-provenance-r40-unsigned.exe`
-(SHA-256 `c84dd31f2c13368fc3b2d15f4ea0f5179d1f527bc132c504490fde1ac68f57c3`).
-The offline NSIS setup is
-`DaemonCore-Data-Recovery-Windows-0.1.0-filename-provenance-offline-setup-unsigned.exe`
-(SHA-256 `8f84c33a1242c481d502d8fd94c3c3c8474c7c482203bfe6e4aed44c921833bc`).
-Both signatures report `NotSigned`. NSIS generated the setup and emitted its
-documented compatibility fallback warning 6040. The installer has not been
-installed or removed. Hashes are listed in the adjacent `SHA256SUMS.txt`
-distribution manifest.
-
-The freshly rebuilt r45 NSIS installer is
-`DaemonCore-Data-Recovery-Windows-0.1.0-downgrade-guard-r45-unsigned.exe`
-(SHA-256 `5d9a6144fc01b9212448eadf0737d5d6ad9ce69abe8f2ce34f72512f2e6ba07c`).
-Its packaged executable has SHA-256
-`c84dd31f2c13368fc3b2d15f4ea0f5179d1f527bc132c504490fde1ac68f57c3` and remains
-unsigned. That exact executable was launched once and its Evidence Vault
-verified the local chain as internally consistent across 27 records; no
-independent chain-head comparison was supplied. Installer install/update/
-uninstall tests remain outstanding.
-
-The previous native-smoke executable at
-`DataRecovery/src-tauri/target/release/daemoncore.pre-nsis.exe` was
-12,969,472 bytes, unsigned, and SHA-256
-`5a7075617143cefc1b74783ba57930f05c6d0086e0ee282d935e0916db73f35d`. That
-exact binary launched: dashboard/logo and Evidence Vault rendered, and the
-local verifier checked 27 internally consistent records. No independent head
-hash was supplied.
-
-The latest Tauri CLI `custom-protocol` build is staged as
-`DaemonCore-Data-Recovery-Windows-0.1.0-ntfs-core-r47-unsigned.exe`
-(12,969,472 bytes, SHA-256
-`3f3e4ae4228a2c3634ee976c0279c2f3e42c32a220ddfd6ab41d2c3fc98cdfb0`,
-Authenticode `NotSigned`). That exact staged file launched after approval; the
-dashboard/logo rendered, Evidence Vault opened, and its verifier checked 27
-internally consistent records with the same chain head. No independent head
-was supplied. The matching offline NSIS setup was not produced: the staged
-`makensis.exe` fails to start on this Windows host with system error 623
-(`ERROR_ILLEGAL_DLL_RELOCATION`).
-The same error was reproduced by the official NSIS 3.13 compiler after its ZIP
-matched the NSIS release dataset's SHA-256. The exact Windows error is defined
-by [Microsoft](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-erref/18d8fbe8-a967-4f1c-ae50-99ca8e491d2d); NSIS 3.13 release provenance is listed by
-[SourceForge](https://sourceforge.net/projects/nsis/files/NSIS%203/3.13/).
-The offline WebView2 runtime itself was fetched and its Authenticode status is
-`Valid` (215,017,168 bytes). No installer was staged, installed, or launched.
-Signing, installer lifecycle, and all other open acceptance criteria remain
-release gates.
-
-The packaging configuration now disallows older application versions, but the
-generated WiX authoring still permits same-version MSI upgrades. Its MSI build
-reports ICE40 (`REINSTALLMODE`), ICE57 (mixed per-user/per-machine shortcut
-registry state), and ICE61 (same-version upgrade range). This MSI is not a
-release candidate. The new NSIS/MSI outputs from this packaging run are also
-unsigned; they have not been installed or launched.
+The current application source was packaged from commit `4a8cdd8`; subsequent
+commits recorded verification results without changing application code. The
+staged standalone executable and offline NSIS installer, their SHA-256 values,
+and Authenticode status are recorded in `VERIFICATION.md`. The staged app was
+launched to the dashboard, but no workflow or installer behavior was exercised.
+Both artifacts are unsigned, and no code-signing tool or private-key certificate
+is available in the local Windows certificate stores. Installer lifecycle,
+clean-account behavior, and packaged workflow checks remain open. Earlier build
+artifacts and their smoke results are historical records in `VERIFICATION.md`;
+they are not the current release candidate.
 
 Test totals and detailed scope are recorded in `VERIFICATION.md`; capability
 boundaries and hard release gates are maintained in `CAPABILITIES.md`. This
