@@ -2334,3 +2334,15 @@ offsets, hashes, deleted-entry counts, candidate-limit status, and the empty
 state. All 17 case-report tests passed, and `npm run validate` passed: 63
 NTFS-core tests, 171 desktop tests (12 ignored), frontend build, formatting,
 and Clippy with warnings denied.
+
+## Physical acquisition interruption marker — 2026-11-24
+
+Physical acquisition now creates and flushes `INCOMPLETE.txt` before its first
+source read. It retains the marker for failed staging and removes it only after
+the image has been flushed and its destination SHA-256 matches the streaming
+acquisition digest. A regression checks for the marker from inside the first
+source read; complete-package verification confirms successful publication
+does not retain the marker. This improves detection of abandoned staging but
+does not resume acquisition or qualify power-loss behavior. All 16 acquisition
+tests passed. `npm run validate` passed: 63 NTFS-core tests, 171 desktop tests
+(12 ignored), frontend build, formatting, and Clippy with warnings denied.

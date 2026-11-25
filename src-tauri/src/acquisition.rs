@@ -23,6 +23,7 @@ const READ_CHUNK: usize = 1024 * 1024;
 const MAX_RETRIES: u8 = 3;
 const MAX_ERROR_RANGES: usize = 100_000;
 const MAX_ERROR_MAP_BYTES: u64 = 128 * 1024 * 1024;
+const INCOMPLETE_MARKER: &str = "UNPUBLISHED ACQUISITION: this staged image was not published as a completed, verified package. Do not treat it as verified evidence or use the recovery package verifier as proof of completeness.\n";
 const IOCTL_DISK_GET_DRIVE_GEOMETRY_EX: u32 = 0x0007_00a0;
 const IOCTL_DISK_GET_LENGTH_INFO: u32 = 0x0007_405c;
 
@@ -552,21 +553,24 @@ impl Drop for StagingDirectory {
                 if let Ok(image) = File::open(&image_path) {
                     let _ = image.sync_all();
                 }
-                if let Ok(mut marker) = OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(path.join("INCOMPLETE.txt"))
-                {
-                    let _ = marker.write_all(
-                        b"UNPUBLISHED ACQUISITION: this staged image was not published as a completed, verified package. Do not treat it as verified evidence or use the recovery package verifier as proof of completeness.\n",
-                    );
-                    let _ = marker.sync_all();
-                }
+                let _ = write_incomplete_marker(&path);
             } else {
                 let _ = fs::remove_dir_all(path);
             }
         }
     }
+}
+
+fn write_incomplete_marker(directory: &Path) -> Result<()> {
+    let mut marker = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(directory.join("INCOMPLETE.txt"))
+        .map_err(err)?;
+    marker
+        .write_all(INCOMPLETE_MARKER.as_bytes())
+        .map_err(err)?;
+    marker.sync_all().map_err(err)
 }
 
 fn write_json(path: &Path, value: &impl Serialize) -> Result<()> {
@@ -701,6 +705,9 @@ fn capture_into(
     }
     fs::create_dir(target.staging_path).map_err(err)?;
     let mut staging = StagingDirectory(Some(target.staging_path.to_path_buf()));
+    // Flush an unmistakable warning before touching the source so abrupt process
+    // termination leaves a discoverable, explicitly unverified staging folder.
+    write_incomplete_marker(target.staging_path)?;
     let mut errors = OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -782,6 +789,10 @@ fn capture_into(
         staging.discard()?;
         return Ok(None);
     }
+    // From here onward the image has been flushed and read back against the
+    // acquisition digest. A crash still cannot make it a package: completion.json
+    // is written last and the verifier rejects its absence.
+    fs::remove_file(target.staging_path.join("INCOMPLETE.txt")).map_err(err)?;
 
     let manifest = AcquisitionManifest {
         tool: "DaemonCore Data Recovery",
@@ -1290,7 +1301,12 @@ mod tests {
                 .next()
                 .ok_or_else(|| std::io::Error::other("staging directory was not created"))??
                 .path();
-            fs::create_dir(staging.join("INCOMPLETE.txt"))?;
+            let marker = fs::read_to_string(staging.join("INCOMPLETE.txt"))?;
+            if !marker.contains("UNPUBLISHED ACQUISITION") {
+                return Err(std::io::Error::other(
+                    "incomplete marker was not durable before source reads",
+                ));
+            }
             Err(std::io::Error::from_raw_os_error(1167))
         }
     }
@@ -1640,7 +1656,7 @@ mod tests {
     }
 
     #[test]
-    fn acquisition_error_reports_when_incomplete_marker_cannot_be_written() {
+    fn incomplete_marker_is_flushed_before_the_first_source_read() {
         let destination = test_directory();
         let source = MarkerBlockedSource {
             destination: destination.clone(),
@@ -1661,7 +1677,7 @@ mod tests {
         .expect("device read failure must retain an unverified staging folder");
 
         assert!(error.contains("source became unavailable"));
-        assert!(error.contains("Could not verify the incomplete marker"));
+        assert!(!error.contains("Could not verify the incomplete marker"));
         let staging = fs::read_dir(&destination)
             .unwrap()
             .next()
