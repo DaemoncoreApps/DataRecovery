@@ -138,6 +138,19 @@ struct CaseReport {
     scope_note: &'static str,
 }
 
+struct ReportScanSummary {
+    kind: &'static str,
+    id: i64,
+    evidence_id: i64,
+    completed_at: String,
+    coverage: String,
+    findings: String,
+    retention: &'static str,
+    source_sha256: String,
+    source_matches_case: bool,
+    snapshot_sha256: String,
+}
+
 #[derive(Serialize)]
 pub struct CaseReportExport {
     case_id: i64,
@@ -646,6 +659,150 @@ fn push_html_text(output: &mut String, value: &str) -> Result<()> {
     Ok(())
 }
 
+fn scan_entry_findings(entries: usize, deleted: usize) -> String {
+    let noun = if entries == 1 { "entry" } else { "entries" };
+    format!("{entries} {noun}; {deleted} marked deleted")
+}
+
+fn report_scan_timestamp_order(left: &str, right: &str) -> std::cmp::Ordering {
+    match (left.parse::<u128>(), right.parse::<u128>()) {
+        (Ok(left), Ok(right)) => left.cmp(&right),
+        (Ok(_), Err(_)) => std::cmp::Ordering::Less,
+        (Err(_), Ok(_)) => std::cmp::Ordering::Greater,
+        (Err(_), Err(_)) => left.cmp(right),
+    }
+}
+
+fn report_scan_summaries(report: &CaseReport) -> Vec<ReportScanSummary> {
+    let mut rows = Vec::with_capacity(
+        report.scans.len()
+            + report.fat32_scans.len()
+            + report.exfat_scans.len()
+            + report.carve_scans.len(),
+    );
+    rows.extend(report.scans.iter().map(|scan| ReportScanSummary {
+        kind: "NTFS",
+        id: scan.id,
+        evidence_id: scan.evidence_id,
+        completed_at: scan.completed_at.clone(),
+        coverage: format!(
+            "{} records read; {} skipped; volume offset {} bytes",
+            scan.records, scan.skipped, scan.volume_offset
+        ),
+        findings: if scan.found == 1 {
+            "1 recovery candidate".into()
+        } else {
+            format!("{} recovery candidates", scan.found)
+        },
+        retention: if scan.limited { "Limited" } else { "Complete" },
+        source_sha256: scan.source_sha256.clone(),
+        source_matches_case: scan.evidence_hash_matches_current_record,
+        snapshot_sha256: scan.snapshot_sha256.clone(),
+    }));
+    rows.extend(report.fat32_scans.iter().map(|scan| ReportScanSummary {
+        kind: "FAT32",
+        id: scan.id,
+        evidence_id: scan.evidence_id,
+        completed_at: scan.completed_at.clone(),
+        coverage: format!(
+            "{} directory records; volume offset {} bytes",
+            scan.records, scan.volume_offset
+        ),
+        findings: scan_entry_findings(scan.found, scan.deleted),
+        retention: "Not recorded",
+        source_sha256: scan.source_sha256.clone(),
+        source_matches_case: scan.evidence_hash_matches_current_record,
+        snapshot_sha256: scan.snapshot_sha256.clone(),
+    }));
+    rows.extend(report.exfat_scans.iter().map(|scan| {
+        let deleted = scan
+            .entries
+            .iter()
+            .filter(|entry| entry.entry.deleted)
+            .count();
+        ReportScanSummary {
+            kind: "exFAT",
+            id: scan.id,
+            evidence_id: scan.evidence_id,
+            completed_at: scan.completed_at.clone(),
+            coverage: format!(
+                "{} directory records; volume offset {} bytes",
+                scan.entries.len(),
+                scan.volume_offset
+            ),
+            findings: scan_entry_findings(scan.entries.len(), deleted),
+            retention: "Not recorded",
+            source_sha256: scan.source_sha256.clone(),
+            source_matches_case: scan.evidence_hash_matches_current_record,
+            snapshot_sha256: scan.snapshot_sha256.clone(),
+        }
+    }));
+    rows.extend(report.carve_scans.iter().map(|scan| ReportScanSummary {
+        kind: "Carving",
+        id: scan.id,
+        evidence_id: scan.evidence_id,
+        completed_at: scan.completed_at.clone(),
+        coverage: format!("{} bytes of source image scanned", scan.scanned_bytes),
+        findings: if scan.candidates.len() == 1 {
+            "1 candidate retained".into()
+        } else {
+            format!("{} candidates retained", scan.candidates.len())
+        },
+        retention: if scan.candidates_limited {
+            "Candidate limit reached"
+        } else {
+            "Complete"
+        },
+        source_sha256: scan.source_sha256.clone(),
+        source_matches_case: scan.evidence_hash_matches_current_record,
+        snapshot_sha256: scan.snapshot_sha256.clone(),
+    }));
+    rows.sort_by(|left, right| {
+        report_scan_timestamp_order(&left.completed_at, &right.completed_at)
+            .then_with(|| left.kind.cmp(right.kind))
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    rows
+}
+
+fn push_scan_history(html: &mut String, report: &CaseReport) -> Result<()> {
+    let scans = report_scan_summaries(report);
+    html.push_str("<section><h2>Scan history</h2><table><thead><tr><th>Snapshot</th><th>Evidence and completion</th><th>Coverage and findings</th><th>Integrity hashes</th></tr></thead><tbody>");
+    if scans.is_empty() {
+        html.push_str("<tr><td colspan=\"4\">No completed scan snapshots are recorded for this case.</td></tr>");
+    }
+    for scan in scans {
+        html.push_str("<tr><td>");
+        push_html_text(html, &format!("{} · #{}", scan.kind, scan.id))?;
+        html.push_str("<br><span class=\"muted\">Retention: ");
+        push_html_text(html, scan.retention)?;
+        html.push_str("</span></td><td>Evidence #");
+        push_html_text(html, &scan.evidence_id.to_string())?;
+        html.push_str("<br>");
+        push_html_text(html, &scan.completed_at)?;
+        html.push_str("</td><td>");
+        push_html_text(html, &scan.coverage)?;
+        html.push_str("<br>");
+        push_html_text(html, &scan.findings)?;
+        html.push_str("</td><td><small>Source SHA-256</small><br><code>");
+        push_html_text(html, &scan.source_sha256)?;
+        html.push_str("</code><br>");
+        push_html_text(
+            html,
+            if scan.source_matches_case {
+                "Matches current case evidence"
+            } else {
+                "Does not match current case evidence"
+            },
+        )?;
+        html.push_str("<br><small>Snapshot SHA-256</small><br><code>");
+        push_html_text(html, &scan.snapshot_sha256)?;
+        html.push_str("</code></td></tr>");
+    }
+    html.push_str("</tbody></table><p class=\"muted\">The source digest is compared with the current case evidence record. Snapshot digests identify the persisted scan result. The complete snapshots are in the JSON appendix.</p></section>");
+    Ok(())
+}
+
 fn push_operation_detail(html: &mut String, label: &str, value: &serde_json::Value) -> Result<()> {
     let display = value
         .as_str()
@@ -672,14 +829,14 @@ fn push_operation_history(html: &mut String, report: &CaseReport) -> Result<()> 
         .collect::<Vec<_>>();
     operations.sort_by_key(|operation| operation.audit_record_id);
 
-    html.push_str("<section><h2>Operation history</h2><table><thead><tr><th>Audit record</th><th>Time</th><th>Operation</th><th>Record SHA-256</th><th>Key details</th></tr></thead><tbody>");
+    html.push_str("<section><h2>Operation history</h2><table><thead><tr><th>Audit record and time</th><th>Operation</th><th>Record SHA-256</th><th>Key details</th></tr></thead><tbody>");
     if operations.is_empty() {
-        html.push_str("<tr><td colspan=\"5\">No imaging, RAID, or recovery operations are recorded for this case.</td></tr>");
+        html.push_str("<tr><td colspan=\"4\">No imaging, RAID, or recovery operations are recorded for this case.</td></tr>");
     }
     for operation in operations {
         html.push_str("<tr><td>");
         push_html_text(html, &operation.audit_record_id.to_string())?;
-        html.push_str("</td><td>");
+        html.push_str("<br>");
         push_html_text(html, &operation.timestamp)?;
         html.push_str("</td><td>");
         push_html_text(html, &operation.event)?;
@@ -825,6 +982,7 @@ fn encode_html_report(report: &CaseReport) -> Result<Vec<u8>> {
         html.push_str("</td></tr>");
     }
     html.push_str("</tbody></table></section>");
+    push_scan_history(&mut html, report)?;
     push_operation_history(&mut html, report)?;
     html.push_str("<section><h2>Audit status</h2><p>Chain valid: ");
     push_html_text(&mut html, &report.audit.chain_valid.to_string())?;
@@ -1366,6 +1524,18 @@ mod tests {
     }
 
     #[test]
+    fn report_scan_history_sorts_unix_millisecond_timestamps_numerically() {
+        assert_eq!(
+            report_scan_timestamp_order("999", "1000"),
+            std::cmp::Ordering::Less
+        );
+        assert_eq!(
+            report_scan_timestamp_order("bad timestamp", "999"),
+            std::cmp::Ordering::Greater
+        );
+    }
+
+    #[test]
     fn report_scan_preflight_counts_all_scan_families_together() {
         let db = populated_case();
         let source_sha256 = "b".repeat(64);
@@ -1484,6 +1654,8 @@ mod tests {
         assert!(html.contains("&lt;img src=x onerror=alert(1)&gt; &amp; &quot;case&quot;"));
         assert!(!html.contains("<img src=x onerror=alert(1)>"));
         assert!(html.contains("default-src 'none'; style-src 'unsafe-inline'"));
+        assert!(html.contains("Scan history"));
+        assert!(html.contains("No completed scan snapshots are recorded"));
         assert!(html.contains("Operation history"));
         assert!(html.contains("No imaging, RAID, or recovery operations are recorded"));
         assert!(html.contains("Complete machine-readable report data (JSON)"));
@@ -1551,6 +1723,12 @@ mod tests {
         assert_eq!(report.scans[0].candidates[0].name, "recovered.bin");
         assert_eq!(report.scans[0].source_sha256, source_sha256);
         assert!(report.scans[0].evidence_hash_matches_current_record);
+        let html = String::from_utf8(encode_html_report(&report).unwrap()).unwrap();
+        assert!(html.contains("NTFS · #1"));
+        assert!(html.contains("100 records read; 3 skipped; volume offset 0 bytes"));
+        assert!(html.contains("1 recovery candidate"));
+        assert!(html.contains(&source_sha256));
+        assert!(html.contains(&report.scans[0].snapshot_sha256));
 
         let root = std::env::current_dir()
             .unwrap()
@@ -1720,6 +1898,11 @@ mod tests {
         assert!(report.carve_scans[0].evidence_hash_matches_current_record);
         assert_eq!(report.carve_scans[0].candidates.len(), 1);
         assert_eq!(report.carve_scans[0].candidates[0].offset, 128);
+        let html = String::from_utf8(encode_html_report(&report).unwrap()).unwrap();
+        assert!(html.contains("Carving · #1"));
+        assert!(html.contains("4096 bytes of source image scanned"));
+        assert!(html.contains("1 candidate retained"));
+        assert!(html.contains("Complete"));
         let encoded: serde_json::Value =
             serde_json::from_slice(&encode_report(&report).unwrap()).unwrap();
         assert_eq!(encoded["format"], "daemoncore-case-report-v6");
@@ -1775,6 +1958,10 @@ mod tests {
             540_672
         );
         assert!(report.fat32_scans[0].evidence_hash_matches_current_record);
+        let html = String::from_utf8(encode_html_report(&report).unwrap()).unwrap();
+        assert!(html.contains("FAT32 · #1"));
+        assert!(html.contains("1 entry; 1 marked deleted"));
+        assert!(html.contains("Not recorded"));
         let encoded = encode_report(&report).unwrap();
         let json: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
         assert_eq!(json["format"], "daemoncore-case-report-v6");
@@ -1830,6 +2017,10 @@ mod tests {
         assert_eq!(report.exfat_scans.len(), 1);
         assert_eq!(report.exfat_scans[0].entries[0].entry.name, "ROOT.TXT");
         assert!(report.exfat_scans[0].evidence_hash_matches_current_record);
+        let html = String::from_utf8(encode_html_report(&report).unwrap()).unwrap();
+        assert!(html.contains("exFAT · #1"));
+        assert!(html.contains("1 directory records; volume offset 0 bytes"));
+        assert!(html.contains("1 entry; 0 marked deleted"));
         let encoded: serde_json::Value =
             serde_json::from_slice(&encode_report(&report).unwrap()).unwrap();
         assert_eq!(encoded["format"], "daemoncore-case-report-v6");

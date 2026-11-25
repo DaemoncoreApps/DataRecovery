@@ -2322,3 +2322,15 @@ HTML text escaper. Regressions cover cancelled/partial carving outcomes,
 hostile path text, empty operation history, and JSON appendix retention.
 `npm run validate` passed: frontend build, formatting, 63 NTFS-core tests, 170
 desktop tests (12 ignored), and Clippy with warnings denied.
+
+## Printable report scan history — 2026-11-24
+
+The HTML report now summarizes NTFS, FAT32, exFAT, and carving snapshots in a
+chronological table. Each row shows its evidence ID, completion time, coverage,
+findings, source digest and current-case match, and persisted snapshot digest.
+Retention status is shown where recorded and explicitly labeled when FAT32 or
+exFAT did not persist that flag. Format-specific report tests cover counts,
+offsets, hashes, deleted-entry counts, candidate-limit status, and the empty
+state. All 17 case-report tests passed, and `npm run validate` passed: 63
+NTFS-core tests, 171 desktop tests (12 ignored), frontend build, formatting,
+and Clippy with warnings denied.
