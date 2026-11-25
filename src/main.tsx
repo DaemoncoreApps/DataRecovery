@@ -625,7 +625,7 @@ function App() {
         </>
       ) : page === "Disk Imaging" ? (
         <>
-          <DiskImagingPanel job={job} busy={busy} canAcquire={activeCaseId !== null && activeCaseAuditMatched} run={run} onSource={setSource} onJob={setJob} />
+          <DiskImagingPanel key={activeCaseId ?? "no-active-case"} job={job} busy={busy} canAcquire={activeCaseId !== null && activeCaseAuditMatched} run={run} onSource={setSource} onJob={setJob} />
           {sourcePanel}
           {jobPanel}
         </>

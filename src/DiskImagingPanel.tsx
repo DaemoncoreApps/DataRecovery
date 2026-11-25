@@ -27,6 +27,20 @@ const busNames: Record<number, string> = {
   20: "NVMe over Fabrics",
 };
 
+function attestationKey(device: PhysicalDevice): string {
+  return JSON.stringify([
+    device.number,
+    device.size_bytes,
+    device.bytes_per_sector,
+    device.vendor,
+    device.product,
+    device.revision,
+    device.serial_number,
+    device.bus_type,
+    device.identity_error,
+  ]);
+}
+
 interface Props {
   job: Job;
   busy: boolean;
@@ -39,7 +53,7 @@ interface Props {
 export function DiskImagingPanel({ job, busy, canAcquire, run, onSource, onJob }: Props) {
   const [devices, setDevices] = useState<PhysicalDevice[]>([]);
   const [probeFailures, setProbeFailures] = useState<PhysicalDeviceInventory["failures"]>([]);
-  const [attested, setAttested] = useState(false);
+  const [attestedDevices, setAttestedDevices] = useState<Set<string>>(() => new Set());
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
   const [verification, setVerification] = useState<RecoveryExportVerification | null>(null);
@@ -48,6 +62,7 @@ export function DiskImagingPanel({ job, busy, canAcquire, run, onSource, onJob }
 
   const refresh = async () => {
     if (!native) return;
+    setAttestedDevices(new Set());
     setLoading(true);
     setMessage("");
     setDevices([]);
@@ -67,29 +82,39 @@ export function DiskImagingPanel({ job, busy, canAcquire, run, onSource, onJob }
     void refresh();
   }, []);
 
-  const acquire = (device: PhysicalDevice) =>
-    run(async () => {
+  const acquire = (device: PhysicalDevice) => {
+    if (!attestedDevices.has(attestationKey(device))) {
+      setMessage("Attest to this exact device after confirming it is offline and protected by a validated hardware write blocker.");
+      return;
+    }
+    return run(async () => {
       setMessage("");
       setVerification(null);
       await command<boolean>("acquire_physical_device", {
         expectedDevice: device,
-        hardwareWriteBlockerAttested: attested,
+        hardwareWriteBlockerAttested: true,
       });
       onJob(await command<Job>("job_status"));
       onSource(await command<Source | null>("source_status"));
     });
+  };
 
-  const resume = (device: PhysicalDevice) =>
-    run(async () => {
+  const resume = (device: PhysicalDevice) => {
+    if (!attestedDevices.has(attestationKey(device))) {
+      setMessage("Attest to this exact device after confirming it is offline and protected by a validated hardware write blocker.");
+      return;
+    }
+    return run(async () => {
       setMessage("");
       setVerification(null);
       await command<boolean>("resume_physical_device_acquisition", {
         expectedDevice: device,
-        hardwareWriteBlockerAttested: attested,
+        hardwareWriteBlockerAttested: true,
       });
       onJob(await command<Job>("job_status"));
       onSource(await command<Source | null>("source_status"));
     });
+  };
 
   return (
     <>
@@ -123,23 +148,38 @@ export function DiskImagingPanel({ job, busy, canAcquire, run, onSource, onJob }
             {devices.length ? (
               <div className="acquisitionDeviceList">
                 {devices.map((device) => (
-                  <div className="acquisitionDevice" key={device.number}>
+                  <div className="acquisitionDevice" key={attestationKey(device)}>
                     <div>
                       <strong>{[device.vendor, device.product].filter(Boolean).join(" ") || "Unknown device"} · PhysicalDrive {device.number}</strong>
                       <span>{bytes(device.size_bytes)} · {device.bytes_per_sector.toLocaleString()} bytes/sector</span>
                       <span>Serial: {device.serial_number || "not reported by device"}{device.revision ? ` · Rev ${device.revision}` : ""}{device.bus_type !== null ? ` · ${busNames[device.bus_type] || `Bus ${device.bus_type}`}` : ""}</span>
                       {device.identity_error && <span className="muted">Stable device identity unavailable: {device.identity_error}</span>}
+                      <label className="checkLabel acquisitionAttestation">
+                        <input
+                          type="checkbox"
+                          checked={attestedDevices.has(attestationKey(device))}
+                          onChange={(event) => setAttestedDevices((current) => {
+                            const next = new Set(current);
+                            if (event.target.checked) next.add(attestationKey(device));
+                            else next.delete(attestationKey(device));
+                            return next;
+                          })}
+                          disabled={operationRunning || !canAcquire}
+                        />
+                        <ShieldCheck size={15} />
+                        I verified PhysicalDrive {device.number} is offline and protected by a validated hardware write blocker.
+                      </label>
                     </div>
                     <div className="actions">
                       <button
                         className="primary"
-                        disabled={operationRunning || !canAcquire || !attested}
+                        disabled={operationRunning || !canAcquire || !attestedDevices.has(attestationKey(device))}
                         onClick={() => acquire(device)}
                       >
                         Acquire image
                       </button>
                       <button
-                        disabled={operationRunning || !canAcquire || !attested}
+                        disabled={operationRunning || !canAcquire || !attestedDevices.has(attestationKey(device))}
                         onClick={() => resume(device)}
                         title="Select a matching incomplete acquisition folder and revalidate its saved bytes before continuing"
                       >
@@ -166,16 +206,6 @@ export function DiskImagingPanel({ job, busy, canAcquire, run, onSource, onJob }
                 <p>Resolve the listed access or device issue, then refresh before starting acquisition.</p>
               </div>
             )}
-            <label className="checkLabel acquisitionAttestation">
-              <input
-                type="checkbox"
-                checked={attested}
-                onChange={(event) => setAttested(event.target.checked)}
-                disabled={operationRunning}
-              />
-              <ShieldCheck size={15} />
-              I verified this source is offline and protected by a validated hardware write blocker.
-            </label>
             {!canAcquire && <p className="muted">Select or reconfirm an audit-matched case before acquisition.</p>}
           </>
         )}

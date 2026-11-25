@@ -1,5 +1,19 @@
 # Recovery validation — 2026-10-31
 
+## Device-specific hardware write-blocker attestation — 2026-11-24
+
+The physical acquisition screen now requires a separate offline-source and
+hardware-write-blocker attestation for each reported device descriptor. The
+descriptor includes the physical-drive number, capacity, sector size, vendor,
+product, revision, serial, bus type, and identity-query status. Refreshing the
+device inventory clears prior attestations, and changing the active case
+remounts the panel and clears them. Acquire and resume handlers also check that
+the current device descriptor is attested before invoking the native command;
+the native layer independently requires the attestation flag and revalidates
+the selected device descriptor. `npm run validate` passes, including the
+TypeScript production build. This verifies compilation and native regression
+coverage, not a physical-device UI session or hardware write-blocker behavior.
+
 ## Hash completion under poisoned job status — 2026-11-24
 
 The hash worker previously fell back to a default job record if its status mutex
