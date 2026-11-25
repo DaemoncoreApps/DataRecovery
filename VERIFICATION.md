@@ -2292,3 +2292,14 @@ open. The generalized regression also passed against the existing
 three-member left-asymmetric reference. `npm run validate` passed after these
 changes: frontend build, formatting, 63 NTFS core tests, 169 desktop tests
 (12 ignored), and Clippy with warnings denied.
+
+## Interrupted large carving export — 2026-11-24
+
+Added a regression that requests cancellation after the first 1 MiB of a
+large carved PNG is staged. The active `.partial` output is removed, the
+inventory records the selected candidate as failed, and the export returns a
+cancelled package. The native recovery-package verifier accepts it as
+`partial`, with zero exported files and one failed record. The focused Windows
+test passed. `npm run validate` passed afterward: frontend build, formatting,
+63 NTFS-core tests, 170 desktop tests (12 ignored), and Clippy with warnings
+denied. Abrupt process termination and resume remain unqualified.

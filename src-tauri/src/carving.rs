@@ -2390,4 +2390,73 @@ mod tests {
         assert!(crate::recovery_verify::verify_package(Path::new(&package.directory)).is_err());
         fs::remove_dir_all(root).unwrap();
     }
+
+    #[test]
+    fn cancelling_large_carved_export_removes_partial_output_and_verifies_partial_package() {
+        let mut png = valid_png();
+        let payload = vec![0x5a; READ_CHUNK + 17];
+        let kind = *b"npAD";
+        let mut crc = crc32fast::Hasher::new();
+        crc.update(&kind);
+        crc.update(&payload);
+        let mut chunk = Vec::with_capacity(payload.len() + 12);
+        chunk.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+        chunk.extend_from_slice(&kind);
+        chunk.extend_from_slice(&payload);
+        chunk.extend_from_slice(&crc.finalize().to_be_bytes());
+        png.splice(8 + 25..8 + 25, chunk);
+
+        let mut image = vec![0x11; 23];
+        image.extend_from_slice(&png);
+        let expected_source_sha256 = format!("{:x}", Sha256::digest(&image));
+        let source = TestSource(image);
+        let scan = scan_supported_files(&source, &AtomicBool::new(false), |_, _| {})
+            .unwrap()
+            .unwrap();
+        assert_eq!(scan.candidates.len(), 1);
+        assert!(scan.candidates[0].length > READ_CHUNK as u64);
+
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/t");
+        fs::create_dir_all(&root).unwrap();
+        let cancel = AtomicBool::new(false);
+        let package = export_selected(
+            &source,
+            &scan.candidates,
+            &root,
+            ExportIdentity {
+                case_id: 4,
+                evidence_record_id: 9,
+                scan_session_id: 12,
+                source_id: 7,
+                source_path: "synthetic.raw",
+                source_sha256: &expected_source_sha256,
+            },
+            &cancel,
+            |processed, _| {
+                if processed > source.len() {
+                    cancel.store(true, Ordering::SeqCst);
+                }
+            },
+        )
+        .unwrap();
+
+        assert!(package.cancelled);
+        assert_eq!(package.exported, 0);
+        assert_eq!(package.failed, 1);
+        let directory = Path::new(&package.directory);
+        assert!(!directory
+            .join(format!(
+                ".carved-{:016x}.png.partial",
+                scan.candidates[0].offset
+            ))
+            .exists());
+        let verification = crate::recovery_verify::verify_package(directory)
+            .expect("cancelled carving package should remain verifiable as partial");
+        assert_eq!(verification.state, "partial");
+        assert!(verification.cancelled);
+        assert_eq!(verification.exported, 0);
+        assert_eq!(verification.failed, 1);
+
+        fs::remove_dir_all(&root).unwrap();
+    }
 }
