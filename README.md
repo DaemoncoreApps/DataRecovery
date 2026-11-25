@@ -25,8 +25,9 @@ Rust test suite and Clippy with warnings denied as one repeatable local gate.
 `npm run package:windows` runs that gate, then builds the standalone executable
 and offline NSIS installer in a fresh isolated
 `src-tauri/target/p<revision><unique build ID>` directory and writes a
-`SHA256SUMS.txt` manifest. It requires a clean Git worktree and reports the full
-source commit with the artifact hashes. A fresh directory keeps builds from
+`SHA256SUMS.txt` manifest plus a `BUILD-INFO.json` record containing the full
+source commit, validation mode, artifact hashes, sizes, and Authenticode status.
+It requires a clean Git worktree. A fresh directory keeps builds from
 trying to replace an executable that may still be running while keeping Windows
 linker paths short.
 The build downloads Tauri-pinned NSIS tools and the WebView2 offline runtime, so

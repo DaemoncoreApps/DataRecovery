@@ -72,24 +72,45 @@ try {
     [System.Text.UTF8Encoding]::new($false)
   )
 
+  $appSignature = (Get-AuthenticodeSignature -LiteralPath $appPath).Status.ToString()
+  $setupSignature = (Get-AuthenticodeSignature -LiteralPath $setupPath).Status.ToString()
   $artifacts = @(
     [pscustomobject]@{
-      path = $appPath
+      name = "daemoncore.exe"
       bytes = (Get-Item -LiteralPath $appPath).Length
       sha256 = $appHash
-      authenticode = (Get-AuthenticodeSignature -LiteralPath $appPath).Status.ToString()
+      authenticode = $appSignature
     },
     [pscustomobject]@{
-      path = $setupPath
+      name = $setupFiles[0].Name
       bytes = (Get-Item -LiteralPath $setupPath).Length
       sha256 = $setupHash
-      authenticode = (Get-AuthenticodeSignature -LiteralPath $setupPath).Status.ToString()
+      authenticode = $setupSignature
     }
   )
+  $buildInfoPath = Join-Path $releaseDirectory "BUILD-INFO.json"
+  $validationMode = if ($SkipValidation) { "skipped_prevalidated_revision" } else { "npm_run_validate_passed" }
+  $buildInfo = [pscustomobject]@{
+    format = "daemoncore-windows-build-info-v1"
+    sourceRevision = $buildRevision
+    sourceWorktreeClean = $true
+    validation = $validationMode
+    generatedUtc = [DateTime]::UtcNow.ToString("o")
+    checksumManifest = "SHA256SUMS.txt"
+    artifacts = $artifacts
+  }
+  $buildInfoJson = $buildInfo | ConvertTo-Json -Depth 5
+  [System.IO.File]::WriteAllText(
+    $buildInfoPath,
+    $buildInfoJson + [Environment]::NewLine,
+    [System.Text.UTF8Encoding]::new($false)
+  )
+
   [pscustomobject]@{
     output = $releaseDirectory
     sourceRevision = $buildRevision
     checksumManifest = $checksumManifest
+    buildInfo = $buildInfoPath
     artifacts = $artifacts
     installed = $false
   } | ConvertTo-Json -Depth 4
