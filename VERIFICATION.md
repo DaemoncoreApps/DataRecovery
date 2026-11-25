@@ -2225,6 +2225,16 @@ validates the source dependency graph. Current Windows package evidence and
 signing status are recorded below; installer lifecycle and forensic release
 qualification remain open.
 
+The audit was refreshed again on 2026-11-24 against the updated RustSec database
+(1,567 advisories). `npm run audit:dependencies` completed successfully with
+zero production npm vulnerabilities and zero Rust vulnerabilities in either
+lockfile. Cargo reported seven allowed informational warnings: unmaintained
+`chrono`, `proc-macro-error`, `zbus_names`, `zvariant`, and `zvariant_derive`,
+unsound GTK `glib`, and yanked `async-executor`. `cargo tree` reverse-dependency
+checks for all seven returned no Windows MSVC target dependencies; the GTK
+warning therefore remains relevant to Linux builds but is not linked into the
+Windows application. No advisory was ignored or suppressed.
+
 ## Windows package rebuild from patched dependencies — 2026-11-24
 
 `pwsh -NoProfile -File scripts/package-windows.ps1 -SkipValidation` completed
