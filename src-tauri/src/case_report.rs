@@ -1851,18 +1851,35 @@ mod tests {
             .to_string(),
         )
         .unwrap();
+        audit(
+            &db,
+            "carve_export_finished",
+            &serde_json::json!({
+                "case_id": 1,
+                "source_sha256": "b".repeat(64),
+                "summary": {
+                    "cancelled": true,
+                    "exported": 0,
+                    "failed": 1,
+                    "directory": "D:/case/carved-partial"
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
 
         let report = case_report_from(&db, 1).unwrap();
-        assert_eq!(report.recovery_operations.len(), 2);
+        assert_eq!(report.recovery_operations.len(), 3);
         assert_eq!(
             report.recovery_operations[0].event,
             "recovery_export_finished"
         );
         assert_eq!(report.recovery_operations[1].event, "carve_export_finished");
+        assert_eq!(report.recovery_operations[2].event, "carve_export_finished");
         let json: serde_json::Value =
             serde_json::from_slice(&encode_report(&report).unwrap()).unwrap();
         assert_eq!(json["format"], "daemoncore-case-report-v6");
-        assert_eq!(json["recovery_operations"].as_array().unwrap().len(), 2);
+        assert_eq!(json["recovery_operations"].as_array().unwrap().len(), 3);
         assert_eq!(
             json["recovery_operations"][0]["record_sha256"]
                 .as_str()
@@ -1870,6 +1887,17 @@ mod tests {
                 .len(),
             64
         );
+        assert_eq!(
+            json["recovery_operations"][2]["payload"]["summary"]["cancelled"],
+            true
+        );
+        assert_eq!(
+            json["recovery_operations"][2]["payload"]["summary"]["failed"],
+            1
+        );
+        let html = String::from_utf8(encode_html_report(&report).unwrap()).unwrap();
+        assert!(html.contains("carved-partial"));
+        assert!(html.contains("&quot;cancelled&quot;: true"));
     }
 
     #[test]

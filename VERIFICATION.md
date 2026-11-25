@@ -2303,3 +2303,11 @@ cancelled package. The native recovery-package verifier accepts it as
 test passed. `npm run validate` passed afterward: frontend build, formatting,
 63 NTFS-core tests, 170 desktop tests (12 ignored), and Clippy with warnings
 denied. Abrupt process termination and resume remain unqualified.
+
+## Partial carving status in case reports — 2026-11-24
+
+The case-report integration regression now includes a cancelled carving export
+with one failed record. It verifies that the case-scoped JSON report preserves
+`cancelled: true` and the failed count, and that the escaped HTML report's
+complete JSON appendix preserves the same status and output location. The
+focused report test and formatting check passed.
