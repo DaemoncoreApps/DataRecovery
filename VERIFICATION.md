@@ -2264,3 +2264,21 @@ desktop tests (12 ignored), frontend build, formatting, and Clippy with
 warnings denied. These references cover one member count/layout per level;
 they do not qualify RAID metadata discovery, degraded arrays, or physical
 arrays.
+
+## Four-member RAID 5 layout references — 2026-11-24
+
+Extended the Linux MD generator and native reconstruction regression to cover
+four members in addition to the prior three-member references. Generated
+left-asymmetric, right-asymmetric, left-symmetric, and right-symmetric
+four-member arrays with 64 KiB chunks, 8 MiB data regions per member, and
+metadata 1.0. Linux MD wrote and reread each 24 MiB logical image; the expected
+SHA-256 was
+`dbd6b6d70680deb0a904c4c755d31c134668f86f15c1e02edf574fc8670cd7c4` for all
+four layouts. Each generator run verified its member/image `SHA256SUMS`, and
+the Windows production-path reconstruction, output-byte comparison, and
+package-verifier test passed for all four layouts. The production regression
+now supports the pinned three- and four-member widths; broader widths remain
+open. The generalized regression also passed against the existing
+three-member left-asymmetric reference. `npm run validate` passed after these
+changes: frontend build, formatting, 63 NTFS core tests, 169 desktop tests
+(12 ignored), and Clippy with warnings denied.

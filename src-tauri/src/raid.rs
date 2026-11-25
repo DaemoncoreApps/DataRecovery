@@ -1641,20 +1641,25 @@ mod tests {
         let fixture = std::env::var_os("DAEMONCORE_RAID5_REFERENCE_DIR")
             .map(PathBuf::from)
             .expect("reference fixture directory is required");
-        let member_paths =
-            ["member0.raw", "member1.raw", "member2.raw"].map(|name| fixture.join(name));
+        let member_paths: Vec<PathBuf> = (0..16)
+            .map(|index| fixture.join(format!("member{index}.raw")))
+            .take_while(|path| path.is_file())
+            .collect();
+        assert!((3..=4).contains(&member_paths.len()));
         let expected = fs::read(fixture.join("logical-image.raw")).unwrap();
-        assert_eq!(expected.len(), 16 * 1024 * 1024);
-        assert_eq!(
-            format!("{:x}", Sha256::digest(&expected)),
-            "ae6018b38e30a433a0505035cf4df582da77c7ef92c269245232686e541e97c8"
-        );
+        assert_eq!(expected.len(), (member_paths.len() - 1) * 8 * 1024 * 1024);
+        let expected_sha256 = match (member_paths.len(), expected.len()) {
+            (3, 16_777_216) => "ae6018b38e30a433a0505035cf4df582da77c7ef92c269245232686e541e97c8",
+            (4, 25_165_824) => "dbd6b6d70680deb0a904c4c755d31c134668f86f15c1e02edf574fc8670cd7c4",
+            _ => panic!("pin an independent logical image hash for this member width"),
+        };
+        assert_eq!(format!("{:x}", Sha256::digest(&expected)), expected_sha256);
         assert_eq!(
             member_paths
                 .iter()
                 .map(|path| fs::metadata(path).unwrap().len())
                 .collect::<Vec<_>>(),
-            vec![8 * 1024 * 1024; 3]
+            vec![8 * 1024 * 1024; member_paths.len()]
         );
         let raid5_layout = match fs::read_to_string(fixture.join("layout.txt"))
             .unwrap()

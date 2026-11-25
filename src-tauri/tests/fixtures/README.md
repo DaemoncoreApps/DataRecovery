@@ -128,19 +128,21 @@ cargo test --manifest-path src-tauri/Cargo.toml --offline raid::tests::reconstru
 
 ## Linux MD RAID 5 reference array
 
-`make-raid5-reference-fixture.sh OUTPUT_DIR [LAYOUT]` creates three
+`make-raid5-reference-fixture.sh OUTPUT_DIR [LAYOUT] [MEMBER_COUNT]` creates
 loop-backed member devices and uses Linux MD `mdadm` with 64 KiB chunks. The
 layout may be left-asymmetric, right-asymmetric, left-symmetric, or
-right-symmetric (default: left-symmetric). It writes a deterministic 16 MiB
-byte sequence through the active array, reads it back from the array device,
-stops the array, saves the first 8 MiB of each component as a raw member image,
-and records the layout and SHA-256 manifest. The array metadata is outside
-those captured data extents; this validates member ordering, rotating parity,
-and logical byte ordering, not metadata discovery or offset inference. The
-native ignored test reads the fixture layout, reconstructs it through the
-production path, and compares all output bytes to the array-device reference.
-Run the generator with each layout and set `DAEMONCORE_RAID5_REFERENCE_DIR` to
-the resulting absolute fixture path before running:
+right-symmetric (default: left-symmetric); member count defaults to three and
+can be set to three or four. Each member contributes 8 MiB. The script writes a
+deterministic logical byte sequence through the active array, reads it back
+from the array device, stops the array, saves each component as a raw member
+image, and records the layout and SHA-256 manifest. The array metadata is
+outside those captured data extents; this validates member ordering, rotating
+parity, and logical byte ordering, not metadata discovery or offset inference.
+The native ignored test reads all sequential member files and the fixture
+layout, reconstructs them through the production path, and compares all output
+bytes to the array-device reference. References now cover three and four
+members for all four layouts. Set `DAEMONCORE_RAID5_REFERENCE_DIR` to a fixture
+path before running:
 
 ```powershell
 cargo test --manifest-path src-tauri/Cargo.toml --offline raid::tests::reconstructs_independent_linux_md_raid5_reference_array -- --ignored --exact
