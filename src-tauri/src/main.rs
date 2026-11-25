@@ -1712,6 +1712,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             acquisition::list_physical_devices,
             acquisition::acquire_physical_device,
+            acquisition::resume_physical_device_acquisition,
             raid::pick_raid_members,
             raid::reconstruct_raid,
             open_image,

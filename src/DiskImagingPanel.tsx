@@ -79,6 +79,18 @@ export function DiskImagingPanel({ job, busy, canAcquire, run, onSource, onJob }
       onSource(await command<Source | null>("source_status"));
     });
 
+  const resume = (device: PhysicalDevice) =>
+    run(async () => {
+      setMessage("");
+      setVerification(null);
+      await command<boolean>("resume_physical_device_acquisition", {
+        expectedDevice: device,
+        hardwareWriteBlockerAttested: attested,
+      });
+      onJob(await command<Job>("job_status"));
+      onSource(await command<Source | null>("source_status"));
+    });
+
   return (
     <>
       <section className="panel acquisitionPanel">
@@ -118,13 +130,22 @@ export function DiskImagingPanel({ job, busy, canAcquire, run, onSource, onJob }
                       <span>Serial: {device.serial_number || "not reported by device"}{device.revision ? ` · Rev ${device.revision}` : ""}{device.bus_type !== null ? ` · ${busNames[device.bus_type] || `Bus ${device.bus_type}`}` : ""}</span>
                       {device.identity_error && <span className="muted">Stable device identity unavailable: {device.identity_error}</span>}
                     </div>
-                    <button
-                      className="primary"
-                      disabled={operationRunning || !canAcquire || !attested}
-                      onClick={() => acquire(device)}
-                    >
-                      Acquire image
-                    </button>
+                    <div className="actions">
+                      <button
+                        className="primary"
+                        disabled={operationRunning || !canAcquire || !attested}
+                        onClick={() => acquire(device)}
+                      >
+                        Acquire image
+                      </button>
+                      <button
+                        disabled={operationRunning || !canAcquire || !attested}
+                        onClick={() => resume(device)}
+                        title="Select a matching incomplete acquisition folder and revalidate its saved bytes before continuing"
+                      >
+                        Resume interrupted image
+                      </button>
+                    </div>
                   </div>
                 ))}
               </div>

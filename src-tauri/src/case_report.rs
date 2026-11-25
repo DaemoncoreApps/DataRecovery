@@ -301,6 +301,7 @@ fn case_imaging_and_raid_operations(
 ) -> Result<Vec<ReportOperation>> {
     const EVENTS: &[&str] = &[
         "physical_device_acquisition_started",
+        "physical_device_acquisition_resume_started",
         "physical_device_acquisition_published",
         "physical_device_acquisition_cancelled",
         "physical_device_acquisition_failed",
@@ -2104,6 +2105,13 @@ mod tests {
         let db = populated_case();
         audit(
             &db,
+            "physical_device_acquisition_resume_started",
+            &serde_json::json!({"case_id":1,"device_number":7,"resume_directory":"D:/case/incomplete"})
+                .to_string(),
+        )
+        .unwrap();
+        audit(
+            &db,
             "physical_device_acquisition_published",
             &serde_json::json!({
                 "case_id":1,
@@ -2146,21 +2154,25 @@ mod tests {
         .unwrap();
 
         let report = case_report_from(&db, 1).unwrap();
-        assert_eq!(report.imaging_and_raid_operations.len(), 4);
+        assert_eq!(report.imaging_and_raid_operations.len(), 5);
         assert_eq!(
             report.imaging_and_raid_operations[0].event,
-            "physical_device_acquisition_published"
+            "physical_device_acquisition_resume_started"
         );
         assert_eq!(
             report.imaging_and_raid_operations[1].event,
-            "physical_device_acquisition_cancelled"
+            "physical_device_acquisition_published"
         );
         assert_eq!(
             report.imaging_and_raid_operations[2].event,
-            "physical_device_acquisition_finalization_failed"
+            "physical_device_acquisition_cancelled"
         );
         assert_eq!(
             report.imaging_and_raid_operations[3].event,
+            "physical_device_acquisition_finalization_failed"
+        );
+        assert_eq!(
+            report.imaging_and_raid_operations[4].event,
             "raid_reconstruction_started"
         );
         let json: serde_json::Value =
@@ -2171,10 +2183,10 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .len(),
-            4
+            5
         );
         assert_eq!(
-            json["imaging_and_raid_operations"][0]["payload"]["image_sha256"],
+            json["imaging_and_raid_operations"][1]["payload"]["image_sha256"],
             "d".repeat(64)
         );
     }

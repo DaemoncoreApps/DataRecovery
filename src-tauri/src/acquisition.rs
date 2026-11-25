@@ -23,6 +23,8 @@ const READ_CHUNK: usize = 1024 * 1024;
 const MAX_RETRIES: u8 = 3;
 const MAX_ERROR_RANGES: usize = 100_000;
 const MAX_ERROR_MAP_BYTES: u64 = 128 * 1024 * 1024;
+const ACQUISITION_CHECKPOINT_INTERVAL: u64 = 16 * 1024 * 1024;
+const MAX_CHECKPOINT_LOG_BYTES: u64 = 64 * 1024 * 1024;
 const INCOMPLETE_MARKER: &str = "UNPUBLISHED ACQUISITION: this staged image was not published as a completed, verified package. Do not treat it as verified evidence or use the recovery package verifier as proof of completeness.\n";
 const IOCTL_DISK_GET_DRIVE_GEOMETRY_EX: u32 = 0x0007_00a0;
 const IOCTL_DISK_GET_LENGTH_INFO: u32 = 0x0007_405c;
@@ -390,12 +392,39 @@ fn collect_physical_device_inventory(
     inventory
 }
 
-#[derive(Serialize)]
+#[derive(Deserialize, Serialize)]
 struct ReadErrorRange {
     offset: u64,
     length: u64,
     attempts: u8,
     error: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+struct AcquisitionCheckpointState {
+    schema_version: u32,
+    case_id: i64,
+    created_unix_ns: String,
+    device: PhysicalDevice,
+    committed_bytes: u64,
+    read_error_bytes: u64,
+    read_error_ranges: usize,
+    read_error_sha256: String,
+}
+
+#[derive(Deserialize, Serialize)]
+struct AcquisitionCheckpointRecord {
+    state: AcquisitionCheckpointState,
+    previous_sha256: Option<String>,
+    record_sha256: String,
+}
+
+struct ValidatedAcquisitionResume {
+    state: AcquisitionCheckpointState,
+    previous_sha256: String,
+    valid_log_bytes: u64,
+    errors: Vec<ReadErrorRange>,
+    error_digest: Sha256,
 }
 
 fn source_is_unavailable(error: &std::io::Error) -> bool {
@@ -512,6 +541,7 @@ struct AcquisitionCompletion<'a> {
     read_error_ranges: usize,
 }
 
+#[derive(Debug)]
 struct PublishedAcquisition {
     directory: PathBuf,
     image_path: PathBuf,
@@ -581,6 +611,330 @@ fn write_json(path: &Path, value: &impl Serialize) -> Result<()> {
         .map_err(err)?;
     serde_json::to_writer_pretty(&mut file, value).map_err(err)?;
     file.sync_all().map_err(err)
+}
+
+fn checkpoint_digest(
+    state: &AcquisitionCheckpointState,
+    previous_sha256: Option<&str>,
+) -> Result<String> {
+    let bytes = serde_json::to_vec(&(state, previous_sha256)).map_err(err)?;
+    Ok(format!("{:x}", Sha256::digest(bytes)))
+}
+
+fn append_checkpoint(
+    file: &mut File,
+    state: AcquisitionCheckpointState,
+    previous_sha256: Option<&str>,
+) -> Result<String> {
+    let record_sha256 = checkpoint_digest(&state, previous_sha256)?;
+    let record = AcquisitionCheckpointRecord {
+        state,
+        previous_sha256: previous_sha256.map(str::to_owned),
+        record_sha256: record_sha256.clone(),
+    };
+    let mut bytes = serde_json::to_vec(&record).map_err(err)?;
+    bytes.push(b'\n');
+    let next_len = file
+        .metadata()
+        .map_err(err)?
+        .len()
+        .checked_add(bytes.len() as u64)
+        .ok_or("Acquisition checkpoint log size overflow")?;
+    if next_len > MAX_CHECKPOINT_LOG_BYTES {
+        return Err(
+            "Acquisition stopped because the checkpoint log exceeded its 64 MiB limit.".into(),
+        );
+    }
+    file.write_all(&bytes).map_err(err)?;
+    file.sync_all().map_err(err)?;
+    Ok(record_sha256)
+}
+
+fn read_error_prefix(
+    path: &Path,
+    length: u64,
+    expected_sha256: &str,
+) -> Result<(Vec<ReadErrorRange>, Sha256)> {
+    let metadata = fs::metadata(path).map_err(err)?;
+    if length > MAX_ERROR_MAP_BYTES || length > metadata.len() {
+        return Err(
+            "The interrupted acquisition error map is truncated or exceeds its safety limit."
+                .into(),
+        );
+    }
+    let mut file = File::open(path).map_err(err)?;
+    let mut bytes = vec![0; length as usize];
+    file.read_exact(&mut bytes).map_err(err)?;
+    if format!("{:x}", Sha256::digest(&bytes)) != expected_sha256 {
+        return Err("The interrupted acquisition error map does not match its checkpoint.".into());
+    }
+    if bytes.last().is_some_and(|byte| *byte != b'\n') {
+        return Err("The interrupted acquisition error map ends with a partial record.".into());
+    }
+    let mut ranges: Vec<ReadErrorRange> = Vec::new();
+    for line in bytes
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+    {
+        let range: ReadErrorRange = serde_json::from_slice(line).map_err(err)?;
+        if range.length == 0 || range.attempts != MAX_RETRIES {
+            return Err("The interrupted acquisition error map contains an invalid range.".into());
+        }
+        let end = range
+            .offset
+            .checked_add(range.length)
+            .ok_or("The interrupted acquisition error map contains an overflowing range.")?;
+        if let Some(previous) = ranges.last() {
+            if previous.offset + previous.length > range.offset {
+                return Err("The interrupted acquisition error map contains overlapping or unordered ranges.".into());
+            }
+        }
+        ranges.push(range);
+        let _ = end;
+    }
+    let mut digest = Sha256::new();
+    digest.update(&bytes);
+    Ok((ranges, digest))
+}
+
+fn load_acquisition_resume(
+    directory: &Path,
+    expected_device: &PhysicalDevice,
+    expected_case_id: i64,
+) -> Result<ValidatedAcquisitionResume> {
+    let directory_metadata = fs::symlink_metadata(directory).map_err(err)?;
+    if !directory_metadata.is_dir() || directory_metadata.file_type().is_symlink() {
+        return Err("Select a real incomplete acquisition folder.".into());
+    }
+    let expected_entries = [
+        "INCOMPLETE.txt",
+        "image.raw",
+        "read-errors.jsonl",
+        "resume.jsonl",
+    ];
+    for name in expected_entries {
+        let metadata = fs::symlink_metadata(directory.join(name)).map_err(err)?;
+        if !metadata.is_file() || metadata.file_type().is_symlink() {
+            return Err(
+                "The interrupted acquisition folder contains a non-regular or linked file.".into(),
+            );
+        }
+    }
+    let mut actual_entries: Vec<String> = fs::read_dir(directory)
+        .map_err(err)?
+        .map(|entry| {
+            entry
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .map_err(err)
+        })
+        .collect::<Result<_>>()?;
+    actual_entries.sort();
+    let mut sorted_expected = expected_entries.map(str::to_owned);
+    sorted_expected.sort();
+    if actual_entries != sorted_expected {
+        return Err(
+            "The selected folder is not a supported interrupted acquisition staging folder.".into(),
+        );
+    }
+    let marker = fs::read_to_string(directory.join("INCOMPLETE.txt")).map_err(err)?;
+    if !marker.contains("UNPUBLISHED ACQUISITION") {
+        return Err(
+            "The selected folder does not contain a valid incomplete-acquisition marker.".into(),
+        );
+    }
+
+    let log_path = directory.join("resume.jsonl");
+    let log_metadata = fs::metadata(&log_path).map_err(err)?;
+    if log_metadata.len() == 0 || log_metadata.len() > MAX_CHECKPOINT_LOG_BYTES {
+        return Err(
+            "The interrupted acquisition checkpoint log is empty or exceeds its 64 MiB limit."
+                .into(),
+        );
+    }
+    let log = fs::read(&log_path).map_err(err)?;
+    let valid_log_bytes = log
+        .iter()
+        .rposition(|byte| *byte == b'\n')
+        .map(|index| index + 1)
+        .ok_or("The interrupted acquisition checkpoint log has no complete record.")?;
+    let mut previous_sha256: Option<String> = None;
+    let mut previous_state: Option<AcquisitionCheckpointState> = None;
+    for line in log[..valid_log_bytes]
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+    {
+        let record: AcquisitionCheckpointRecord = serde_json::from_slice(line).map_err(err)?;
+        if record.previous_sha256 != previous_sha256
+            || checkpoint_digest(&record.state, previous_sha256.as_deref())? != record.record_sha256
+        {
+            return Err("The interrupted acquisition checkpoint chain is invalid.".into());
+        }
+        if let Some(previous) = previous_state.as_ref() {
+            if record.state.schema_version != previous.schema_version
+                || record.state.case_id != previous.case_id
+                || record.state.created_unix_ns != previous.created_unix_ns
+                || record.state.device != previous.device
+                || record.state.committed_bytes < previous.committed_bytes
+                || record.state.read_error_bytes < previous.read_error_bytes
+                || record.state.read_error_ranges < previous.read_error_ranges
+            {
+                return Err(
+                    "The interrupted acquisition checkpoint sequence is inconsistent.".into(),
+                );
+            }
+        } else if record.state.committed_bytes != 0
+            || record.state.read_error_bytes != 0
+            || record.state.read_error_ranges != 0
+        {
+            return Err(
+                "The interrupted acquisition checkpoint log has no initial checkpoint.".into(),
+            );
+        }
+        previous_sha256 = Some(record.record_sha256);
+        previous_state = Some(record.state);
+    }
+    let state = previous_state.ok_or("The interrupted acquisition checkpoint log is empty.")?;
+    if state.schema_version != 1
+        || state.case_id != expected_case_id
+        || state.device != *expected_device
+        || state.committed_bytes > expected_device.size_bytes
+        || state.committed_bytes % u64::from(expected_device.bytes_per_sector) != 0
+    {
+        return Err("The incomplete acquisition belongs to a different case or source device, or has invalid geometry.".into());
+    }
+    let image_metadata = fs::metadata(directory.join("image.raw")).map_err(err)?;
+    if image_metadata.len() < state.committed_bytes {
+        return Err(
+            "The interrupted acquisition image is shorter than its last committed checkpoint."
+                .into(),
+        );
+    }
+    let (errors, error_digest) = read_error_prefix(
+        &directory.join("read-errors.jsonl"),
+        state.read_error_bytes,
+        &state.read_error_sha256,
+    )?;
+    if errors.len() != state.read_error_ranges
+        || errors.iter().any(|range| {
+            range.offset + range.length > state.committed_bytes
+                || !range
+                    .offset
+                    .is_multiple_of(u64::from(expected_device.bytes_per_sector))
+                || !range
+                    .length
+                    .is_multiple_of(u64::from(expected_device.bytes_per_sector))
+        })
+    {
+        return Err(
+            "The interrupted acquisition error map does not match the committed image range."
+                .into(),
+        );
+    }
+    Ok(ValidatedAcquisitionResume {
+        state,
+        previous_sha256: previous_sha256.expect("a valid log contains an initial record"),
+        valid_log_bytes: valid_log_bytes as u64,
+        errors,
+        error_digest,
+    })
+}
+
+fn verify_acquisition_prefix(
+    source: &dyn BlockSource,
+    directory: &Path,
+    resume: &ValidatedAcquisitionResume,
+    cancel: &AtomicBool,
+    progress: &mut impl FnMut(u64, u64, usize),
+) -> Result<Option<Sha256>> {
+    let mut image = File::open(directory.join("image.raw")).map_err(err)?;
+    let mut source_buffer = vec![0; READ_CHUNK];
+    let mut image_buffer = vec![0; READ_CHUNK];
+    let mut digest = Sha256::new();
+    let mut offset = 0u64;
+    let mut range_index = 0usize;
+    while offset < resume.state.committed_bytes {
+        if cancel.load(Ordering::SeqCst) {
+            return Ok(None);
+        }
+        let count = (resume.state.committed_bytes - offset).min(READ_CHUNK as u64) as usize;
+        image.read_exact(&mut image_buffer[..count]).map_err(err)?;
+        let end = offset + count as u64;
+        while range_index < resume.errors.len()
+            && resume.errors[range_index].offset + resume.errors[range_index].length <= offset
+        {
+            range_index += 1;
+        }
+        let mut cursor = offset;
+        while cursor < end {
+            if let Some(range) = resume.errors.get(range_index) {
+                let range_end = range.offset + range.length;
+                if range.offset <= cursor && cursor < range_end {
+                    let segment_end = end.min(range_end);
+                    let start = (cursor - offset) as usize;
+                    let finish = (segment_end - offset) as usize;
+                    if image_buffer[start..finish].iter().any(|byte| *byte != 0) {
+                        return Err(format!(
+                            "The staged image does not contain zero-filled bytes for its recorded unreadable range at offset {cursor}."
+                        ));
+                    }
+                    source
+                        .read_exact_at(cursor, &mut source_buffer[start..finish])
+                        .map_err(|error| {
+                            format!(
+                                "A previously unreadable source range could not be revalidated at byte offset {cursor}: {error}"
+                            )
+                        })?;
+                    if source_buffer[start..finish].iter().any(|byte| *byte != 0) {
+                        return Err(format!(
+                            "The source now returns different bytes for a range recorded as unreadable at offset {cursor}; resuming would mix acquisition states."
+                        ));
+                    }
+                    cursor = segment_end;
+                    if cursor == range_end {
+                        range_index += 1;
+                    }
+                    continue;
+                }
+                if range.offset < cursor {
+                    return Err("The interrupted acquisition error ranges are inconsistent.".into());
+                }
+            }
+            let segment_end = resume
+                .errors
+                .get(range_index)
+                .map_or(end, |range| end.min(range.offset));
+            if segment_end <= cursor {
+                return Err("The interrupted acquisition error ranges are inconsistent.".into());
+            }
+            let start = (cursor - offset) as usize;
+            let finish = (segment_end - offset) as usize;
+            source
+                .read_exact_at(cursor, &mut source_buffer[start..finish])
+                .map_err(|error| {
+                    format!(
+                        "Could not revalidate the interrupted image against the selected source at byte offset {cursor}: {error}"
+                    )
+                })?;
+            if source_buffer[start..finish] != image_buffer[start..finish] {
+                return Err(format!(
+                    "The selected source no longer matches the committed staged image at byte offset {cursor}; resuming would mix different source contents."
+                ));
+            }
+            cursor = segment_end;
+        }
+        digest.update(&image_buffer[..count]);
+        offset = end;
+        progress(
+            offset.saturating_mul(2),
+            source
+                .len()
+                .checked_mul(2)
+                .and_then(|total| total.checked_add(resume.state.committed_bytes))
+                .ok_or("Acquisition size overflow")?,
+            resume.errors.len(),
+        );
+    }
+    Ok(Some(digest))
 }
 
 fn hash_file(path: &Path, mut progress: impl FnMut(u64)) -> Result<String> {
@@ -674,7 +1028,7 @@ fn capture(
                 ),
             };
             Err(format!(
-                "{error} Unpublished acquisition data may remain at {}. Preserve it for examination; this folder cannot be resumed or used as a completed image, and the package verifier will reject it. To retry, start a new acquisition and keep this folder.{marker_warning}",
+                "{error} Unpublished acquisition data may remain at {}. Preserve this folder. If it has a valid checkpoint, choose Resume interrupted image; the app will compare saved bytes with the selected source before continuing. The package verifier will reject this staging folder until acquisition completes. If source validation fails, keep this folder and start a new acquisition in a new folder.{marker_warning}",
                 staging_path.display()
             ))
         }
@@ -708,30 +1062,211 @@ fn capture_into(
     // Flush an unmistakable warning before touching the source so abrupt process
     // termination leaves a discoverable, explicitly unverified staging folder.
     write_incomplete_marker(target.staging_path)?;
-    let mut errors = OpenOptions::new()
+    let errors = OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(target.staging_path.join("read-errors.jsonl"))
         .map_err(err)?;
-    let mut image_digest = Sha256::new();
-    let mut buffer = vec![0; READ_CHUNK];
-    let mut offset = 0u64;
-    let mut error_ranges = 0usize;
-    let mut error_map_bytes = 0u64;
-    let total = source
-        .len()
-        .checked_mul(2)
-        .ok_or("Acquisition size overflow")?;
-    progress(0, total, 0);
-    let mut image_file = OpenOptions::new()
+    let mut checkpoint_log = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(target.staging_path.join("resume.jsonl"))
+        .map_err(err)?;
+    let error_digest = Sha256::new();
+    let previous_checkpoint_sha256 = append_checkpoint(
+        &mut checkpoint_log,
+        AcquisitionCheckpointState {
+            schema_version: 1,
+            case_id: options.case_id,
+            created_unix_ns: target.created_unix_ns.to_string(),
+            device: device.clone(),
+            committed_bytes: 0,
+            read_error_bytes: 0,
+            read_error_ranges: 0,
+            read_error_sha256: format!("{:x}", error_digest.clone().finalize()),
+        },
+        None,
+    )?;
+    let image_file = OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(target.staging_path.join("image.raw"))
         .map_err(err)?;
 
+    capture_from_offset(
+        source,
+        device,
+        target,
+        options,
+        cancel,
+        progress,
+        &mut staging,
+        image_file,
+        errors,
+        checkpoint_log,
+        0,
+        0,
+        0,
+        error_digest,
+        Sha256::new(),
+        previous_checkpoint_sha256,
+        true,
+    )
+}
+
+fn resume_capture(
+    source: &dyn BlockSource,
+    device: &PhysicalDevice,
+    staging_path: &Path,
+    options: AcquisitionOptions,
+    cancel: &AtomicBool,
+    progress: &mut impl FnMut(u64, u64, usize),
+) -> Result<Option<PublishedAcquisition>> {
+    match resume_capture_inner(source, device, staging_path, options, cancel, progress) {
+        Err(error) => Err(format!(
+            "{error} Preserve the interrupted acquisition folder at {}; it remains unverified.",
+            staging_path.display()
+        )),
+        result => result,
+    }
+}
+
+fn resume_capture_inner(
+    source: &dyn BlockSource,
+    device: &PhysicalDevice,
+    staging_path: &Path,
+    options: AcquisitionOptions,
+    cancel: &AtomicBool,
+    progress: &mut impl FnMut(u64, u64, usize),
+) -> Result<Option<PublishedAcquisition>> {
+    if !options.write_blocker_attested {
+        return Err(
+            "Attest to a validated hardware write blocker before resuming acquisition.".into(),
+        );
+    }
+    if device.size_bytes != source.len()
+        || device.bytes_per_sector == 0
+        || !source
+            .len()
+            .is_multiple_of(u64::from(device.bytes_per_sector))
+    {
+        return Err("The selected device geometry changed or is invalid.".into());
+    }
+    let resume = load_acquisition_resume(staging_path, device, options.case_id)?;
+    let created_unix_ns = resume
+        .state
+        .created_unix_ns
+        .parse::<u128>()
+        .map_err(|_| "The acquisition checkpoint has an invalid creation timestamp.")?;
+    let parent = staging_path
+        .parent()
+        .ok_or("The interrupted acquisition folder has no destination parent.")?;
+    let expected_name = format!(".DaemonCore-Acquisition-{created_unix_ns}.partial");
+    if staging_path.file_name().and_then(|name| name.to_str()) != Some(&expected_name) {
+        return Err(
+            "The interrupted acquisition folder name does not match its checkpoint.".into(),
+        );
+    }
+    let final_directory = parent.join(format!("DaemonCore-Acquisition-{created_unix_ns}"));
+    let target = AcquisitionTarget {
+        final_directory: &final_directory,
+        staging_path,
+        created_unix_ns,
+    };
+    let Some(image_digest) =
+        verify_acquisition_prefix(source, staging_path, &resume, cancel, progress)?
+    else {
+        return Ok(None);
+    };
+
+    let mut image_file = OpenOptions::new()
+        .write(true)
+        .open(staging_path.join("image.raw"))
+        .map_err(err)?;
+    image_file
+        .set_len(resume.state.committed_bytes)
+        .map_err(err)?;
+    image_file
+        .seek(SeekFrom::Start(resume.state.committed_bytes))
+        .map_err(err)?;
+    let mut errors = OpenOptions::new()
+        .write(true)
+        .open(staging_path.join("read-errors.jsonl"))
+        .map_err(err)?;
+    errors.set_len(resume.state.read_error_bytes).map_err(err)?;
+    errors
+        .seek(SeekFrom::Start(resume.state.read_error_bytes))
+        .map_err(err)?;
+    let mut checkpoint_log = OpenOptions::new()
+        .write(true)
+        .open(staging_path.join("resume.jsonl"))
+        .map_err(err)?;
+    checkpoint_log
+        .set_len(resume.valid_log_bytes)
+        .map_err(err)?;
+    checkpoint_log.seek(SeekFrom::End(0)).map_err(err)?;
+
+    let mut staging = StagingDirectory(Some(staging_path.to_path_buf()));
+    capture_from_offset(
+        source,
+        device,
+        target,
+        options,
+        cancel,
+        progress,
+        &mut staging,
+        image_file,
+        errors,
+        checkpoint_log,
+        resume.state.committed_bytes,
+        resume.state.read_error_bytes,
+        resume.state.read_error_ranges,
+        resume.error_digest,
+        image_digest,
+        resume.previous_sha256,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn capture_from_offset(
+    source: &dyn BlockSource,
+    device: &PhysicalDevice,
+    target: AcquisitionTarget<'_>,
+    options: AcquisitionOptions,
+    cancel: &AtomicBool,
+    progress: &mut impl FnMut(u64, u64, usize),
+    staging: &mut StagingDirectory,
+    mut image_file: File,
+    mut errors: File,
+    mut checkpoint_log: File,
+    mut offset: u64,
+    mut error_map_bytes: u64,
+    mut error_ranges: usize,
+    mut error_digest: Sha256,
+    mut image_digest: Sha256,
+    mut previous_checkpoint_sha256: String,
+    discard_on_cancel: bool,
+) -> Result<Option<PublishedAcquisition>> {
+    let mut buffer = vec![0; READ_CHUNK];
+    let mut last_checkpoint_offset = offset;
+    let validation_bytes = offset;
+    let total = source
+        .len()
+        .checked_mul(2)
+        .and_then(|total| total.checked_add(validation_bytes))
+        .ok_or("Acquisition size overflow")?;
+    progress(validation_bytes.saturating_mul(2), total, error_ranges);
+
     while offset < source.len() {
         if cancel.load(Ordering::SeqCst) {
-            staging.discard()?;
+            if discard_on_cancel {
+                staging.discard()?;
+            } else {
+                image_file.sync_all().map_err(err)?;
+                errors.sync_all().map_err(err)?;
+                checkpoint_log.sync_all().map_err(err)?;
+            }
             return Ok(None);
         }
         let count = (source.len() - offset).min(buffer.len() as u64) as usize;
@@ -763,35 +1298,83 @@ fn capture_into(
                 return Err("Acquisition stopped because the unreadable-range map exceeded its 128 MiB limit.".into());
             }
             errors.write_all(&line).map_err(err)?;
+            error_digest.update(&line);
             error_ranges += 1;
         }
         image_file.write_all(&buffer[..count]).map_err(err)?;
         image_digest.update(&buffer[..count]);
         offset += count as u64;
-        progress(offset, total, error_ranges);
+        progress(validation_bytes.saturating_add(offset), total, error_ranges);
+        if offset.saturating_sub(last_checkpoint_offset) >= ACQUISITION_CHECKPOINT_INTERVAL {
+            image_file.sync_all().map_err(err)?;
+            errors.sync_all().map_err(err)?;
+            previous_checkpoint_sha256 = append_checkpoint(
+                &mut checkpoint_log,
+                AcquisitionCheckpointState {
+                    schema_version: 1,
+                    case_id: options.case_id,
+                    created_unix_ns: target.created_unix_ns.to_string(),
+                    device: device.clone(),
+                    committed_bytes: offset,
+                    read_error_bytes: error_map_bytes,
+                    read_error_ranges: error_ranges,
+                    read_error_sha256: format!("{:x}", error_digest.clone().finalize()),
+                },
+                Some(&previous_checkpoint_sha256),
+            )?;
+            last_checkpoint_offset = offset;
+        }
     }
     image_file.sync_all().map_err(err)?;
     drop(image_file);
     errors.sync_all().map_err(err)?;
     drop(errors);
 
+    if offset != last_checkpoint_offset || offset == 0 {
+        let _ = append_checkpoint(
+            &mut checkpoint_log,
+            AcquisitionCheckpointState {
+                schema_version: 1,
+                case_id: options.case_id,
+                created_unix_ns: target.created_unix_ns.to_string(),
+                device: device.clone(),
+                committed_bytes: offset,
+                read_error_bytes: error_map_bytes,
+                read_error_ranges: error_ranges,
+                read_error_sha256: format!("{:x}", error_digest.clone().finalize()),
+            },
+            Some(&previous_checkpoint_sha256),
+        )?;
+    }
+    checkpoint_log.sync_all().map_err(err)?;
+    drop(checkpoint_log);
+
     // Completion metadata distinguishes partial images; keeping one stable
     // filename also avoids a rename after the potentially large image is flushed.
     let image_name = "image.raw";
     let observed_digest = format!("{:x}", image_digest.finalize());
     let verified_digest = hash_file(&target.staging_path.join(image_name), |count| {
-        progress(source.len().saturating_add(count), total, error_ranges);
+        progress(
+            validation_bytes
+                .saturating_add(source.len())
+                .saturating_add(count),
+            total,
+            error_ranges,
+        );
     })?;
     if observed_digest != verified_digest {
         return Err("Acquired image bytes failed destination SHA-256 verification.".into());
     }
     if cancel.load(Ordering::SeqCst) {
-        staging.discard()?;
+        if discard_on_cancel {
+            staging.discard()?;
+        }
         return Ok(None);
     }
     // From here onward the image has been flushed and read back against the
     // acquisition digest. A crash still cannot make it a package: completion.json
     // is written last and the verifier rejects its absence.
+    fs::remove_file(target.staging_path.join("resume.jsonl")).map_err(err)?;
     fs::remove_file(target.staging_path.join("INCOMPLETE.txt")).map_err(err)?;
 
     let manifest = AcquisitionManifest {
@@ -965,6 +1548,91 @@ pub async fn acquire_physical_device(
         &selected_folder,
         device.info.size_bytes,
     )?;
+    run_acquisition_operation(
+        app,
+        state,
+        expected_device,
+        device,
+        case_id,
+        destination,
+        None,
+        hardware_write_blocker_attested,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn resume_physical_device_acquisition(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    expected_device: PhysicalDevice,
+    hardware_write_blocker_attested: bool,
+) -> Result<bool> {
+    if !hardware_write_blocker_attested {
+        return Err(
+            "Confirm the source is offline and protected by a validated hardware write blocker."
+                .into(),
+        );
+    }
+    let case_id = {
+        let db = state.db.lock().map_err(err)?;
+        require_audited_active_case(&db)?
+    };
+    let selected_folder = tauri::async_runtime::spawn_blocking(|| {
+        rfd::FileDialog::new()
+            .set_title("Select this source's interrupted acquisition folder")
+            .pick_folder()
+    })
+    .await
+    .map_err(err)?;
+    let Some(staging_path) = selected_folder else {
+        return Ok(false);
+    };
+    let device = DeviceSource::open(expected_device.number).map_err(DeviceProbeError::message)?;
+    validate_selected_device(&expected_device, &device.info)?;
+    let checkpoint = load_acquisition_resume(&staging_path, &device.info, case_id)?;
+    let destination_path = staging_path
+        .parent()
+        .ok_or("The interrupted acquisition folder has no destination parent.")?;
+    let remaining_bytes = device
+        .info
+        .size_bytes
+        .saturating_sub(checkpoint.state.committed_bytes);
+    let destination = crate::destination::check_device_destination(
+        expected_device.number,
+        destination_path,
+        remaining_bytes,
+    )?;
+    run_acquisition_operation(
+        app,
+        state,
+        expected_device,
+        device,
+        case_id,
+        destination,
+        Some(staging_path),
+        hardware_write_blocker_attested,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_acquisition_operation(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    expected_device: PhysicalDevice,
+    device: DeviceSource,
+    case_id: i64,
+    destination: PathBuf,
+    resume_directory: Option<PathBuf>,
+    hardware_write_blocker_attested: bool,
+) -> Result<bool> {
+    let resumed = resume_directory.is_some();
+    let start_event = if resumed {
+        "physical_device_acquisition_resume_started"
+    } else {
+        "physical_device_acquisition_started"
+    };
     {
         let mut job = state.job.lock().map_err(err)?;
         if job.state == "running" {
@@ -977,7 +1645,7 @@ pub async fn acquire_physical_device(
         }
         if let Err(error) = audit(
             &db,
-            "physical_device_acquisition_started",
+            start_event,
             &serde_json::json!({
                 "case_id": case_id,
                 "device_number": expected_device.number,
@@ -986,6 +1654,7 @@ pub async fn acquire_physical_device(
                 "bytes_per_sector": device.info.bytes_per_sector,
                 "destination": destination,
                 "hardware_write_blocker_attested": hardware_write_blocker_attested,
+                "resume_directory": resume_directory,
             })
             .to_string(),
         ) {
@@ -998,32 +1667,57 @@ pub async fn acquire_physical_device(
             state: "running".into(),
             kind: "disk_acquisition".into(),
             total: device.info.size_bytes.saturating_mul(2),
-            message: Some("Reading the physical source and writing a staged image".into()),
+            message: Some(if resumed {
+                "Revalidating the committed image bytes against the selected source".into()
+            } else {
+                "Reading the physical source and writing a staged image".into()
+            }),
             ..Job::default()
         };
     }
     let result = tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
-        let acquired = capture(
-            &device,
-            &device.info,
-            case_id,
-            &destination,
-            hardware_write_blocker_attested,
-            &state.cancel,
-            |processed, total, errors| {
+        let acquired = {
+            let mut progress = |processed: u64, total: u64, errors: usize| {
                 if let Ok(mut job) = state.job.lock() {
                     job.processed = processed.min(total);
                     job.total = total;
                     job.discovered = errors;
                     job.message = Some(if errors == 0 {
-                        "Acquiring source bytes and verifying the staged image digest".into()
+                        if resumed {
+                            "Revalidating staged data and continuing source acquisition".into()
+                        } else {
+                            "Acquiring source bytes and verifying the staged image digest".into()
+                        }
                     } else {
                         format!("Acquisition continues with {errors} mapped read-error ranges")
                     });
                 }
-            },
-        );
+            };
+            if let Some(staging_path) = resume_directory.as_deref() {
+                resume_capture(
+                    &device,
+                    &device.info,
+                    staging_path,
+                    AcquisitionOptions {
+                        case_id,
+                        write_blocker_attested: hardware_write_blocker_attested,
+                    },
+                    &state.cancel,
+                    &mut progress,
+                )
+            } else {
+                capture(
+                    &device,
+                    &device.info,
+                    case_id,
+                    &destination,
+                    hardware_write_blocker_attested,
+                    &state.cancel,
+                    &mut progress,
+                )
+            }
+        };
         match acquired {
             Ok(Some(package)) => {
                 let outcome = if package.read_error_ranges == 0 { "complete" } else { "partial" };
@@ -1108,13 +1802,19 @@ pub async fn acquire_physical_device(
                             "case_id":case_id,
                             "device_number":expected_device.number,
                             "device_identity":device.info,
+                            "resumed": resumed,
+                            "resume_directory": resume_directory,
                         }),
                     )
                 })();
                 if let Ok(mut job) = state.job.lock() {
                     job.state = if audit_result.is_ok() { "cancelled" } else { "failed" }.into();
                     job.message = Some(if audit_result.is_ok() {
-                        "Acquisition cancelled; unpublished staging data removed".into()
+                        if resumed {
+                            "Resume cancelled; the incomplete acquisition was preserved".into()
+                        } else {
+                            "Acquisition cancelled; unpublished staging data removed".into()
+                        }
                     } else {
                         "Acquisition stopped, but cancellation could not be recorded in the audit log.".into()
                     });
@@ -1270,6 +1970,11 @@ mod tests {
         size: u64,
     }
 
+    struct DisconnectAfterOffsetSource {
+        bytes: Vec<u8>,
+        cutoff: usize,
+    }
+
     impl BlockSource for TestSource {
         fn len(&self) -> u64 {
             self.bytes.len() as u64
@@ -1335,6 +2040,22 @@ mod tests {
 
         fn read_exact_at(&self, _offset: u64, _buffer: &mut [u8]) -> std::io::Result<()> {
             Err(std::io::Error::from_raw_os_error(1167))
+        }
+    }
+
+    impl BlockSource for DisconnectAfterOffsetSource {
+        fn len(&self) -> u64 {
+            self.bytes.len() as u64
+        }
+
+        fn read_exact_at(&self, offset: u64, buffer: &mut [u8]) -> std::io::Result<()> {
+            crate::storage::checked_range(self.len(), offset, buffer.len())?;
+            let start = offset as usize;
+            if start >= self.cutoff {
+                return Err(std::io::Error::from_raw_os_error(1167));
+            }
+            buffer.copy_from_slice(&self.bytes[start..start + buffer.len()]);
+            Ok(())
         }
     }
 
@@ -1648,14 +2369,99 @@ mod tests {
         assert!(partial.join("INCOMPLETE.txt").is_file());
         assert!(partial.join("image.raw").is_file());
         assert!(error.contains(&partial.to_string_lossy().to_string()));
-        assert!(error.contains("Preserve it for examination"));
-        assert!(error.contains("cannot be resumed or used as a completed image"));
-        assert!(error.contains("package verifier will reject it"));
-        assert!(error.contains("start a new acquisition and keep this folder"));
+        assert!(error.contains("Preserve this folder"));
+        assert!(error.contains("Resume interrupted image"));
         assert!(fs::read_to_string(partial.join("INCOMPLETE.txt"))
             .unwrap()
             .contains("UNPUBLISHED ACQUISITION"));
         assert!(crate::recovery_verify::verify_package(&partial).is_err());
+        fs::remove_dir_all(destination).unwrap();
+    }
+
+    #[test]
+    fn resumed_acquisition_revalidates_committed_bytes_and_publishes_exact_image() {
+        let destination = test_directory();
+        let committed = ACQUISITION_CHECKPOINT_INTERVAL as usize;
+        let size = committed + 1024 * 1024;
+        let bytes: Vec<u8> = (0..size)
+            .map(|index| (index.wrapping_mul(31) % 251) as u8)
+            .collect();
+        let source = DisconnectAfterOffsetSource {
+            bytes: bytes.clone(),
+            cutoff: committed,
+        };
+        let mut device = test_device();
+        device.size_bytes = size as u64;
+        let error = capture(
+            &source,
+            &device,
+            42,
+            &destination,
+            true,
+            &AtomicBool::new(false),
+            |_, _, _| {},
+        )
+        .err()
+        .expect("the simulated disconnect must retain the checkpointed prefix");
+        let staging = fs::read_dir(&destination)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        assert!(error.contains(&staging.to_string_lossy().to_string()));
+        let checkpoint = load_acquisition_resume(&staging, &device, 42).unwrap();
+        assert_eq!(checkpoint.state.committed_bytes, committed as u64);
+        assert_eq!(checkpoint.state.read_error_ranges, 0);
+
+        let mut changed_bytes = bytes.clone();
+        changed_bytes[4096] ^= 0x40;
+        let changed_source = TestSource {
+            bytes: changed_bytes,
+            fail_after: None,
+        };
+        let mismatch = resume_capture(
+            &changed_source,
+            &device,
+            &staging,
+            AcquisitionOptions {
+                case_id: 42,
+                write_blocker_attested: true,
+            },
+            &AtomicBool::new(false),
+            &mut |_, _, _| {},
+        )
+        .unwrap_err();
+        assert!(mismatch.contains("no longer matches the committed staged image"));
+        assert_eq!(
+            fs::metadata(staging.join("image.raw")).unwrap().len(),
+            committed as u64
+        );
+
+        let complete_source = TestSource {
+            bytes: bytes.clone(),
+            fail_after: None,
+        };
+        let package = resume_capture(
+            &complete_source,
+            &device,
+            &staging,
+            AcquisitionOptions {
+                case_id: 42,
+                write_blocker_attested: true,
+            },
+            &AtomicBool::new(false),
+            &mut |_, _, _| {},
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(fs::read(&package.image_path).unwrap(), bytes);
+        assert_eq!(
+            crate::recovery_verify::verify_package(&package.directory)
+                .unwrap()
+                .state,
+            "complete"
+        );
         fs::remove_dir_all(destination).unwrap();
     }
 

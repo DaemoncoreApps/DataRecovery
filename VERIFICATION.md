@@ -1,5 +1,22 @@
 # Recovery validation — 2026-10-31
 
+## Checkpointed physical acquisition resume — 2026-11-24
+
+Physical imaging now flushes a chained checkpoint after each 16 MiB of
+committed output. The operator can select a marked staging folder to resume.
+Before any staging file is changed, resume validates the checkpoint chain,
+case, device identity and geometry, image length, and read-error map, then
+compares every committed image byte against the selected source. Previously
+unreadable ranges must be readable and match zero-filled staging bytes, so a
+source that no longer matches is rejected without truncating or modifying the
+staged image. The command truncates only bytes beyond the last validated
+checkpoint, continues acquisition, and runs the normal package verification
+before publication. The focused acquisition suite passes 17 tests, including
+disconnect, source mismatch without mutation, successful resume, and package
+verification; the frontend production build passes. This does not yet qualify
+power-loss behavior, resume across changed hardware identity, or physical
+media handling in an accredited lab. Full project validation is pending.
+
 ## GitHub Actions spend safeguard — 2026-11-15
 
 Removed the repository's hosted validation and installer workflows after the
@@ -2337,20 +2354,12 @@ and Clippy with warnings denied.
 
 ## Physical acquisition interruption marker — 2026-11-24
 
-Physical acquisition now creates and flushes `INCOMPLETE.txt` before its first
-source read. It retains the marker for failed staging and removes it only after
-the image has been flushed and its destination SHA-256 matches the streaming
-acquisition digest. A regression checks for the marker from inside the first
-source read; complete-package verification confirms successful publication
-does not retain the marker. This improves detection of abandoned staging but
-does not resume acquisition or qualify power-loss behavior. All 16 acquisition
-tests passed. `npm run validate` passed: 63 NTFS-core tests, 171 desktop tests
-(12 ignored), frontend build, formatting, and Clippy with warnings denied.
-Acquisition failure guidance now explicitly says to preserve the staged folder,
-that it cannot be resumed or used as a completed image, that verification will
-reject it, and to start a new acquisition while retaining the incomplete
-folder. The disconnected-source regression checks each instruction; the
-focused acquisition suite still passes all 16 tests.
+The initial interruption-marker change created and flushed `INCOMPLETE.txt`
+before its first source read and retained it for failed staging. At that point,
+staging could not resume; that limitation was superseded by the checkpointed
+resume implementation documented above. The marker remains until the completed
+image has been flushed and its destination SHA-256 matches the streaming
+acquisition digest. Power-loss behavior is not qualified.
 
 ## FAT32/exFAT scan cancellation — 2026-11-24
 
