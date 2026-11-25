@@ -169,6 +169,40 @@ fn finalize_hash_job(job: &Mutex<Job>, result: Result<Option<String>>) -> Job {
     }
     finished
 }
+fn reconcile_hash_source_state(
+    source: &Mutex<Option<Evidence>>,
+    source_id: u64,
+    finished: &mut Job,
+) -> bool {
+    match source.lock() {
+        Ok(current) => current
+            .as_ref()
+            .filter(|evidence| evidence.info.id == source_id)
+            .is_some_and(|evidence| evidence.integrity_compromised),
+        Err(poisoned) => {
+            let mut current = poisoned.into_inner();
+            if let Some(evidence) = current
+                .as_mut()
+                .filter(|evidence| evidence.info.id == source_id)
+            {
+                evidence.info.sha256 = None;
+                evidence.integrity_compromised = true;
+            }
+            source.clear_poison();
+            finished.state = "failed".into();
+            finished.sha256 = None;
+            let previous_error = finished
+                .error
+                .take()
+                .map(|error| format!(" Native hash error: {error}"))
+                .unwrap_or_default();
+            finished.error = Some(format!(
+                "The evidence source state became inconsistent; the hash was discarded and the evidence is marked compromised.{previous_error}"
+            ));
+            true
+        }
+    }
+}
 fn detect(bytes: &[u8]) -> String {
     match bytes.get(3..11) {
         Some(b"NTFS    ") => "NTFS boot signature (metadata scan available)",
@@ -1041,15 +1075,7 @@ fn start_hash(app: tauri::AppHandle, state: State<AppState>) -> Result<()> {
             Ok(hash)
         });
         let mut finished = finalize_hash_job(&state.job, result);
-        let compromised = state
-            .source
-            .lock()
-            .map(|current| {
-                current.as_ref().is_some_and(|evidence| {
-                    evidence.info.id == source_id && evidence.integrity_compromised
-                })
-            })
-            .unwrap_or(false);
+        let compromised = reconcile_hash_source_state(&state.source, source_id, &mut finished);
         let persisted = (|| -> Result<()> {
             let mut db = state.db.lock().map_err(err)?;
             let tx = db.transaction().map_err(err)?;
@@ -1829,6 +1855,33 @@ mod tests {
             .as_deref()
             .is_some_and(|error| error.contains("no successful hash is recorded")));
         assert!(!job.is_poisoned());
+    }
+
+    #[test]
+    fn hash_worker_marks_source_compromised_when_source_state_is_poisoned() {
+        let source = Mutex::new(None);
+        let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = source.lock().unwrap();
+            panic!("simulate source-state corruption during hashing");
+        }));
+        assert!(panic_result.is_err());
+        assert!(source.is_poisoned());
+
+        let mut finished = Job {
+            state: "completed".into(),
+            sha256: Some("computed-digest".into()),
+            ..Job::default()
+        };
+        let compromised = reconcile_hash_source_state(&source, 42, &mut finished);
+
+        assert!(compromised);
+        assert_eq!(finished.state, "failed");
+        assert_eq!(finished.sha256, None);
+        assert!(finished
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("marked compromised")));
+        assert!(!source.is_poisoned());
     }
 
     #[test]

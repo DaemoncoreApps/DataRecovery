@@ -4,14 +4,15 @@
 
 The hash worker previously fell back to a default job record if its status mutex
 was poisoned, which could let it persist a successful hash outcome even though
-the status endpoint later recovered the job as failed. The worker now treats
-that state inconsistency as a failure, discards the computed digest, clears the
-poisoned mutex for safe status reads, and records the failed outcome. A
-regression forces the poison while hashing and confirms no digest is reported.
-`npm run validate` passes: 67 core tests (3 ignored), 176 desktop tests (12
-ignored), strict byte-offset checks, frontend production build, Rust formatting,
-and Clippy with warnings denied. The ignored cases require external reference
-images and are not counted as passing validation.
+the status endpoint later recovered the job as failed. A poisoned source-state
+mutex was also treated as “not compromised.” The worker now fails closed for
+either condition: it discards the computed digest, clears and invalidates a
+poisoned source state, persists the evidence as compromised, and records the
+failed outcome. Regression tests force both poison paths. `npm run validate`
+passes: 67 core tests (3 ignored), 177 desktop tests (12 ignored), strict
+byte-offset checks, frontend production build, Rust formatting, and Clippy with
+warnings denied. The ignored cases require external reference images and are
+not counted as passing validation.
 
 ## Checkpointed physical acquisition resume — 2026-11-24
 
