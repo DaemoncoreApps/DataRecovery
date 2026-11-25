@@ -7,12 +7,20 @@ Set-StrictMode -Version Latest
 
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 $configPath = Join-Path $repoRoot "src-tauri\tauri.conf.json"
-$buildRevision = (& git -C $repoRoot rev-parse --short=12 HEAD).Trim()
+$workingTree = @(& git -C $repoRoot status --porcelain --untracked-files=all)
+if ($LASTEXITCODE -ne 0) {
+  throw "Could not verify the source worktree before packaging."
+}
+if ($workingTree.Count -gt 0) {
+  throw "Windows packages must be built from a clean Git worktree. Commit or remove source changes before packaging."
+}
+$buildRevision = (& git -C $repoRoot rev-parse --verify HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($buildRevision)) {
   throw "Could not identify the source revision for the isolated package build."
 }
+$targetRevision = $buildRevision.Substring(0, [Math]::Min(12, $buildRevision.Length))
 $buildNonce = [Guid]::NewGuid().ToString("N").Substring(0, 4)
-$targetDirectory = Join-Path $repoRoot "src-tauri\target\p$buildRevision$buildNonce"
+$targetDirectory = Join-Path $repoRoot "src-tauri\target\p$targetRevision$buildNonce"
 $previousTargetDirectory = $env:CARGO_TARGET_DIR
 
 Push-Location $repoRoot
@@ -80,6 +88,7 @@ try {
   )
   [pscustomobject]@{
     output = $releaseDirectory
+    sourceRevision = $buildRevision
     checksumManifest = $checksumManifest
     artifacts = $artifacts
     installed = $false
