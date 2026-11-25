@@ -2311,3 +2311,14 @@ with one failed record. It verifies that the case-scoped JSON report preserves
 `cancelled: true` and the failed count, and that the escaped HTML report's
 complete JSON appendix preserves the same status and output location. The
 focused report test and formatting check passed.
+
+## Printable report operation history — 2026-11-24
+
+The HTML case report now renders imaging, RAID, and recovery audit events in
+one chronological table with record IDs, timestamps, event names, record
+SHA-256 values, and bounded key outcome fields. The full event payload remains
+in the machine-readable JSON appendix. All rendered fields pass through the
+HTML text escaper. Regressions cover cancelled/partial carving outcomes,
+hostile path text, empty operation history, and JSON appendix retention.
+`npm run validate` passed: frontend build, formatting, 63 NTFS-core tests, 170
+desktop tests (12 ignored), and Clippy with warnings denied.

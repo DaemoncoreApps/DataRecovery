@@ -646,6 +646,106 @@ fn push_html_text(output: &mut String, value: &str) -> Result<()> {
     Ok(())
 }
 
+fn push_operation_detail(html: &mut String, label: &str, value: &serde_json::Value) -> Result<()> {
+    let display = value
+        .as_str()
+        .map(str::to_owned)
+        .unwrap_or_else(|| value.to_string());
+    let mut characters = display.chars();
+    let mut bounded = characters.by_ref().take(512).collect::<String>();
+    if characters.next().is_some() {
+        bounded.push('…');
+    }
+    html.push_str("<li><b>");
+    push_html_text(html, label)?;
+    html.push_str(":</b> ");
+    push_html_text(html, &bounded)?;
+    html.push_str("</li>");
+    Ok(())
+}
+
+fn push_operation_history(html: &mut String, report: &CaseReport) -> Result<()> {
+    let mut operations = report
+        .imaging_and_raid_operations
+        .iter()
+        .chain(&report.recovery_operations)
+        .collect::<Vec<_>>();
+    operations.sort_by_key(|operation| operation.audit_record_id);
+
+    html.push_str("<section><h2>Operation history</h2><table><thead><tr><th>Audit record</th><th>Time</th><th>Operation</th><th>Record SHA-256</th><th>Key details</th></tr></thead><tbody>");
+    if operations.is_empty() {
+        html.push_str("<tr><td colspan=\"5\">No imaging, RAID, or recovery operations are recorded for this case.</td></tr>");
+    }
+    for operation in operations {
+        html.push_str("<tr><td>");
+        push_html_text(html, &operation.audit_record_id.to_string())?;
+        html.push_str("</td><td>");
+        push_html_text(html, &operation.timestamp)?;
+        html.push_str("</td><td>");
+        push_html_text(html, &operation.event)?;
+        html.push_str("</td><td><code>");
+        push_html_text(html, &operation.record_sha256)?;
+        html.push_str("</code></td><td><ul>");
+
+        let mut highlighted = 0;
+        for (key, label) in [
+            ("case_id", "Case ID"),
+            ("evidence_record_id", "Evidence record"),
+            ("source_id", "Source ID"),
+            ("scan_session_id", "Scan session"),
+            ("source_sha256", "Source SHA-256"),
+            ("image_sha256", "Image SHA-256"),
+            ("level", "RAID level"),
+            ("raid5_layout", "RAID 5 layout"),
+            ("raid6_layout", "RAID 6 layout"),
+            ("data_offset_bytes", "Data offset (bytes)"),
+            ("bytes_per_sector", "Bytes per sector"),
+            ("stripe_size_bytes", "Stripe size (bytes)"),
+            ("device_number", "Device number"),
+            ("stage", "Stage"),
+            ("destination", "Destination"),
+            ("reason", "Reason"),
+            ("error", "Error"),
+        ] {
+            if let Some(value) = operation.payload.get(key).filter(|value| !value.is_null()) {
+                push_operation_detail(html, label, value)?;
+                highlighted += 1;
+            }
+        }
+        for section in ["summary", "job", "verification"] {
+            if let Some(details) = operation
+                .payload
+                .get(section)
+                .and_then(|value| value.as_object())
+            {
+                for (key, label) in [
+                    ("state", "State"),
+                    ("cancelled", "Cancelled"),
+                    ("exported", "Files exported"),
+                    ("failed", "Files failed"),
+                    ("directory", "Output directory"),
+                    ("output_directory", "Output directory"),
+                    ("message", "Message"),
+                    ("error", "Error"),
+                    ("package_type", "Package type"),
+                    ("records", "Records verified"),
+                ] {
+                    if let Some(value) = details.get(key).filter(|value| !value.is_null()) {
+                        push_operation_detail(html, label, value)?;
+                        highlighted += 1;
+                    }
+                }
+            }
+        }
+        if highlighted == 0 {
+            html.push_str("<li>See the complete JSON appendix for this event payload.</li>");
+        }
+        html.push_str("</ul></td></tr>");
+    }
+    html.push_str("</tbody></table><p class=\"muted\">Each row is linked to its hash-chained audit record. Full event payloads remain in the JSON appendix.</p></section>");
+    Ok(())
+}
+
 fn encode_html_report(report: &CaseReport) -> Result<Vec<u8>> {
     let json = String::from_utf8(encode_report(report)?)
         .map_err(|error| format!("The encoded case report is not valid UTF-8: {error}"))?;
@@ -724,7 +824,9 @@ fn encode_html_report(report: &CaseReport) -> Result<Vec<u8>> {
         )?;
         html.push_str("</td></tr>");
     }
-    html.push_str("</tbody></table></section><section><h2>Audit status</h2><p>Chain valid: ");
+    html.push_str("</tbody></table></section>");
+    push_operation_history(&mut html, report)?;
+    html.push_str("<section><h2>Audit status</h2><p>Chain valid: ");
     push_html_text(&mut html, &report.audit.chain_valid.to_string())?;
     html.push_str(" · Records checked: ");
     push_html_text(&mut html, &report.audit.records_checked.to_string())?;
@@ -1382,6 +1484,8 @@ mod tests {
         assert!(html.contains("&lt;img src=x onerror=alert(1)&gt; &amp; &quot;case&quot;"));
         assert!(!html.contains("<img src=x onerror=alert(1)>"));
         assert!(html.contains("default-src 'none'; style-src 'unsafe-inline'"));
+        assert!(html.contains("Operation history"));
+        assert!(html.contains("No imaging, RAID, or recovery operations are recorded"));
         assert!(html.contains("Complete machine-readable report data (JSON)"));
         assert!(html.contains("&quot;title&quot;: &quot;&lt;img src=x onerror=alert(1)&gt;"));
         assert!(encode_report_for_format(&report, ReportFormat::Html).is_ok());
@@ -1861,15 +1965,22 @@ mod tests {
                     "cancelled": true,
                     "exported": 0,
                     "failed": 1,
-                    "directory": "D:/case/carved-partial"
+                    "directory": "D:/case/carved-partial <script>alert(1)</script>"
                 }
             })
             .to_string(),
         )
         .unwrap();
+        audit(
+            &db,
+            "raid_reconstruction_started",
+            &serde_json::json!({"case_id":1,"level":"RAID 5"}).to_string(),
+        )
+        .unwrap();
 
         let report = case_report_from(&db, 1).unwrap();
         assert_eq!(report.recovery_operations.len(), 3);
+        assert_eq!(report.imaging_and_raid_operations.len(), 1);
         assert_eq!(
             report.recovery_operations[0].event,
             "recovery_export_finished"
@@ -1896,8 +2007,13 @@ mod tests {
             1
         );
         let html = String::from_utf8(encode_html_report(&report).unwrap()).unwrap();
-        assert!(html.contains("carved-partial"));
+        assert!(html.contains("D:/case/carved-partial &lt;script&gt;alert(1)&lt;/script&gt;"));
+        assert!(!html.contains("<script>alert(1)</script>"));
         assert!(html.contains("&quot;cancelled&quot;: true"));
+        assert!(
+            html.find("D:/case/carved-partial") < html.find("raid_reconstruction_started"),
+            "the rendered operation table should follow audit record order"
+        );
     }
 
     #[test]
