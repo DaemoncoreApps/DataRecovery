@@ -1,5 +1,17 @@
 # Recovery validation — 2026-10-31
 
+## Current source validation — 2026-11-24
+
+Commit `eb89d49` passed local `npm run validate`: strict byte-offset checks
+(5 accepted, 8 rejected), TypeScript and the Vite production frontend build,
+67 core tests passed (3 ignored), 178 desktop tests passed (12 ignored), Rust
+format checks, and Clippy for both crates with warnings denied. The ignored
+tests require external fixtures or a Windows volume configuration and are not
+counted as passing. Cargo reported that hard links are unavailable for its
+incremental cache in this workspace and copied cache files instead. This
+validates source behavior under the local suite; the latest Windows package is
+still built from older commit `9e7b6ef` and remains unsigned and unqualified.
+
 ## RAID layout confirmation gate — 2026-11-24
 
 RAID reconstruction now requires the operator to confirm that member order and
