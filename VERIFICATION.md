@@ -23,6 +23,29 @@ software tests do not qualify abrupt power-loss behavior, process-kill recovery,
 physical device handling, or the complete six-workflow product in an accredited
 lab.
 
+
+## Windows offline package — 2026-11-24
+
+The application code at commit `9e7b6ef` passed `npm run validate` before
+packaging: 67 core tests (3 ignored), 175 desktop tests (12 ignored), strict
+byte-offset checks, frontend production build, Rust formatting, and Clippy with
+warnings denied. The `npm run package:windows -- -SkipValidation` script then
+completed successfully from an isolated short-path target directory. Tauri's
+NSIS 3.13 toolchain and plugin passed its pinned hash checks; the x64 offline
+WebView2 installer was embedded in the setup.
+
+- Standalone app: `src-tauri/target/p9e7b6efcd2afe009/release/daemoncore.exe`,
+  15,758,848 bytes, SHA-256
+  `b44346fe3c022235a3b04d702adbfaa3f5dbb5f8c9a9aa8e651d38ce6da8e8b1`.
+- Offline installer: `src-tauri/target/p9e7b6efcd2afe009/release/bundle/nsis/DaemonCore Data Recovery_0.1.0_x64-setup.exe`,
+  303,061,482 bytes, SHA-256
+  `1890c9ce0c391407b6be0ec995e526466cb1ccfa04677e2c4a8957be6b466c20`.
+- The package script generated `SHA256SUMS.txt`; Authenticode reports both
+  artifacts as `NotSigned`.
+
+The installer was not installed, and neither the executable nor installer was
+launched. Packaged startup, installer lifecycle, and the six native workflows
+remain unverified. This package is not a signed production release.
 ## GitHub Actions spend safeguard — 2026-11-15
 
 Removed the repository's hosted validation and installer workflows after the

@@ -7,7 +7,12 @@ Set-StrictMode -Version Latest
 
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 $configPath = Join-Path $repoRoot "src-tauri\tauri.conf.json"
-$targetDirectory = Join-Path $repoRoot "src-tauri\target\package-stage"
+$buildRevision = (& git -C $repoRoot rev-parse --short=12 HEAD).Trim()
+if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($buildRevision)) {
+  throw "Could not identify the source revision for the isolated package build."
+}
+$buildNonce = [Guid]::NewGuid().ToString("N").Substring(0, 4)
+$targetDirectory = Join-Path $repoRoot "src-tauri\target\p$buildRevision$buildNonce"
 $previousTargetDirectory = $env:CARGO_TARGET_DIR
 
 Push-Location $repoRoot

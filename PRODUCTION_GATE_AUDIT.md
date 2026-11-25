@@ -7,7 +7,7 @@ to be independently verified for the shipped package.
 
 | # | Acceptance criterion | Status | Current evidence and remaining work |
 |---:|---|---|---|
-| 1 | Reliable launch on supported Windows | Partial | Current source passed npm run validate; the isolated release build produced daemoncore.exe (15,636,992 bytes, SHA-256 c6592bd6bece0595323ad9ed449ed6216076bc989a627fd3f6ed8053dc703590, Authenticode NotSigned) and offline NSIS setup (303,014,230 bytes, SHA-256 a79fece0ebedc211d6a8376a9c1f5e148a50df7ecab1676193fcb9a26bb7bdf7, NotSigned). The package script generated a SHA-256 manifest, and independent recomputation matched both artifacts. The staged `package-stage/release/daemoncore.exe` was launched and its native accessibility tree showed the DaemonCore window and dashboard; no workflow, installer, or clean-account behavior was exercised. Installer lifecycle, clean-account/configuration, active-case report generation, and broader startup tests remain open. |
+| 1 | Reliable launch on supported Windows | Partial | The Windows application source at commit 9e7b6ef passed `npm run validate` (67 core tests, 3 ignored; 175 desktop tests, 12 ignored; frontend production build, formatting, and Clippy with warnings denied). The isolated `npm run package:windows -- -SkipValidation` build produced `src-tauri/target/p9e7b6efcd2afe009/release/daemoncore.exe` (15,758,848 bytes, SHA-256 `b44346fe3c022235a3b04d702adbfaa3f5dbb5f8c9a9aa8e651d38ce6da8e8b1`, Authenticode NotSigned) and offline NSIS setup `DaemonCore Data Recovery_0.1.0_x64-setup.exe` (303,061,482 bytes, SHA-256 `1890c9ce0c391407b6be0ec995e526466cb1ccfa04677e2c4a8957be6b466c20`, NotSigned). The package script wrote `SHA256SUMS.txt`. This confirms package generation only: no installer install/upgrade/uninstall, clean-account behavior, or packaged workflow was exercised; signing and launch smoke coverage remain open. |
 | 2 | Supplied logo appears above the sidebar | Partial | The prior native smoke screenshot showed the supplied data recovery logo above navigation. Verify sizing, transparency, high-DPI scaling, and collapsed-sidebar behavior in the packaged app. |
 | 3 | Accurate physical devices and supported images | Partial | Disk Imaging enumerates readable `PhysicalDrive` devices, queries geometry and Windows storage identity descriptors (vendor/product/revision/serial/bus), exposes those values in the UI, and offers acquisition-package verification. Device enumeration now distinguishes absent PhysicalDrive paths from open or geometry failures and shows per-device diagnostics instead of silently hiding them; tests cover missing-path and access-denied classification. Geometry parsing now requires the complete 32-byte `DISK_GEOMETRY_EX` prefix, including all eight disk-size bytes; tests reject 31-byte responses, truncated length records, and inconsistent geometry. Acquisition reopens the selected device after destination selection and compares its complete reported descriptor and geometry with the exact row selected in the UI, rejecting replacement or changed devices before reading; regression tests cover changed serial and geometry. Windows media-changed, no-media, reinitialization-required, and disconnected-device errors now stop acquisition instead of being mapped as unreadable sectors; tests distinguish these from generic I/O device errors that can represent a localized bad sector. Devices that do not report identity remain labeled with the query limitation. Stable identity behavior without a device-reported serial, refresh UX during hot-plug, device-specific fixtures, and representative physical-device validation remain open. |
 | 4 | Source evidence is not modified | Partial | Image access uses a read-only handle with write/delete sharing denied, checks image stability, and rehashes around operations. The shared status bar now labels this boundary “Source access · read only” and explicitly says exports and reports write to the selected destination, avoiding an app-wide read-only claim. Physical acquisition opens with read access and allows concurrent readers only, denying new write handles; a Windows regression verifies the sharing lock. The ignored Windows destination-topology test was run locally and confirmed that an output folder on the same physical disk as a temporary source image is rejected. These checks cannot revoke an existing writer, so acquisition still requires operator attestation to an offline source and validated hardware write blocker. Synthetic acquisition tests cover complete, partial, and cancelled output. Physical write-blocker qualification, hostile/restricted-account tests, alternate storage-topology coverage, and hardware-level validation remain absent. |
@@ -30,16 +30,15 @@ The RAID Reconstruction route produces read-only-derived packages for operator-c
 
 ## Current package evidence
 
-The current application source was packaged from commit `4a8cdd8`; subsequent
-commits recorded verification results without changing application code. The
-staged standalone executable and offline NSIS installer, their SHA-256 values,
-and Authenticode status are recorded in `VERIFICATION.md`. The staged app was
-launched to the dashboard, but no workflow or installer behavior was exercised.
-Both artifacts are unsigned, and no code-signing tool or private-key certificate
-is available in the local Windows certificate stores. Installer lifecycle,
-clean-account behavior, and packaged workflow checks remain open. Earlier build
-artifacts and their smoke results are historical records in `VERIFICATION.md`;
-they are not the current release candidate.
+The latest application package was built from app source commit `9e7b6ef` in an
+isolated short-path target. Its standalone executable and offline NSIS installer,
+SHA-256 values, and Authenticode statuses are recorded in `VERIFICATION.md`.
+Neither artifact was launched or installed, and no packaged workflow was
+exercised. Both are unsigned; no code-signing tool or private-key certificate is
+available in the local Windows certificate stores. Installer lifecycle,
+clean-account behavior, signing, and packaged workflow checks remain open.
+Earlier build artifacts and smoke results are historical records and are not the
+current package.
 
 Test totals and detailed scope are recorded in `VERIFICATION.md`; capability
 boundaries and hard release gates are maintained in `CAPABILITIES.md`. This
