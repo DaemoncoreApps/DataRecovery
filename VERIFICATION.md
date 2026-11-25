@@ -2433,3 +2433,18 @@ setting `DAEMONCORE_NIST_NTFS_DFR02_EXPECTED` additionally enables the exact
 byte comparison. `npm run validate` passed: frontend build, formatting, 67
 NTFS-core tests (3 ignored), 173 desktop tests (12 ignored), and Clippy with
 warnings denied.
+
+## Current isolated Windows package — 2026-11-24
+
+npm run package:windows -- -SkipValidation built the current source into the
+isolated src-tauri/target/package-stage/release directory. The standalone
+executable is 15,636,992 bytes with SHA-256
+c6592bd6bece0595323ad9ed449ed6216076bc989a627fd3f6ed8053dc703590. The
+offline NSIS setup is 303,014,230 bytes with SHA-256
+a79fece0ebedc211d6a8376a9c1f5e148a50df7ecab1676193fcb9a26bb7bdf7.
+SHA256SUMS.txt was independently recomputed and matched both files.
+Authenticode reports NotSigned for both. The package uses the configured
+current-user installer mode and offline WebView2 runtime, but neither app nor
+installer was launched or installed. npm run validate passed on this source
+before packaging. No code-signing tool or private-key certificate was available
+in the local Windows certificate stores.
