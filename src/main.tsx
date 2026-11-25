@@ -1389,6 +1389,7 @@ function App() {
       ) : page === "RAID Reconstruction" ? (
         <>
           <RaidPanel
+            key={activeCaseId ?? "no-active-case"}
             job={job}
             busy={busy}
             canReconstruct={activeCaseId !== null && activeCaseAuditMatched}

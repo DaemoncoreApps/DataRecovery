@@ -19,18 +19,32 @@ export function RaidPanel({ job, busy, canReconstruct, run, onJob, onSource }: P
   const [dataOffset, setDataOffset] = useState("0");
   const [stripeSize, setStripeSize] = useState("65536");
   const [sectorSize, setSectorSize] = useState("512");
+  const [attestedConfiguration, setAttestedConfiguration] = useState<string | null>(null);
   const [verification, setVerification] = useState<RecoveryExportVerification | null>(null);
   const [verifying, setVerifying] = useState(false);
   const operationRunning = busy || job.state === "running";
   const minimumMembers = level === "raid6" ? 4 : level === "raid5" ? 3 : 2;
   const memberCountReady = members.length >= minimumMembers;
+  const configurationKey = JSON.stringify({
+    members,
+    level,
+    dataOffset,
+    stripeSize: level === "raid1" ? 0 : stripeSize,
+    sectorSize,
+    raid5Layout: level === "raid5" ? raid5Layout : null,
+  });
+  const configurationAttested = attestedConfiguration === configurationKey;
 
   const chooseMembers = () => run(async () => {
     const selected = await command<string[]>("pick_raid_members");
-    if (selected.length) setMembers([...new Set(selected)]);
+    if (selected.length) {
+      setMembers([...new Set(selected)]);
+      setAttestedConfiguration(null);
+    }
   });
 
   const move = (index: number, direction: -1 | 1) => {
+    setAttestedConfiguration(null);
     setMembers((current) => {
       const target = index + direction;
       if (target < 0 || target >= current.length) return current;
@@ -40,7 +54,9 @@ export function RaidPanel({ job, busy, canReconstruct, run, onJob, onSource }: P
     });
   };
 
-  const reconstruct = () => run(async () => {
+  const reconstruct = () => {
+    if (!configurationAttested) return;
+    return run(async () => {
     const offset = parseByteOffset(dataOffset, "RAID member data offset");
     setVerification(null);
     const started = await command<boolean>("reconstruct_raid", {
@@ -50,6 +66,7 @@ export function RaidPanel({ job, busy, canReconstruct, run, onJob, onSource }: P
       layout: {
         stripeSizeBytes: level === "raid1" ? 0 : Number(stripeSize),
         raid5Layout,
+        layoutMetadataAttested: true,
       },
       bytesPerSector: Number(sectorSize),
     });
@@ -57,7 +74,8 @@ export function RaidPanel({ job, busy, canReconstruct, run, onJob, onSource }: P
       onJob(await command<Job>("job_status"));
       onSource(await command<Source | null>("source_status"));
     }
-  });
+    });
+  };
 
   return (
     <>
@@ -85,7 +103,7 @@ export function RaidPanel({ job, busy, canReconstruct, run, onJob, onSource }: P
           <>
             <div className="raidControls">
               <label>Array level
-                <select value={level} disabled={operationRunning} onChange={(event) => setLevel(event.target.value as "raid0" | "raid1" | "raid5" | "raid6")}>
+                <select value={level} disabled={operationRunning} onChange={(event) => { setLevel(event.target.value as "raid0" | "raid1" | "raid5" | "raid6"); setAttestedConfiguration(null); }}>
                   <option value="raid0">RAID 0 · striped</option>
                   <option value="raid1">RAID 1 · mirrored</option>
                   <option value="raid5">RAID 5 · rotating parity</option>
@@ -94,7 +112,7 @@ export function RaidPanel({ job, busy, canReconstruct, run, onJob, onSource }: P
               </label>
               {level === "raid5" && (
                 <label>RAID 5 parity layout
-                  <select value={raid5Layout} disabled={operationRunning} onChange={(event) => setRaid5Layout(event.target.value)}>
+                  <select value={raid5Layout} disabled={operationRunning} onChange={(event) => { setRaid5Layout(event.target.value); setAttestedConfiguration(null); }}>
                     <option value="left_symmetric">Left-symmetric</option>
                     <option value="right_symmetric">Right-symmetric</option>
                     <option value="left_asymmetric">Left-asymmetric</option>
@@ -103,16 +121,16 @@ export function RaidPanel({ job, busy, canReconstruct, run, onJob, onSource }: P
                 </label>
               )}
               <label>Member data offset (bytes)
-                <input value={dataOffset} disabled={operationRunning} onChange={(event) => setDataOffset(event.target.value)} inputMode="numeric" />
+                <input value={dataOffset} disabled={operationRunning} onChange={(event) => { setDataOffset(event.target.value); setAttestedConfiguration(null); }} inputMode="numeric" />
               </label>
               <label>Logical sector size
-                <select value={sectorSize} disabled={operationRunning} onChange={(event) => setSectorSize(event.target.value)}>
+                <select value={sectorSize} disabled={operationRunning} onChange={(event) => { setSectorSize(event.target.value); setAttestedConfiguration(null); }}>
                   <option value="512">512 bytes</option><option value="4096">4096 bytes</option>
                 </select>
               </label>
               {level !== "raid1" && (
                 <label>Stripe size per member
-                  <select value={stripeSize} disabled={operationRunning} onChange={(event) => setStripeSize(event.target.value)}>
+                  <select value={stripeSize} disabled={operationRunning} onChange={(event) => { setStripeSize(event.target.value); setAttestedConfiguration(null); }}>
                     <option value="65536">64 KiB</option><option value="131072">128 KiB</option>
                     <option value="262144">256 KiB</option><option value="524288">512 KiB</option>
                     <option value="1048576">1 MiB</option><option value="2097152">2 MiB</option>
@@ -131,15 +149,25 @@ export function RaidPanel({ job, busy, canReconstruct, run, onJob, onSource }: P
                     <b>{String(index + 1).padStart(2, "0")}</b><span title={path}>{path}</span>
                     <button aria-label={`Move member ${index + 1} up`} disabled={operationRunning || index === 0} onClick={() => move(index, -1)}><ArrowUp size={14} /></button>
                     <button aria-label={`Move member ${index + 1} down`} disabled={operationRunning || index === members.length - 1} onClick={() => move(index, 1)}><ArrowDown size={14} /></button>
-                    <button aria-label={`Remove member ${index + 1}`} disabled={operationRunning} onClick={() => setMembers((current) => current.filter((_, item) => item !== index))}>Remove</button>
+                    <button aria-label={`Remove member ${index + 1}`} disabled={operationRunning} onClick={() => { setMembers((current) => current.filter((_, item) => item !== index)); setAttestedConfiguration(null); }}>Remove</button>
                   </div>
                 ))}
               </div>
             ) : (
               <div className="empty"><HardDrive /><h3>No member images selected</h3><p>Select at least {minimumMembers} raw member images for {level.toUpperCase()}. Original members are opened read only.</p></div>
             )}
+            <label className="checkLabel raidAttestation">
+              <input
+                type="checkbox"
+                checked={configurationAttested}
+                disabled={operationRunning || !canReconstruct || !memberCountReady}
+                onChange={(event) => setAttestedConfiguration(event.target.checked ? configurationKey : null)}
+              />
+              <ShieldCheck size={15} />
+              I verified member order and array geometry against validated metadata. I understand parity agreement alone does not prove logical data order.
+            </label>
             <div className="actions">
-              <button className="primary" disabled={operationRunning || !canReconstruct || !memberCountReady} onClick={reconstruct}>
+              <button className="primary" disabled={operationRunning || !canReconstruct || !memberCountReady || !configurationAttested} onClick={reconstruct}>
                 Reconstruct {level === "raid0" ? "RAID 0" : level === "raid1" ? "RAID 1" : level === "raid5" ? "RAID 5" : "RAID 6"}
               </button>
               {!memberCountReady && members.length > 0 && <span className="muted">{level.toUpperCase()} requires at least {minimumMembers} member images; {members.length} selected.</span>}

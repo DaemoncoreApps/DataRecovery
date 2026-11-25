@@ -20,6 +20,13 @@ const MAX_MEMBERS: usize = 32;
 const MAX_STRIPE_BYTES: u64 = 16 * 1024 * 1024;
 const INCOMPLETE_MARKER: &[u8] = b"UNPUBLISHED RAID RECONSTRUCTION: this staged image did not pass all reconstruction and package checks. Do not treat it as a verified image or package.\n";
 
+fn require_layout_metadata_attestation(attested: bool) -> Result<()> {
+    if !attested {
+        return Err("Confirm that member order and array geometry match validated metadata before reconstruction.".into());
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RaidLevel {
     Raid0,
@@ -220,6 +227,7 @@ pub struct ReconstructionRequest<'a> {
 pub struct RaidLayoutInput {
     stripe_size_bytes: u64,
     raid5_layout: String,
+    layout_metadata_attested: bool,
 }
 
 struct Staging(Option<PathBuf>);
@@ -932,7 +940,9 @@ pub async fn reconstruct_raid(
     let RaidLayoutInput {
         stripe_size_bytes,
         raid5_layout,
+        layout_metadata_attested,
     } = layout;
+    require_layout_metadata_attestation(layout_metadata_attested)?;
     let level_value = RaidLevel::parse(&level)?;
     let raid5_layout = Raid5Layout::parse(&raid5_layout)?;
     if !(MIN_MEMBERS..=MAX_MEMBERS).contains(&member_paths.len()) {
@@ -1022,6 +1032,7 @@ pub async fn reconstruct_raid(
                 "reconstructed_size_bytes":output_size,
                 "destination":destination,
                 "member_order_is_operator_supplied":true,
+                "operator_confirmed_layout_from_validated_metadata":layout_metadata_attested,
             })
             .to_string(),
         )?;
@@ -1176,6 +1187,13 @@ mod tests {
 
     fn write_member(path: &Path, bytes: &[u8]) {
         fs::write(path, bytes).unwrap();
+    }
+
+    #[test]
+    fn reconstruction_requires_explicit_metadata_confirmation() {
+        let error = require_layout_metadata_attestation(false).unwrap_err();
+        assert!(error.contains("validated metadata"));
+        require_layout_metadata_attestation(true).unwrap();
     }
 
     #[test]
