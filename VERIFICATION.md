@@ -2378,3 +2378,14 @@ writer regression confirms the write stops after the first chunk, and a
 filesystem regression confirms the temporary file is removed. `npm run
 validate` passed: frontend build, formatting, 67 NTFS-core tests (3 ignored),
 173 desktop tests (12 ignored), and Clippy with warnings denied.
+
+## Dependency security audit — 2026-11-25
+
+`npm run audit:dependencies` completed successfully with network access. `npm
+audit --omit=dev` reported zero vulnerabilities. Cargo Audit scanned 495
+`src-tauri` lockfile dependencies and 23 `ntfs-core` lockfile dependencies and
+reported zero vulnerabilities. It reported seven allowed warnings across the
+full desktop lockfile: five unmaintained crates, one unsound `glib` version,
+and one yanked crate. `cargo tree --target x86_64-pc-windows-msvc -i` confirmed
+those seven crates are absent from the shipped Windows target graph. Linux and
+other non-Windows build targets still need maintenance review.
