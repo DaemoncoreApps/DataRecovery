@@ -1120,7 +1120,7 @@ impl Volume {
                     return Err("Empty exFAT file has inconsistent allocation metadata.".into());
                 }
             } else if !deleted {
-                self.validate_stream_allocation(source, &stream)?;
+                self.validate_stream_allocation(source, &stream, Some(cancel))?;
             } else {
                 self.cluster_offset(stream.first_cluster)?;
                 let clusters = stream
@@ -1229,7 +1229,12 @@ impl Volume {
             .ok_or_else(|| "exFAT directory record offset overflow.".into())
     }
 
-    fn validate_stream_allocation(&self, source: &dyn BlockSource, stream: &Stream) -> Result<()> {
+    fn validate_stream_allocation(
+        &self,
+        source: &dyn BlockSource,
+        stream: &Stream,
+        cancel: Option<&AtomicBool>,
+    ) -> Result<()> {
         let required_clusters = stream
             .data_length
             .checked_add(self.cluster_size - 1)
@@ -1247,6 +1252,7 @@ impl Volume {
                 return Err("exFAT contiguous stream extends beyond the cluster heap.".into());
             }
             for cluster in u64::from(stream.first_cluster)..=end {
+                check_cancelled(cancel)?;
                 if !self.cluster_allocated(source, cluster as u32)? {
                     return Err(
                         "exFAT file stream uses a cluster marked free in its allocation bitmap."
@@ -1255,13 +1261,14 @@ impl Volume {
                 }
             }
         } else {
-            let clusters = self.walk_fat_chain(source, stream.first_cluster)?;
+            let clusters = self.walk_fat_chain_with_cancel(source, stream.first_cluster, cancel)?;
             if (clusters.len() as u64) < required_clusters {
                 return Err(
                     "exFAT file cluster chain is shorter than its declared data length.".into(),
                 );
             }
             for cluster in clusters {
+                check_cancelled(cancel)?;
                 if !self.cluster_allocated(source, cluster)? {
                     return Err(
                         "exFAT file stream uses a cluster marked free in its allocation bitmap."
@@ -1828,6 +1835,30 @@ mod tests {
 
         let error =
             Volume::open_cancellable(&cancelling_source, 0, source.len(), &cancel).unwrap_err();
+        assert!(error.contains("cancelled"));
+    }
+
+    #[test]
+    fn exfat_live_file_allocation_validation_stops_when_cancelled() {
+        let source = fixture();
+        let volume = Volume::open(&source, 0, source.len()).unwrap();
+        let cancel = AtomicBool::new(false);
+        let cancelling_source = CancelAfterRead {
+            bytes: &source.0,
+            cancel: &cancel,
+        };
+        let stream = Stream {
+            name_length: 1,
+            name_hash: 0,
+            valid_data_length: 1536,
+            first_cluster: 2,
+            data_length: 1536,
+            no_fat_chain: true,
+        };
+
+        let error = volume
+            .validate_stream_allocation(&cancelling_source, &stream, Some(&cancel))
+            .unwrap_err();
         assert!(error.contains("cancelled"));
     }
 

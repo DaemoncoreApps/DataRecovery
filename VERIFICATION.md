@@ -2358,3 +2358,13 @@ these scans. Focused regressions cover cancellation during source reads and
 directory traversal. `npm run validate` passed: 66 NTFS-core tests (3
 ignored), 171 desktop tests (12 ignored), frontend build, formatting, and
 Clippy with warnings denied.
+
+### exFAT live-file validation cancellation — 2026-11-24
+
+Follow-up review found that a scan could spend a long time checking every
+cluster in a large live file without polling the cancellation token. The exFAT
+allocation validator now polls cancellation between bitmap reads and while
+following retained FAT chains. A regression raises cancellation during the
+bitmap walk and confirms the operation stops. `npm run validate` passed:
+frontend build, formatting, 67 NTFS-core tests (3 ignored), 171 desktop tests
+(12 ignored), and Clippy with warnings denied.
