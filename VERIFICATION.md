@@ -2389,3 +2389,16 @@ full desktop lockfile: five unmaintained crates, one unsound `glib` version,
 and one yanked crate. `cargo tree --target x86_64-pc-windows-msvc -i` confirmed
 those seven crates are absent from the shipped Windows target graph. Linux and
 other non-Windows build targets still need maintenance review.
+
+## Independent exFAT inventory and carving recheck — 2026-11-25
+
+Fetched `fs.exfat.xz` from the recorded upstream commit and verified its
+SHA-256 as `6aa8868301b0288cd3f9d751c1779fd79570f7cb1bb9568d70d0a27d74c00d70`
+before decompression. The resulting 52,428,800-byte image matched the pinned
+SHA-256 `98d518601199a32054158bb3a759e12b554fd2ebcc5960541caf9e1a907198d0`.
+The ignored independent exFAT inventory test passed, confirming all 22
+expected live paths and excluding the deleted directories. The ignored
+independent carving test passed and matched the published JPEG and PNG source
+files by exact byte length and SHA-256. These runs add independent fixture
+coverage for live exFAT analysis and carving; they do not qualify deleted-file
+recovery or broad media compatibility.
