@@ -2402,3 +2402,16 @@ independent carving test passed and matched the published JPEG and PNG source
 files by exact byte length and SHA-256. These runs add independent fixture
 coverage for live exFAT analysis and carving; they do not qualify deleted-file
 recovery or broad media compatibility.
+
+## Independent FAT32 inventory and file-read recheck — 2026-11-25
+
+Downloaded the University of Virginia CS 4414 `testdisk1` image and expected
+dump archives. Their SHA-256 values matched the pinned values in
+`src-tauri/tests/fixtures/FAT32-UVA-REFERENCE.md`; the extracted 256,098,304-
+byte image also matched its pinned SHA-256. The previously ignored FAT32
+reference regression passed: it traversed over 1,000 entries, found nested
+content, compared `GAMECOPY.TXT`, `GAMEFRAG.TXT`, and `CONGRATS.TXT` byte for
+byte against the independent dump, and confirmed the first file is contiguous
+while the second is fragmented. This verifies live FAT32 inventory and reads
+on one reference image; it does not test deleted-file reconstruction or
+arbitrary volumes.
