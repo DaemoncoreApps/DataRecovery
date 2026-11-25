@@ -2415,3 +2415,21 @@ byte against the independent dump, and confirmed the first file is contiguous
 while the second is fragmented. This verifies live FAT32 inventory and reads
 on one reference image; it does not test deleted-file reconstruction or
 arbitrary volumes.
+
+## NIST fragmented NTFS recovery recheck — 2026-11-25
+
+Downloaded the NIST CFTT DFR-02 archive and verified its pinned SHA-256
+`18ff23026ad7ed8fe6d93eca00200b0ede031c6ee4e760f52e62aee397d87844`. The
+decompressed 1,073,742,336-byte disk image matched pinned SHA-256
+`57e6f37d3312ee4a113a6534a1ffcbd45ad3e0325a509442ac54ae632762d1ef`. The
+ignored native recovery regression passed on this image without the optional
+expected-file artifact: it found deleted `Bunda.txt`, required non-adjacent
+NTFS data runs, exported through the production path, passed the native
+package verifier, and matched the independently pinned 8,192-byte Sleuth Kit
+output SHA-256 `c6c07acfb00ad4e8567f583c2aadec51d212f13eb3482e3514e89986df6c9503`.
+A local attempt to run the official Sleuth Kit Windows binaries failed with
+Windows `ERROR_ILLEGAL_DLL_RELOCATION`, so this run used the pinned digest;
+setting `DAEMONCORE_NIST_NTFS_DFR02_EXPECTED` additionally enables the exact
+byte comparison. `npm run validate` passed: frontend build, formatting, 67
+NTFS-core tests (3 ignored), 173 desktop tests (12 ignored), and Clippy with
+warnings denied.

@@ -1544,19 +1544,22 @@ fn exports_deleted_ntfs_file_against_sleuthkit_bytes() {
 }
 
 #[test]
-#[ignore = "requires the hash-pinned NIST CFTT DFR-02 NTFS image and Sleuth Kit expected bytes"]
+#[ignore = "requires the hash-pinned NIST CFTT DFR-02 NTFS image; exact-byte comparison also uses Sleuth Kit expected bytes"]
 fn exports_fragmented_deleted_ntfs_file_from_nist_dfr02_reference() {
     let image_path = std::env::var_os("DAEMONCORE_NIST_NTFS_DFR02_IMAGE")
         .expect("set DAEMONCORE_NIST_NTFS_DFR02_IMAGE to the NIST DFR-02 disk image");
-    let expected_path = std::env::var_os("DAEMONCORE_NIST_NTFS_DFR02_EXPECTED")
-        .expect("set DAEMONCORE_NIST_NTFS_DFR02_EXPECTED to Sleuth Kit's Bunda.txt output");
     let image_path = std::path::PathBuf::from(image_path);
-    let expected = std::fs::read(expected_path).expect("read NIST DFR-02 expected bytes");
-    assert_eq!(expected.len(), 8_192);
-    assert_eq!(
-        format!("{:x}", Sha256::digest(&expected)),
-        "c6c07acfb00ad4e8567f583c2aadec51d212f13eb3482e3514e89986df6c9503"
-    );
+    let expected = std::env::var_os("DAEMONCORE_NIST_NTFS_DFR02_EXPECTED")
+        .map(std::fs::read)
+        .transpose()
+        .expect("read NIST DFR-02 Sleuth Kit expected bytes when supplied");
+    const EXPECTED_BYTES: u64 = 8_192;
+    const EXPECTED_SHA256: &str =
+        "c6c07acfb00ad4e8567f583c2aadec51d212f13eb3482e3514e89986df6c9503";
+    if let Some(expected) = &expected {
+        assert_eq!(expected.len() as u64, EXPECTED_BYTES);
+        assert_eq!(format!("{:x}", Sha256::digest(expected)), EXPECTED_SHA256);
+    }
 
     let source = crate::storage::Image::open(&image_path).expect("open NIST DFR-02 image");
     let partition_offset_bytes = 61 * 512;
@@ -1577,7 +1580,7 @@ fn exports_fragmented_deleted_ntfs_file_from_nist_dfr02_reference() {
         "Bunda.txt blocked: {:?}",
         candidate.notes
     );
-    assert_eq!(candidate.size, expected.len() as u64);
+    assert_eq!(candidate.size, EXPECTED_BYTES);
 
     let record = ntfs::read_record(&source, &scan.boot, &scan.mft, candidate.id)
         .expect("read deleted Bunda.txt MFT record");
@@ -1643,10 +1646,12 @@ fn exports_fragmented_deleted_ntfs_file_from_nist_dfr02_reference() {
     let output_name = record["output_name"]
         .as_str()
         .expect("manifest records output path");
-    assert_eq!(
-        std::fs::read(package.join(output_name)).expect("read exported NTFS bytes"),
-        expected
-    );
+    let recovered = std::fs::read(package.join(output_name)).expect("read exported NTFS bytes");
+    assert_eq!(recovered.len() as u64, EXPECTED_BYTES);
+    assert_eq!(format!("{:x}", Sha256::digest(&recovered)), EXPECTED_SHA256);
+    if let Some(expected) = expected {
+        assert_eq!(recovered, expected);
+    }
     std::fs::remove_dir_all(root).unwrap();
 }
 

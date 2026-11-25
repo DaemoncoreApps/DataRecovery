@@ -41,10 +41,12 @@ installed:
 bash src-tauri/tests/fixtures/prepare-nist-ntfs-dfr02.sh /path/to/fixture-dir
 ```
 
-Set `DAEMONCORE_NIST_NTFS_DFR02_IMAGE` to the resulting `.dd` image and
-`DAEMONCORE_NIST_NTFS_DFR02_EXPECTED` to `Bunda.txt.sleuthkit`, then run the
+Set `DAEMONCORE_NIST_NTFS_DFR02_IMAGE` to the resulting `.dd` image and run the
 ignored test `ntfs_tests::exports_fragmented_deleted_ntfs_file_from_nist_dfr02_reference`
-with `--ignored --exact`. The script refuses to overwrite existing artifacts.
+with `--ignored --exact`. The test checks the known Sleuth Kit output's pinned
+SHA-256. Set `DAEMONCORE_NIST_NTFS_DFR02_EXPECTED` to
+`Bunda.txt.sleuthkit` as well to compare every exported byte against the
+independent extraction. The script refuses to overwrite existing artifacts.
 # External reference fixtures
 
 The exFAT validation workflow downloads a separately generated filesystem image
