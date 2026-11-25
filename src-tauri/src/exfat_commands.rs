@@ -142,7 +142,7 @@ pub fn start_exfat_scan(offset: u64, app: tauri::AppHandle, state: State<AppStat
         state: "running".into(),
         kind: "exfat_scan".into(),
         message: Some(
-            "Validating exFAT boot regions, allocation metadata, and directory entries".into(),
+            "Validating exFAT metadata and traversing directories; cancellation is available during validation, the scan, and source recheck".into(),
         ),
         ..Job::default()
     };
@@ -150,8 +150,14 @@ pub fn start_exfat_scan(offset: u64, app: tauri::AppHandle, state: State<AppStat
     std::thread::spawn(move || {
         let state = app.state::<AppState>();
         let operation = crate::guarded(|| {
-            let volume = exfat::Volume::open(image.as_ref(), offset, image.len() - offset)?;
-            let entries = volume.read_tree_with_deleted(image.as_ref())?;
+            let volume = exfat::Volume::open_cancellable(
+                image.as_ref(),
+                offset,
+                image.len() - offset,
+                &state.cancel,
+            )?;
+            let entries =
+                volume.read_tree_with_deleted_cancellable(image.as_ref(), &state.cancel)?;
             if state.cancel.load(Ordering::SeqCst) {
                 return Err("exFAT scan was cancelled; no results were recorded.".into());
             }

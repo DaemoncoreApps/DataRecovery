@@ -176,7 +176,7 @@ pub fn start_fat32_scan(offset: u64, app: tauri::AppHandle, state: State<AppStat
         state: "running".into(),
         kind: "fat32_scan".into(),
         message: Some(
-            "Validating FAT32 volume and enumerating directory records; cancellation becomes available during the source recheck".into(),
+            "Validating FAT32 volume and enumerating directory records; cancellation is available during the scan and source recheck".into(),
         ),
         ..Job::default()
     };
@@ -185,7 +185,8 @@ pub fn start_fat32_scan(offset: u64, app: tauri::AppHandle, state: State<AppStat
         let state = app.state::<AppState>();
         let scan = crate::guarded(|| {
             let volume = fat32::Volume::open(image.as_ref(), offset, image.len() - offset)?;
-            let entries = volume.read_tree_including_deleted(image.as_ref())?;
+            let entries =
+                volume.read_tree_including_deleted_cancellable(image.as_ref(), &state.cancel)?;
             if state.cancel.load(Ordering::SeqCst) {
                 return Err("FAT32 scan was cancelled; no results were recorded.".into());
             }

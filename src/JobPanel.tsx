@@ -36,8 +36,7 @@ export function JobPanel({ job, cancel }: Props) {
   const percent = job.total ? (100 * job.processed) / job.total : 0;
   const canCancel =
     job.state === "running" &&
-    job.kind !== "case_report_export" &&
-    (job.kind !== "fat32_scan" || job.message?.startsWith("Rechecking the complete source SHA-256"));
+    job.kind !== "case_report_export";
   const status =
     job.state === "idle"
       ? "Idle"

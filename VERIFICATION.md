@@ -2346,3 +2346,15 @@ does not retain the marker. This improves detection of abandoned staging but
 does not resume acquisition or qualify power-loss behavior. All 16 acquisition
 tests passed. `npm run validate` passed: 63 NTFS-core tests, 171 desktop tests
 (12 ignored), frontend build, formatting, and Clippy with warnings denied.
+
+## FAT32/exFAT scan cancellation — 2026-11-24
+
+FAT32 and exFAT scans now poll cancellation during directory traversal and
+record parsing; exFAT also polls while opening and validating allocation
+metadata and following FAT chains. The desktop commands pass the job
+cancellation token through these paths, and cancelled scans return before a
+partial snapshot is persisted. The operation monitor exposes Cancel during
+these scans. Focused regressions cover cancellation during source reads and
+directory traversal. `npm run validate` passed: 66 NTFS-core tests (3
+ignored), 171 desktop tests (12 ignored), frontend build, formatting, and
+Clippy with warnings denied.

@@ -1,6 +1,9 @@
 use crate::storage::BlockSource;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::{
+    collections::HashSet,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 type Result<T> = std::result::Result<T, String>;
 
@@ -276,7 +279,7 @@ impl Volume {
         source: &dyn BlockSource,
         first_cluster: u32,
     ) -> Result<Vec<DirectoryEntry>> {
-        self.read_directory_records(source, first_cluster, false)
+        self.read_directory_records(source, first_cluster, false, &AtomicBool::new(false))
     }
 
     fn read_directory_records(
@@ -284,6 +287,7 @@ impl Volume {
         source: &dyn BlockSource,
         first_cluster: u32,
         include_deleted: bool,
+        cancel: &AtomicBool,
     ) -> Result<Vec<DirectoryEntry>> {
         if first_cluster < 2 {
             return Err("FAT32 directory starting cluster is invalid".into());
@@ -299,6 +303,9 @@ impl Volume {
         let mut deleted_lfn_checksum = None;
         let mut deleted_lfn_invalid = false;
         loop {
+            if cancel.load(Ordering::Relaxed) {
+                return Err("FAT32 directory scan was cancelled".into());
+            }
             if !visited.insert(cluster) {
                 return Err("FAT32 directory chain contains a cycle".into());
             }
@@ -316,6 +323,9 @@ impl Volume {
                 return Err("FAT32 directory cluster has an invalid record boundary".into());
             }
             for (record_index, record) in records.iter().enumerate() {
+                if record_index.is_multiple_of(256) && cancel.load(Ordering::Relaxed) {
+                    return Err("FAT32 directory scan was cancelled".into());
+                }
                 if record[0] == 0 {
                     ended = true;
                     break;
@@ -465,19 +475,28 @@ impl Volume {
     /// Enumerate live entries below the FAT32 root with explicit depth,
     /// entry-count, and directory-cluster cycle bounds.
     pub fn read_tree(&self, source: &dyn BlockSource) -> Result<Vec<TreeEntry>> {
-        self.read_tree_records(source, false)
+        self.read_tree_records(source, false, &AtomicBool::new(false))
     }
 
     /// Include deleted short-name records and any adjacent deleted long-name
     /// text leads in the traversal result. Leads remain separate from paths.
     pub fn read_tree_including_deleted(&self, source: &dyn BlockSource) -> Result<Vec<TreeEntry>> {
-        self.read_tree_records(source, true)
+        self.read_tree_records(source, true, &AtomicBool::new(false))
+    }
+
+    pub fn read_tree_including_deleted_cancellable(
+        &self,
+        source: &dyn BlockSource,
+        cancel: &AtomicBool,
+    ) -> Result<Vec<TreeEntry>> {
+        self.read_tree_records(source, true, cancel)
     }
 
     fn read_tree_records(
         &self,
         source: &dyn BlockSource,
         include_deleted: bool,
+        cancel: &AtomicBool,
     ) -> Result<Vec<TreeEntry>> {
         let mut output = Vec::new();
         let mut output_memory = 0usize;
@@ -487,6 +506,9 @@ impl Volume {
         visited_directories.insert(self.root_cluster);
 
         while let Some((cluster, parent_path, depth)) = pending.pop() {
+            if cancel.load(Ordering::Relaxed) {
+                return Err("FAT32 directory scan was cancelled".into());
+            }
             let active_path_memory = Self::path_memory(&parent_path)?;
             let pending_entry_memory = std::mem::size_of::<(u32, Vec<String>, usize)>()
                 .checked_add(active_path_memory)
@@ -494,7 +516,7 @@ impl Volume {
             pending_memory = pending_memory
                 .checked_sub(pending_entry_memory)
                 .ok_or("FAT32 directory tree memory estimate underflow")?;
-            let entries = self.read_directory_records(source, cluster, include_deleted)?;
+            let entries = self.read_directory_records(source, cluster, include_deleted, cancel)?;
             let entries_storage = entries
                 .capacity()
                 .checked_mul(std::mem::size_of::<DirectoryEntry>())
@@ -510,6 +532,9 @@ impl Volume {
             let mut child_directories = Vec::new();
             let mut child_directory_memory = 0usize;
             for entry in entries {
+                if output.len().is_multiple_of(256) && cancel.load(Ordering::Relaxed) {
+                    return Err("FAT32 directory scan was cancelled".into());
+                }
                 if !entry.deleted
                     && (entry.short_name == *b".          " || entry.short_name == *b"..         ")
                 {
@@ -1071,6 +1096,23 @@ mod tests {
         }
     }
 
+    struct CancelAfterRead<'a> {
+        bytes: &'a [u8],
+        cancel: &'a AtomicBool,
+    }
+
+    impl BlockSource for CancelAfterRead<'_> {
+        fn len(&self) -> u64 {
+            self.bytes.len() as u64
+        }
+
+        fn read_exact_at(&self, offset: u64, buffer: &mut [u8]) -> io::Result<()> {
+            SliceSource(self.bytes).read_exact_at(offset, buffer)?;
+            self.cancel.store(true, Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
     struct FileSource {
         file: Mutex<File>,
         size: u64,
@@ -1139,6 +1181,23 @@ mod tests {
         );
         assert!(Volume::checked_directory_memory(4, 7, 10, error).is_err());
         assert!(Volume::checked_directory_memory(usize::MAX, 1, usize::MAX, error).is_err());
+    }
+
+    #[test]
+    fn fat32_directory_scan_stops_when_cancelled_during_traversal() {
+        let bytes = fixture();
+        let source = SliceSource(&bytes);
+        let volume = Volume::open(&source, 0, bytes.len() as u64).unwrap();
+        let cancel = AtomicBool::new(false);
+        let source = CancelAfterRead {
+            bytes: &bytes,
+            cancel: &cancel,
+        };
+
+        let error = volume
+            .read_tree_including_deleted_cancellable(&source, &cancel)
+            .unwrap_err();
+        assert!(error.contains("cancelled"));
     }
 
     #[test]

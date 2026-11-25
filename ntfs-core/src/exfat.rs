@@ -1,6 +1,9 @@
 use crate::{partition, storage::BlockSource};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::{
+    collections::HashSet,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 type Result<T> = std::result::Result<T, String>;
 type BitmapEntry = (u8, u32, u64);
@@ -19,6 +22,14 @@ const MAX_PARSED_DIRECTORY_MEMORY: usize = 128 * 1024 * 1024;
 const MAX_DIRECTORY_TREE_MEMORY: usize = 256 * 1024 * 1024;
 const MAX_DIRECTORY_TREE_CLUSTERS: usize = 2_000_000;
 const MAX_UPCASE_BYTES: u64 = 128 * 1024;
+
+fn check_cancelled(cancel: Option<&AtomicBool>) -> Result<()> {
+    if cancel.is_some_and(|cancel| cancel.load(Ordering::Relaxed)) {
+        Err("exFAT directory scan was cancelled.".into())
+    } else {
+        Ok(())
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DirectoryEntry {
@@ -116,7 +127,8 @@ struct Stream {
     no_fat_chain: bool,
 }
 
-struct DirectoryTreeResults {
+struct DirectoryTreeResults<'a> {
+    cancel: &'a AtomicBool,
     visited_directories: HashSet<u32>,
     entries: Vec<TreeEntry>,
     estimated_bytes: usize,
@@ -151,6 +163,25 @@ impl Volume {
     /// Open an exFAT volume only when at least one checksum-valid boot copy
     /// exists and valid copies agree on their geometry.
     pub fn open(source: &dyn BlockSource, offset: u64, partition_size: u64) -> Result<Self> {
+        Self::open_inner(source, offset, partition_size, None)
+    }
+
+    pub fn open_cancellable(
+        source: &dyn BlockSource,
+        offset: u64,
+        partition_size: u64,
+        cancel: &AtomicBool,
+    ) -> Result<Self> {
+        Self::open_inner(source, offset, partition_size, Some(cancel))
+    }
+
+    fn open_inner(
+        source: &dyn BlockSource,
+        offset: u64,
+        partition_size: u64,
+        cancel: Option<&AtomicBool>,
+    ) -> Result<Self> {
+        check_cancelled(cancel)?;
         if partition_size < 24 * 512
             || offset
                 .checked_add(partition_size)
@@ -162,6 +193,7 @@ impl Volume {
         source
             .read_exact_at(offset, &mut sector_probe)
             .map_err(|error| format!("Could not read exFAT boot sector: {error}"))?;
+        check_cancelled(cancel)?;
         let shift = *sector_probe
             .get(108)
             .ok_or("exFAT boot sector is truncated.")?;
@@ -181,6 +213,7 @@ impl Volume {
         source
             .read_exact_at(offset, &mut main_region)
             .map_err(|error| format!("Could not read the exFAT main boot region: {error}"))?;
+        check_cancelled(cancel)?;
         let backup_offset = offset
             .checked_add(12 * u64::from(bytes_per_sector))
             .ok_or("exFAT backup boot-region offset overflow.")?;
@@ -188,6 +221,7 @@ impl Volume {
         source
             .read_exact_at(backup_offset, &mut backup_region)
             .map_err(|error| format!("Could not read the exFAT backup boot region: {error}"))?;
+        check_cancelled(cancel)?;
         let main =
             partition::parse_exfat_boot_region(&main_region, bytes_per_sector, partition_sectors);
         let backup =
@@ -266,9 +300,15 @@ impl Volume {
                 length: 0,
             },
         };
-        let root_clusters = volume.walk_fat_chain(source, volume.root_cluster)?;
-        let root_bytes = volume.read_clusters(source, &root_clusters, MAX_DIRECTORY_BYTES)?;
-        let (bitmap_entries, upcase_entry) = volume.read_system_entries(&root_bytes)?;
+        let root_clusters =
+            volume.walk_fat_chain_with_cancel(source, volume.root_cluster, cancel)?;
+        let root_bytes = volume.read_clusters_with_cancel(
+            source,
+            &root_clusters,
+            MAX_DIRECTORY_BYTES,
+            cancel,
+        )?;
+        let (bitmap_entries, upcase_entry) = volume.read_system_entries(&root_bytes, cancel)?;
         let bitmap_entry = bitmap_entries
             .into_iter()
             .find(|(flags, _, _)| *flags == active_fat)
@@ -281,7 +321,7 @@ impl Volume {
             return Err("exFAT allocation bitmap length does not match the cluster heap.".into());
         }
         volume.bitmap = Bitmap {
-            clusters: volume.walk_fat_chain(source, bitmap_entry.1)?,
+            clusters: volume.walk_fat_chain_with_cancel(source, bitmap_entry.1, cancel)?,
             length: bitmap_entry.2,
         };
         if volume.bitmap.clusters.len() as u64 * volume.cluster_size < volume.bitmap.length {
@@ -293,23 +333,28 @@ impl Volume {
         if upcase_length == 0 || upcase_length > MAX_UPCASE_BYTES {
             return Err("exFAT up-case table length is outside the supported bound.".into());
         }
-        let upcase_clusters = volume.walk_fat_chain(source, upcase_first_cluster)?;
-        let upcase_bytes = volume.read_file_bytes(source, &upcase_clusters, upcase_length)?;
+        let upcase_clusters =
+            volume.walk_fat_chain_with_cancel(source, upcase_first_cluster, cancel)?;
+        let upcase_bytes =
+            volume.read_file_bytes(source, &upcase_clusters, upcase_length, cancel)?;
         if checksum32(&upcase_bytes) != upcase_checksum {
             return Err("exFAT up-case table checksum is invalid.".into());
         }
         volume.upcase = decode_upcase_table(&upcase_bytes)?;
         for cluster in &volume.bitmap.clusters {
+            check_cancelled(cancel)?;
             if !volume.cluster_allocated(source, *cluster)? {
                 return Err("exFAT allocation bitmap uses a cluster marked free.".into());
             }
         }
         for cluster in &upcase_clusters {
+            check_cancelled(cancel)?;
             if !volume.cluster_allocated(source, *cluster)? {
                 return Err("exFAT up-case table uses a cluster marked free.".into());
             }
         }
         for cluster in root_clusters {
+            check_cancelled(cancel)?;
             if !volume.cluster_allocated(source, cluster)? {
                 return Err(
                     "exFAT root directory uses a cluster marked free in its allocation bitmap."
@@ -509,29 +554,42 @@ impl Volume {
     }
 
     pub fn read_tree(&self, source: &dyn BlockSource) -> Result<Vec<TreeEntry>> {
-        self.read_tree_mode(source, false)
+        self.read_tree_mode(source, false, &AtomicBool::new(false))
     }
 
     /// Inventory active entries and checksum-valid deleted file entry sets.
     /// Deleted directory contents are not traversed because an inactive
     /// directory entry cannot establish that its cluster chain is intact.
     pub fn read_tree_with_deleted(&self, source: &dyn BlockSource) -> Result<Vec<TreeEntry>> {
-        self.read_tree_mode(source, true)
+        self.read_tree_mode(source, true, &AtomicBool::new(false))
+    }
+
+    pub fn read_tree_with_deleted_cancellable(
+        &self,
+        source: &dyn BlockSource,
+        cancel: &AtomicBool,
+    ) -> Result<Vec<TreeEntry>> {
+        self.read_tree_mode(source, true, cancel)
     }
 
     fn read_tree_mode(
         &self,
         source: &dyn BlockSource,
         include_deleted: bool,
+        cancel: &AtomicBool,
     ) -> Result<Vec<TreeEntry>> {
+        if cancel.load(Ordering::Relaxed) {
+            return Err("exFAT directory scan was cancelled.".into());
+        }
         let mut results = DirectoryTreeResults {
+            cancel,
             visited_directories: HashSet::new(),
             entries: Vec::new(),
             estimated_bytes: 0,
         };
         self.read_directory_tree(
             source,
-            self.walk_fat_chain(source, self.root_cluster)?,
+            self.walk_fat_chain_with_cancel(source, self.root_cluster, Some(cancel))?,
             Vec::new(),
             0,
             include_deleted,
@@ -600,11 +658,23 @@ impl Volume {
     }
 
     fn walk_fat_chain(&self, source: &dyn BlockSource, first: u32) -> Result<Vec<u32>> {
+        self.walk_fat_chain_with_cancel(source, first, None)
+    }
+
+    fn walk_fat_chain_with_cancel(
+        &self,
+        source: &dyn BlockSource,
+        first: u32,
+        cancel: Option<&AtomicBool>,
+    ) -> Result<Vec<u32>> {
         self.cluster_offset(first)?;
         let mut chain = Vec::new();
         let mut visited = HashSet::new();
         let mut current = first;
         loop {
+            if cancel.is_some_and(|cancel| cancel.load(Ordering::Relaxed)) {
+                return Err("exFAT directory scan was cancelled.".into());
+            }
             if chain.len() >= MAX_CHAIN_CLUSTERS || !visited.insert(current) {
                 return Err(
                     "exFAT cluster chain contains a cycle or exceeds its safety bound.".into(),
@@ -619,11 +689,12 @@ impl Volume {
         }
     }
 
-    fn read_clusters(
+    fn read_clusters_with_cancel(
         &self,
         source: &dyn BlockSource,
         clusters: &[u32],
         maximum: usize,
+        cancel: Option<&AtomicBool>,
     ) -> Result<Vec<u8>> {
         let total = (clusters.len() as u64)
             .checked_mul(self.cluster_size)
@@ -633,6 +704,9 @@ impl Volume {
         }
         let mut bytes = vec![0; total as usize];
         for (index, cluster) in clusters.iter().enumerate() {
+            if cancel.is_some_and(|cancel| cancel.load(Ordering::Relaxed)) {
+                return Err("exFAT directory scan was cancelled.".into());
+            }
             let start = index * self.cluster_size as usize;
             source
                 .read_exact_at(
@@ -649,6 +723,7 @@ impl Volume {
         source: &dyn BlockSource,
         clusters: &[u32],
         length: u64,
+        cancel: Option<&AtomicBool>,
     ) -> Result<Vec<u8>> {
         let capacity = (clusters.len() as u64)
             .checked_mul(self.cluster_size)
@@ -661,6 +736,7 @@ impl Volume {
         let mut result = vec![0; length as usize];
         let mut copied = 0usize;
         for cluster in clusters {
+            check_cancelled(cancel)?;
             if copied == result.len() {
                 break;
             }
@@ -679,12 +755,19 @@ impl Volume {
         Ok(result)
     }
 
-    fn read_system_entries(&self, root: &[u8]) -> Result<(Vec<BitmapEntry>, UpcaseEntry)> {
+    fn read_system_entries(
+        &self,
+        root: &[u8],
+        cancel: Option<&AtomicBool>,
+    ) -> Result<(Vec<BitmapEntry>, UpcaseEntry)> {
         let records = directory_records(root)?;
         let mut bitmaps = Vec::new();
         let mut upcase = None;
         let mut index = 0usize;
         while index < records.len() {
+            if index.is_multiple_of(256) {
+                check_cancelled(cancel)?;
+            }
             let record = records[index];
             let kind = record[0];
             match kind {
@@ -788,8 +871,11 @@ impl Volume {
         parent_path: Vec<String>,
         depth: usize,
         include_deleted: bool,
-        results: &mut DirectoryTreeResults,
+        results: &mut DirectoryTreeResults<'_>,
     ) -> Result<()> {
+        if results.cancel.load(Ordering::Relaxed) {
+            return Err("exFAT directory scan was cancelled.".into());
+        }
         if depth > MAX_DIRECTORY_DEPTH {
             return Err("exFAT directory tree exceeds the depth safety limit.".into());
         }
@@ -804,6 +890,9 @@ impl Volume {
             );
         }
         for cluster in &clusters {
+            if results.cancel.load(Ordering::Relaxed) {
+                return Err("exFAT directory scan was cancelled.".into());
+            }
             if !self.cluster_allocated(source, *cluster)? {
                 return Err("exFAT directory chain references a cluster marked free.".into());
             }
@@ -811,11 +900,25 @@ impl Volume {
                 return Err("exFAT directory tree contains a cycle or cross-link.".into());
             }
         }
-        let directory = self.read_clusters(source, &clusters, MAX_DIRECTORY_BYTES)?;
-        let entries =
-            self.parse_file_entries(source, &directory, &clusters, depth == 0, include_deleted)?;
+        let directory = self.read_clusters_with_cancel(
+            source,
+            &clusters,
+            MAX_DIRECTORY_BYTES,
+            Some(results.cancel),
+        )?;
+        let entries = self.parse_file_entries(
+            source,
+            &directory,
+            &clusters,
+            depth == 0,
+            include_deleted,
+            results.cancel,
+        )?;
         let mut child_directories: Vec<PendingDirectory> = Vec::new();
         for entry in entries {
+            if results.entries.len().is_multiple_of(256) && results.cancel.load(Ordering::Relaxed) {
+                return Err("exFAT directory scan was cancelled.".into());
+            }
             if results.entries.len() >= MAX_DIRECTORY_ENTRIES {
                 return Err("exFAT directory tree exceeds the entry safety limit.".into());
             }
@@ -905,6 +1008,7 @@ impl Volume {
                 child.first_cluster,
                 child.data_length,
                 child.no_fat_chain,
+                Some(results.cancel),
             )?;
             if children.len() as u64 * self.cluster_size != child.data_length {
                 return Err(
@@ -930,12 +1034,16 @@ impl Volume {
         directory_clusters: &[u32],
         is_root: bool,
         include_deleted: bool,
+        cancel: &AtomicBool,
     ) -> Result<Vec<DirectoryEntry>> {
         let records = directory_records(bytes)?;
         let mut entries = Vec::new();
         let mut parsed_memory = 0usize;
         let mut index = 0usize;
         while index < records.len() {
+            if index.is_multiple_of(256) && cancel.load(Ordering::Relaxed) {
+                return Err("exFAT directory scan was cancelled.".into());
+            }
             let primary = &records[index];
             let deleted = primary[0] == 0x05;
             if primary[0] & 0x80 == 0 && !(include_deleted && deleted) {
@@ -1171,6 +1279,7 @@ impl Volume {
         first_cluster: u32,
         data_length: u64,
         no_fat_chain: bool,
+        cancel: Option<&AtomicBool>,
     ) -> Result<Vec<u32>> {
         let count = data_length
             .checked_add(self.cluster_size - 1)
@@ -1190,7 +1299,7 @@ impl Volume {
                 .map(|cluster| cluster as u32)
                 .collect()
         } else {
-            self.walk_fat_chain(source, first_cluster)?
+            self.walk_fat_chain_with_cancel(source, first_cluster, cancel)?
         };
         if (clusters.len() as u64) < count {
             return Err("exFAT stream chain is shorter than its declared data length.".into());
@@ -1417,6 +1526,29 @@ mod tests {
             buffer.copy_from_slice(self.0.get(start..end).ok_or_else(|| {
                 std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "short source")
             })?);
+            Ok(())
+        }
+    }
+
+    struct CancelAfterRead<'a> {
+        bytes: &'a [u8],
+        cancel: &'a AtomicBool,
+    }
+
+    impl BlockSource for CancelAfterRead<'_> {
+        fn len(&self) -> u64 {
+            self.bytes.len() as u64
+        }
+
+        fn read_exact_at(&self, offset: u64, buffer: &mut [u8]) -> std::io::Result<()> {
+            let start = usize::try_from(offset).map_err(std::io::Error::other)?;
+            let end = start.checked_add(buffer.len()).ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "range overflow")
+            })?;
+            buffer.copy_from_slice(self.bytes.get(start..end).ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "short source")
+            })?);
+            self.cancel.store(true, Ordering::Relaxed);
             Ok(())
         }
     }
@@ -1667,6 +1799,36 @@ mod tests {
         assert_eq!(tree[0].path, ["ROOT.TXT"]);
         assert_eq!(tree[0].entry.source_offset, 40 * 512 + 64);
         assert_eq!(tree[0].entry.raw_entries.len(), 3);
+    }
+
+    #[test]
+    fn exfat_directory_scan_stops_when_cancelled_during_traversal() {
+        let source = fixture();
+        let volume = Volume::open(&source, 0, source.len()).unwrap();
+        let cancel = AtomicBool::new(false);
+        let cancelling_source = CancelAfterRead {
+            bytes: &source.0,
+            cancel: &cancel,
+        };
+
+        let error = volume
+            .read_tree_with_deleted_cancellable(&cancelling_source, &cancel)
+            .unwrap_err();
+        assert!(error.contains("cancelled"));
+    }
+
+    #[test]
+    fn exfat_volume_validation_stops_when_cancelled_during_source_reads() {
+        let source = fixture();
+        let cancel = AtomicBool::new(false);
+        let cancelling_source = CancelAfterRead {
+            bytes: &source.0,
+            cancel: &cancel,
+        };
+
+        let error =
+            Volume::open_cancellable(&cancelling_source, 0, source.len(), &cancel).unwrap_err();
+        assert!(error.contains("cancelled"));
     }
 
     #[test]
