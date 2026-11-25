@@ -34,9 +34,7 @@ export function JobPanel({ job, cancel }: Props) {
                 ? "RAID reconstruction"
             : "SHA-256 image digest";
   const percent = job.total ? (100 * job.processed) / job.total : 0;
-  const canCancel =
-    job.state === "running" &&
-    job.kind !== "case_report_export";
+  const canCancel = job.state === "running";
   const status =
     job.state === "idle"
       ? "Idle"

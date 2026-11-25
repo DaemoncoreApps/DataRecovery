@@ -9,7 +9,7 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     path::{Path, PathBuf},
-    sync::atomic::Ordering,
+    sync::atomic::{AtomicBool, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
 use tauri::{Manager, State};
@@ -19,6 +19,7 @@ const MAX_REPORT_SCANS: usize = 200;
 const MAX_REPORT_OPERATIONS: usize = 2_000;
 const MAX_OPERATION_PAYLOAD_BYTES: usize = 1024 * 1024;
 const MAX_REPORT_OPERATION_BYTES: usize = 16 * 1024 * 1024;
+const REPORT_WRITE_CHUNK_BYTES: usize = 64 * 1024;
 const ANCHOR_NOTE: &str = "This report includes an internally verified local audit-chain head. It is not digitally signed or externally anchored; preserve the head hash independently.";
 
 #[derive(Clone, Copy, Deserialize)]
@@ -342,6 +343,16 @@ impl Drop for StagedFile {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.0);
     }
+}
+
+fn write_report_bytes(writer: &mut impl Write, bytes: &[u8], cancel: &AtomicBool) -> Result<()> {
+    for chunk in bytes.chunks(REPORT_WRITE_CHUNK_BYTES) {
+        if cancel.load(Ordering::SeqCst) {
+            return Err("Case report export was cancelled while staging the report.".into());
+        }
+        writer.write_all(chunk).map_err(err)?;
+    }
+    Ok(())
 }
 
 fn case_report_from(db: &rusqlite::Connection, case_id: i64) -> Result<CaseReport> {
@@ -1025,7 +1036,7 @@ fn encode_report_for_format(report: &CaseReport, format: ReportFormat) -> Result
     }
 }
 
-fn stage_report(destination: &Path, bytes: &[u8]) -> Result<StagedFile> {
+fn stage_report(destination: &Path, bytes: &[u8], cancel: &AtomicBool) -> Result<StagedFile> {
     let parent = destination
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -1048,7 +1059,7 @@ fn stage_report(destination: &Path, bytes: &[u8]) -> Result<StagedFile> {
         .open(&staging)
         .map_err(err)?;
     let staged = StagedFile(staging);
-    file.write_all(bytes).map_err(err)?;
+    write_report_bytes(&mut file, bytes, cancel)?;
     file.sync_all().map_err(err)?;
     drop(file);
     Ok(staged)
@@ -1127,7 +1138,7 @@ fn publish_case_report(
         return Err("Case report export cancelled before staging.".into());
     }
     let digest = format!("{:x}", Sha256::digest(bytes));
-    let staged = stage_report(path, bytes)?;
+    let staged = stage_report(path, bytes, cancel)?;
     if cancel.load(Ordering::SeqCst) {
         return Err("Case report export cancelled before publication.".into());
     }
@@ -1567,11 +1578,12 @@ mod tests {
         fs::create_dir(&root).unwrap();
         let destination = root.join("report.json");
         let bytes = br#"{"format":"daemoncore-case-report-v4"}"#;
-        let staged = stage_report(&destination, bytes).unwrap();
+        let cancel = AtomicBool::new(false);
+        let staged = stage_report(&destination, bytes, &cancel).unwrap();
         assert_eq!(fs::read(&staged.0).unwrap(), bytes);
         destination::publish_new(&staged.0, &destination).unwrap();
         assert_eq!(fs::read(&destination).unwrap(), bytes);
-        let collision = stage_report(&destination, b"replacement").unwrap();
+        let collision = stage_report(&destination, b"replacement", &cancel).unwrap();
         assert!(destination::publish_new(&collision.0, &destination).is_err());
         assert_eq!(fs::read(&destination).unwrap(), bytes);
         assert_eq!(fs::read(&collision.0).unwrap(), b"replacement");
@@ -1862,6 +1874,63 @@ mod tests {
             )
             .unwrap();
         assert_eq!(prepared, 0);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    struct CancellingWriter<'a> {
+        bytes: Vec<u8>,
+        cancel: &'a AtomicBool,
+    }
+
+    impl Write for CancellingWriter<'_> {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.bytes.extend_from_slice(bytes);
+            self.cancel.store(true, Ordering::SeqCst);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn report_staging_stops_between_write_chunks_when_cancelled() {
+        let cancel = AtomicBool::new(false);
+        let mut writer = CancellingWriter {
+            bytes: Vec::new(),
+            cancel: &cancel,
+        };
+        let error =
+            write_report_bytes(&mut writer, &vec![0; REPORT_WRITE_CHUNK_BYTES * 3], &cancel)
+                .unwrap_err();
+
+        assert!(error.contains("cancelled"));
+        assert_eq!(writer.bytes.len(), REPORT_WRITE_CHUNK_BYTES);
+    }
+
+    #[test]
+    fn cancelled_report_staging_removes_its_temporary_file() {
+        let root = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join(format!(
+                "daemoncore-case-report-stage-cancel-{}-{}",
+                std::process::id(),
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+        fs::create_dir(&root).unwrap();
+        let cancel = AtomicBool::new(true);
+
+        let error = stage_report(&root.join("report.json"), b"cancel me", &cancel)
+            .err()
+            .unwrap();
+
+        assert!(error.contains("cancelled"));
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
         fs::remove_dir_all(root).unwrap();
     }
 

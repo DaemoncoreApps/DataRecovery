@@ -2368,3 +2368,13 @@ following retained FAT chains. A regression raises cancellation during the
 bitmap walk and confirms the operation stops. `npm run validate` passed:
 frontend build, formatting, 67 NTFS-core tests (3 ignored), 171 desktop tests
 (12 ignored), and Clippy with warnings denied.
+
+## Case report staging cancellation — 2026-11-24
+
+The operation monitor now exposes Cancel for report exports. Report staging
+writes in 64 KiB chunks and checks cancellation between chunks; the staged
+file is removed if cancellation is requested before publication. A controlled
+writer regression confirms the write stops after the first chunk, and a
+filesystem regression confirms the temporary file is removed. `npm run
+validate` passed: frontend build, formatting, 67 NTFS-core tests (3 ignored),
+173 desktop tests (12 ignored), and Clippy with warnings denied.
