@@ -34,21 +34,21 @@ const groups = [
   {
     label: "Analysis",
     items: [
-      ["Deep Scan", Search, "LIMITED"],
-      ["Partition Analysis", Layers, "LIVE"],
-      ["Filesystem Analysis", Database, "LIMITED"],
-      ["File Carving", FileSearch, "LIMITED"],
-      ["Hex Inspector", Hexagon, "LIVE"],
+      ["Deep Scan", Search, "LIMITED", "NTFS metadata recovery only."],
+      ["Partition Analysis", Layers, "LIVE", ""],
+      ["Filesystem Analysis", Database, "LIMITED", "FAT32 and exFAT directory analysis; deleted-file mapping uses current allocation as a recovery heuristic."],
+      ["File Carving", FileSearch, "LIMITED", "Validated PNG, BMP, JPEG, and GIF candidates only; at most 10,000 candidates are retained per scan."],
+      ["Hex Inspector", Hexagon, "LIVE", ""],
     ],
   },
   {
     label: "Evidence",
     items: [
-      ["Disk Imaging", Boxes, "LIMITED"],
-      ["RAID Reconstruction", Network, "LIMITED"],
-      ["Recovery Workspace", Files, "LIMITED"],
-      ["Evidence Vault", ShieldCheck, "LIMITED"],
-      ["Reports", FileSearch, "LIMITED"],
+      ["Disk Imaging", Boxes, "LIMITED", "Windows physical-device raw imaging; use a qualified hardware write blocker. Split-image output is not supported."],
+      ["RAID Reconstruction", Network, "LIMITED", "RAID 0/1/5 and Linux MD RAID 6 left-symmetric only; degraded or missing-member reconstruction is not supported."],
+      ["Recovery Workspace", Files, "LIMITED", "Recovery is limited to implemented filesystem and carving paths. Package hashes verify output consistency, not original file completeness."],
+      ["Evidence Vault", ShieldCheck, "LIMITED", "Local hash-chain verification is available; digital signatures and external trust anchors are not."],
+      ["Reports", FileSearch, "LIMITED", "JSON and printable HTML only; reports are unsigned and externally unanchored."],
     ],
   },
 ] as const;
@@ -85,14 +85,14 @@ export function WorkspaceShell({
           {groups.map((group) => (
             <div className="navGroup" key={group.label}>
               <div className="navLabel">{group.label}</div>
-              {group.items.map(([name, Icon, status]) => (
+              {group.items.map(([name, Icon, status, scope]) => (
                 <button
                   key={name}
                   className={page === name ? "selected" : ""}
-                  aria-label={`${name}, ${status.toLowerCase()} capability`}
+                  aria-label={`${name}, ${status.toLowerCase()} capability${scope ? `: ${scope}` : ""}`}
                   aria-current={page === name ? "page" : undefined}
                   onClick={() => setPage(name)}
-                  title={`${name} · ${status.toLowerCase()} capability`}
+                  title={scope ? `${name} · ${scope}` : `${name} · ${status.toLowerCase()} capability`}
                 >
                   <Icon size={16} strokeWidth={1.7} />
                   <span>{name}</span>
