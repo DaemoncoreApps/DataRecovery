@@ -1,16 +1,16 @@
 # Recovery validation — 2026-10-31
 
-## Current source validation — 2026-11-24
+## Current source validation — 2026-11-27
 
-Commit `eb89d49` passed local `npm run validate`: strict byte-offset checks
+Commit `caff23e` passed local `npm run package:windows` validation: strict byte-offset checks
 (5 accepted, 8 rejected), TypeScript and the Vite production frontend build,
 67 core tests passed (3 ignored), 178 desktop tests passed (12 ignored), Rust
 format checks, and Clippy for both crates with warnings denied. The ignored
 tests require external fixtures or a Windows volume configuration and are not
 counted as passing. Cargo reported that hard links are unavailable for its
-incremental cache in this workspace and copied cache files instead. This
-validates source behavior under the local suite; the latest Windows package is
-still built from older commit `9e7b6ef` and remains unsigned and unqualified.
+incremental cache in this workspace and copied cache files instead. A current-
+source unsigned Windows package is staged below; it still needs installation
+and runtime qualification.
 
 ## RAID layout confirmation gate — 2026-11-24
 
@@ -83,7 +83,32 @@ physical device handling, or the complete six-workflow product in an accredited
 lab.
 
 
-## Windows offline package — 2026-11-24
+## Current-source Windows package — 2026-11-27
+
+Source commit `caff23ec5800a888aab9a93b48897d2a6fa9d0a7` passed the full
+`npm run package:windows` validation gate: 67 core tests passed (3 ignored),
+178 desktop tests passed (12 ignored), strict byte-offset checks, frontend
+production build, Rust formatting, and Clippy with warnings denied. Tauri then
+built the app and x64 NSIS offline installer in an isolated target after the
+restricted build environment initially blocked its pinned NSIS tools. The
+bundle completed under normal execution; it was not launched or installed.
+
+- Standalone app:
+  `src-tauri/target/pcaff23ec5800d7ac/release/daemoncore.exe`, 15,705,088
+  bytes, SHA-256
+  `147818a1aa2fbc4b59e33b46bb4ccf701242e7e8d41bc75fd6893c47121f4316`.
+- Offline installer:
+  `src-tauri/target/pcaff23ec5800d7ac/release/bundle/nsis/DaemonCore Data Recovery_0.1.0_x64-setup.exe`,
+  303,047,238 bytes, SHA-256
+  `a28399d580793c7630c52a89702f097764308cd03c8c49b716c34f56e8f20612`.
+- The release directory contains `SHA256SUMS.txt` and `BUILD-INFO.json` with
+  source revision, clean-worktree assertion, validation state, artifact sizes,
+  hashes, and Authenticode statuses. Both artifacts are `NotSigned`.
+
+This closes current-source package generation only. Signing, installation
+lifecycle, packaged startup, and packaged workflow checks remain open.
+
+## Previous Windows offline package — 2026-11-24
 
 The application code at commit `9e7b6ef` passed `npm run validate` before
 packaging: 67 core tests (3 ignored), 175 desktop tests (12 ignored), strict
@@ -2481,7 +2506,7 @@ filesystem regression confirms the temporary file is removed. `npm run
 validate` passed: frontend build, formatting, 67 NTFS-core tests (3 ignored),
 173 desktop tests (12 ignored), and Clippy with warnings denied.
 
-## Dependency security audit — 2026-11-25
+## Dependency security audit — 2026-11-27
 
 `npm run audit:dependencies` completed successfully with network access. `npm
 audit --omit=dev` reported zero vulnerabilities. Cargo Audit scanned 495
